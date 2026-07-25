@@ -23,6 +23,9 @@ export function FirewallPage() {
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
   const [skipCache, setSkipCache] = useState(false);
+  // Dynamic Routing (AI Gateway). Empty = today's binding path.
+  const [dynamicRoute, setDynamicRoute] = useState("");
+  const [routeMetadata, setRouteMetadata] = useState("");
   const [input, setInput] = useState("");
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
@@ -34,6 +37,8 @@ export function FirewallPage() {
     route,
     gatewayId,
     skipCache,
+    dynamicRoute,
+    routeMetadata,
     onSent: refresh,
   });
 
@@ -87,6 +92,10 @@ export function FirewallPage() {
           onGatewayIdChange={setGatewayId}
           skipCache={skipCache}
           onSkipCacheChange={setSkipCache}
+          dynamicRoute={dynamicRoute}
+          onDynamicRouteChange={setDynamicRoute}
+          routeMetadata={routeMetadata}
+          onRouteMetadataChange={setRouteMetadata}
           messages={chat.messages}
           busy={chat.busy}
           turnCount={chat.turnCount}

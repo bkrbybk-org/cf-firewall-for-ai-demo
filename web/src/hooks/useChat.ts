@@ -27,6 +27,7 @@ export type Msg =
         usage?: Usage;
         cost?: number | null;
         gateway?: GatewayMeta; // set when this reply was routed via AI Gateway
+        dynamicRoute?: string; // set when a dynamic route chose the model
       };
       ray?: string;
     }
@@ -80,6 +81,20 @@ function estimateUsage(systemPrompt: string, history: ChatTurn[], prompt: string
   return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens, estimated: true };
 }
 
+// "plan=paid, orgId=acme" → { plan: "paid", orgId: "acme" }. Feeds the
+// Conditional nodes of a dynamic route; malformed pairs are dropped.
+function parseMetadata(raw: string): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  for (const pair of raw.split(",")) {
+    const i = pair.indexOf("=");
+    if (i < 1) continue;
+    const k = pair.slice(0, i).trim();
+    const v = pair.slice(i + 1).trim();
+    if (k && v) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function estimateCost(models: Model[], modelId: string, usage: Usage): number | null {
   const m = models.find((x) => x.id === modelId);
   if (!m || m.priceIn == null || m.priceOut == null) return null;
@@ -105,6 +120,8 @@ export function useChat(cfg: {
   route: Route;
   gatewayId: string;
   skipCache: boolean;
+  dynamicRoute: string;
+  routeMetadata: string; // "k=v,k=v" as typed in the UI; parsed before sending
   onSent?: () => void;
 }) {
   const messages = useStore(chatMessages);
@@ -121,7 +138,8 @@ export function useChat(cfg: {
   const sendPrompt = useCallback(async (text: string): Promise<TurnResult> => {
     const prompt = text.trim();
     if (!prompt || chatBusy.get()) return { kind: "error" };
-    const { models, model, systemPrompt, stream, multiTurn, route, gatewayId, skipCache } = cfgRef.current;
+    const { models, model, systemPrompt, stream, multiTurn, route, gatewayId, skipCache, dynamicRoute, routeMetadata } =
+      cfgRef.current;
     const gateway = route === "gateway";
     chatBusy.set(true);
     const history = multiTurn ? buildHistory(chatMessages.get()) : [];
@@ -141,6 +159,8 @@ export function useChat(cfg: {
           gateway: gateway || undefined,
           gatewayId: gateway ? gatewayId || undefined : undefined,
           skipCache: gateway ? skipCache : undefined,
+          dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined,
+          routeMetadata: gateway && dynamicRoute ? parseMetadata(routeMetadata) : undefined,
         },
         (tok) => {
           if (!streamStarted) {
@@ -207,7 +227,7 @@ export function useChat(cfg: {
             kind: "assistant",
             text: data.reply,
             ts: fmtTime(),
-            meta: { model: data.model, ray, usage: data.usage, cost, gateway: gwMeta },
+            meta: { model: data.model, ray, usage: data.usage, cost, gateway: gwMeta, dynamicRoute: data.dynamicRoute },
             ray,
           });
           outcome = { kind: "reply", ray };

@@ -1,8 +1,12 @@
 // Route handlers, one per endpoint. Each returns a Response.
 
 import {
+  CF_API_BASE,
   DEFAULT_AI_GATEWAY_ID,
   DEFAULT_SYSTEM_PROMPT,
+  DYNAMIC_ROUTE_PREFIX,
+  OPENAI_CHAT_PATH,
+  ROUTE_ID_RE,
   FREE_DAILY_NEURONS,
   MAX_HISTORY_CHARS,
   MAX_HISTORY_TURNS,
@@ -244,6 +248,85 @@ function appendGatewayEvent(
 // cf-llm-labeled path, so the edge WAF scan (and the verdict) applies either
 // way. With stream:true the reply is passed through as SSE and the client
 // assembles the reply + metadata itself.
+// --- AI Gateway Dynamic Routing ----------------------------------------
+// A dynamic route is a policy graph (Conditional / Percentage / Rate Limit /
+// Budget Limit nodes in front of Model nodes) configured in the gateway
+// dashboard. It is addressed by putting the route name in the `model` field of
+// the OpenAI-compatible endpoint — the Workers AI binding only accepts real
+// model ids, so routes are unreachable via env.AI.run() and need this REST
+// call instead. Requires an Authenticated Gateway and a token with
+// "AI Gateway Run" (CF_AIG_TOKEN).
+//
+// Because the ROUTE picks the model, the requested model is ignored here; the
+// model that actually ran is read back off the response so the UI reports what
+// happened rather than what was asked for.
+type DynamicResult =
+  | { kind: "json"; reply: string; model: string; promptTokens?: number; completionTokens?: number; logId: string | null }
+  | { kind: "stream"; body: ReadableStream }
+  | { kind: "error"; status: number; message: string };
+
+async function runDynamicRoute(
+  env: Env,
+  opts: {
+    route: string;
+    gatewayId: string;
+    messages: { role: string; content: string }[];
+    stream: boolean;
+    metadata?: Record<string, string>;
+  },
+): Promise<DynamicResult> {
+  if (!env.CF_AIG_TOKEN || !env.CF_ACCOUNT_ID) {
+    return {
+      kind: "error",
+      status: 501,
+      message:
+        'Dynamic routing needs CF_ACCOUNT_ID and the CF_AIG_TOKEN secret (an API token with "AI Gateway Run"). Set it with: wrangler secret put CF_AIG_TOKEN',
+    };
+  }
+
+  const res = await fetch(`${CF_API_BASE}/accounts/${env.CF_ACCOUNT_ID}${OPENAI_CHAT_PATH}`, {
+    method: "POST",
+    headers: {
+      authorization: "Bearer " + env.CF_AIG_TOKEN,
+      "cf-aig-gateway-id": opts.gatewayId,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: DYNAMIC_ROUTE_PREFIX + opts.route,
+      messages: opts.messages,
+      max_tokens: MAX_REPLY_TOKENS,
+      stream: opts.stream || undefined,
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    }),
+  });
+
+  if (!res.ok) {
+    // Read the body as text so a Guardrails 2016/2017 block can be matched by
+    // the same detector the binding path uses.
+    const detail = await res.text();
+    return { kind: "error", status: res.status, message: detail || `AI Gateway returned HTTP ${res.status}` };
+  }
+
+  if (opts.stream && res.body) {
+    // Passed through as-is. The trailing gateway-meta event the binding path
+    // appends isn't available here (env.AI.aiGatewayLogId is binding-only), and
+    // the client already tolerates absent gateway meta.
+    return { kind: "stream", body: res.body };
+  }
+
+  const obj = (await res.json()) as Record<string, unknown>;
+  const usage = obj.usage as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+  return {
+    kind: "json",
+    // extractReply already understands the OpenAI choices[].message.content shape.
+    reply: extractReply(obj, obj),
+    model: typeof obj.model === "string" ? obj.model : "",
+    promptTokens: usage?.prompt_tokens,
+    completionTokens: usage?.completion_tokens,
+    logId: res.headers.get("cf-aig-log-id"),
+  };
+}
+
 // Write one prompt-log row (best effort). Prompt/reply are redacted here so
 // no live PII lands in D1. Runs via ctx.waitUntil so it never blocks the
 // reply, and silently no-ops when D1 is unbound. The ray is the join key to
@@ -305,6 +388,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   let gateway = false;
   let skipCache = false;
   let requestedGatewayId: string | undefined;
+  let dynamicRoute = "";
+  let routeMetadata: Record<string, string> | undefined;
   try {
     const body = await request.json<ChatRequestBody>();
     if (typeof body.prompt !== "string" || body.prompt.trim() === "") {
@@ -323,6 +408,16 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     if (body.gateway === true) gateway = true;
     if (typeof body.skipCache === "boolean") skipCache = body.skipCache;
     if (typeof body.gatewayId === "string") requestedGatewayId = body.gatewayId;
+    if (typeof body.dynamicRoute === "string" && ROUTE_ID_RE.test(body.dynamicRoute)) {
+      dynamicRoute = body.dynamicRoute;
+    }
+    if (body.routeMetadata && typeof body.routeMetadata === "object") {
+      routeMetadata = Object.fromEntries(
+        Object.entries(body.routeMetadata as Record<string, unknown>)
+          .filter(([k]) => ROUTE_ID_RE.test(k))
+          .map(([k, v]) => [k, String(v).slice(0, 128)]),
+      );
+    }
   } catch {
     return Response.json(
       {
@@ -361,6 +456,58 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     outcome: PromptLogRow["outcome"],
     extra: { reply: string | null; promptTokens?: number | null; completionTokens?: number | null },
   ) => ctx?.waitUntil(logPrompt(env, { ...logBase, outcome, prompt, ...extra }));
+
+  // Dynamic Routing path. Only taken when a route was explicitly requested on
+  // the gateway route — everything else falls through to the binding below, so
+  // the existing demo behaviour is untouched.
+  if (gateway && dynamicRoute) {
+    const r = await runDynamicRoute(env, {
+      route: dynamicRoute,
+      gatewayId,
+      messages,
+      stream,
+      metadata: routeMetadata,
+    });
+
+    if (r.kind === "error") {
+      // A Guardrails block arrives as an HTTP error here rather than a binding
+      // exception; the same 2016/2017 detector maps it to the purple card.
+      const gr = guardrailsResponse(r.message, model, gatewayId, guarded);
+      log(gr ? "guardrails" : "error", { reply: null });
+      if (gr) return gr;
+      return Response.json({ error: r.message, model, dynamicRoute }, { status: r.status });
+    }
+
+    if (r.kind === "stream") {
+      log("reply", { reply: null });
+      return new Response(r.body, {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+      });
+    }
+
+    // The route chose the model, so report what actually ran.
+    const ranModel = r.model || model;
+    const price = MODEL_BY_ID.get(ranModel);
+    const promptTokens = r.promptTokens ?? Math.ceil((systemPrompt.length + prompt.length) / 4);
+    const completionTokens = r.completionTokens ?? Math.ceil(r.reply.length / 4);
+    log("reply", { reply: r.reply, promptTokens, completionTokens });
+    return Response.json({
+      reply: r.reply,
+      model: ranModel,
+      ray,
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: completionTokens,
+        total_tokens: promptTokens + completionTokens,
+        estimated: r.promptTokens == null,
+      },
+      cost: price
+        ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut
+        : null,
+      gateway: { gatewayId, cached: null, latencyMs: Date.now() - started, logId: r.logId, guarded },
+      dynamicRoute,
+    });
+  }
 
   if (stream) {
     try {

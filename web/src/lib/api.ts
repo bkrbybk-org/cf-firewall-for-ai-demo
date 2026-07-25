@@ -68,6 +68,11 @@ export interface ChatRequest {
   gateway?: boolean; // route inference through AI Gateway
   gatewayId?: string; // gateway only — which configured gateway to use
   skipCache?: boolean; // gateway only
+  // Dynamic Routing: a route name configured in the gateway dashboard. Empty
+  // → the normal binding path. The route picks the model, so `model` is
+  // ignored when this is set.
+  dynamicRoute?: string;
+  routeMetadata?: Record<string, string>;
 }
 
 // Non-stream result: status + raw text + parsed JSON (block pages aren't JSON).

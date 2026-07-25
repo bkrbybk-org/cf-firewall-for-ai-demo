@@ -19,6 +19,10 @@ export interface Env {
   // Second gateway with Guardrails enabled in the dashboard. Optional — the
   // Guardrails toggle in the UI only appears when this is set.
   CF_AI_GATEWAY_GUARDED_ID?: string; // plain var in wrangler.jsonc
+  // Separate from CF_ANALYTICS_TOKEN (which is read-only): needs "AI Gateway
+  // Run" to call the OpenAI-compatible REST endpoint for Dynamic Routing.
+  // Kept apart deliberately — the two have different blast radii.
+  CF_AIG_TOKEN?: string; // set as a secret
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.
@@ -40,6 +44,15 @@ export interface ChatRequestBody {
   gateway?: unknown; // true → route the inference through AI Gateway
   gatewayId?: unknown; // gateway only — which configured gateway to use
   skipCache?: unknown; // gateway only
+  // Dynamic Routing: a route name configured in the gateway dashboard. When
+  // set (and gateway is true) the Worker calls the OpenAI-compatible REST
+  // endpoint instead of the binding, because routes are addressed as a model
+  // name and the binding rejects anything that isn't a real model id. Absent
+  // → the binding path, i.e. today's behaviour, unchanged.
+  dynamicRoute?: unknown;
+  // Arbitrary key/values the route's Conditional nodes can branch on
+  // (e.g. { plan: "paid" }). Values are coerced to strings.
+  routeMetadata?: unknown;
 }
 
 export interface VerdictResult {

@@ -186,6 +186,35 @@ with exactly that message. Also covers no-false-positives on clean prose and ide
 - Tradeoff (user chose full features on both routes): history/streaming change the request body so
   identical prompts rarely cache — a UI note says to clear + resend for a clean HIT.
 
+**AI Gateway Dynamic Routing** — code path shipped, dashboard routes **not yet built**.
+- A dynamic route is a policy graph (Conditional / Percentage / Rate Limit / Budget Limit nodes in
+  front of Model nodes) configured in the gateway dashboard. It is addressed by putting the route
+  name in the **`model`** field of the OpenAI-compatible endpoint (`dynamic/<route>`).
+- **The binding cannot reach it.** `env.AI.run()` documents only `@cf/…` and `author/model` model
+  ids, so `runDynamicRoute()` in `src/handlers.ts` calls
+  `POST {CF_API_BASE}/accounts/{id}/ai/v1/chat/completions` with `cf-aig-gateway-id` instead.
+  Reuses `extractReply()` (the OpenAI `choices[]` shape) and `guardrailsResponse()` (2016/2017 now
+  arrives as an HTTP error body rather than a binding exception, and maps to the same purple card).
+- **Opt-in and inert by default**: the REST path is taken *only* when a `dynamicRoute` is supplied
+  on the gateway route. Empty → today's binding path, byte-identical behaviour. Verified: with no
+  route the gateway reply still carries cache/latency/real log id; an invalid route name
+  (`../../evil`) is rejected by the shared `ROUTE_ID_RE` charset check and falls back rather than
+  building a bad URL; missing `CF_AIG_TOKEN` returns a 501 naming the secret.
+- UI: **Route** + **Metadata** inputs in the gateway controls (metadata appears only once a route
+  is set; `plan=paid` → `{plan:"paid"}` for Conditional nodes). The Model picker is **inert** on
+  this path — the route chooses the model, so the reply reports the model that actually *ran*, with
+  a blue `ROUTE <name>` badge.
+- **Prerequisite not yet done (dashboard, needs the user):** Dynamic Routing requires an
+  **Authenticated Gateway**. Enabling that on `cf-ai-sec-demo-gw` may break the existing
+  `env.AI.run(…, {gateway})` calls — undocumented either way. Test one gateway prompt immediately
+  after enabling; if it fails, toggle authentication back off (that is the rollback) and move
+  dynamic routes to a throwaway gateway. **Record the outcome here** — it answers an open question.
+- Routes recommended for the demo (build in dashboard → gateway → Dynamic Routes):
+  `canary-90-10` (Percentage 90/10 Gemma 4 26B vs Qwen3 30B — verify via the Prompt log's
+  by-model bars, needs no new instrumentation, best first build) · `tiered-by-plan` (Conditional on
+  `plan == "paid"`) · `budget-guard` (Budget Limit → fall back to the cheap Llama 3.2 3B) ·
+  `abuse-shield` (Rate Limit → fallback; pairs with the zone's rate-limiting rules).
+
 **Demo autopilot**: 6-step scripted tour (baseline → injection → PII → unsafe S9 → unsafe S6
 log-only → custom topic), clears the conversation on start, per-step expect-vs-actual with edge
 verdict polling (blocked 403 counts immediately), Stop button, final scorecard. Panel is portaled
@@ -326,3 +355,6 @@ typecheck + build clean; deployed to prod.
    **Account Analytics: Read** (neurons), and **AI Gateway Read** (account gateway dropdown **+
    the Analytics page's AI Gateway tab**). Any missing scope degrades only its feature; the
    gateway list falls back to the two var gateways and the gateway tab shows a scope hint.
+8. *(Dynamic Routing only)* `wrangler secret put CF_AIG_TOKEN` — a **separate** token with
+   **AI Gateway Run**, kept apart from the read-only analytics token on purpose. Without it the
+   dynamic-route path returns a 501 naming the missing secret; everything else is unaffected.

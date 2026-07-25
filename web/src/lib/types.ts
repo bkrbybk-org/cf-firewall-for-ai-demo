@@ -58,6 +58,7 @@ export interface ChatResponse {
   guardrailsBlocked?: boolean;
   direction?: "prompt" | "response";
   detail?: string;
+  dynamicRoute?: string; // echoed back when the reply came from a dynamic route
 }
 
 export interface VerdictRule {

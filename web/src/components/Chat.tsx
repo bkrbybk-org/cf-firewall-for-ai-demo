@@ -118,6 +118,10 @@ export function Chat({
   onGatewayIdChange,
   skipCache,
   onSkipCacheChange,
+  dynamicRoute,
+  onDynamicRouteChange,
+  routeMetadata,
+  onRouteMetadataChange,
   messages,
   busy,
   turnCount,
@@ -141,6 +145,10 @@ export function Chat({
   onGatewayIdChange: (id: string) => void;
   skipCache: boolean;
   onSkipCacheChange: (v: boolean) => void;
+  dynamicRoute: string;
+  onDynamicRouteChange: (v: string) => void;
+  routeMetadata: string;
+  onRouteMetadataChange: (v: string) => void;
   messages: Msg[];
   busy: boolean;
   turnCount: number;
@@ -220,6 +228,14 @@ export function Chat({
                             </span>
                           )}
                         </>
+                      )}
+                      {m.meta.dynamicRoute && (
+                        <span
+                          className="rounded-full border border-cf-blue/60 bg-cf-blue/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-blue"
+                          title="Model chosen by an AI Gateway dynamic route"
+                        >
+                          ROUTE {m.meta.dynamicRoute}
+                        </span>
                       )}
                       {m.meta.model && <span>via {modelLabels[m.meta.model] || m.meta.model}</span>}
                       {m.meta.gateway?.latencyMs != null && (
@@ -367,6 +383,34 @@ export function Chat({
               />
               skip cache
             </label>
+            <label
+              className="flex items-center gap-1.5"
+              title="Dynamic Routing: a route name configured in the gateway dashboard. The route picks the model, so the Model control above is ignored. Empty = normal routing."
+            >
+              Route
+              <input
+                type="text"
+                value={dynamicRoute}
+                onChange={(e) => onDynamicRouteChange(e.target.value)}
+                placeholder="dynamic route"
+                className="w-36 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
+              />
+            </label>
+            {dynamicRoute && (
+              <label
+                className="flex items-center gap-1.5"
+                title="Metadata the route's Conditional nodes branch on, as k=v pairs (e.g. plan=paid)"
+              >
+                Metadata
+                <input
+                  type="text"
+                  value={routeMetadata}
+                  onChange={(e) => onRouteMetadataChange(e.target.value)}
+                  placeholder="plan=paid"
+                  className="w-36 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
+                />
+              </label>
+            )}
           </>
         )}
         {turnCount > 0 && (
