@@ -95,8 +95,11 @@ web/src/
                     (on-the-fly PDF/image builders), sessionStore.ts (module-level chat store)
   hooks/            useTheme, useNeurons, useChat (session + send pipeline)
   components/       Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel, AttackLibrary,
-                    Chat, Verdict, FlowTrace, DemoMode, ExportButton, FileAttach
-  pages/            FirewallPage (chat + route/gateway controls), AnalyticsPage, CompliancePage
+                    Chat, Verdict, FlowTrace, DemoMode, ExportButton
+    analytics/      primitives (Tile/Card/BarList), EventSeries (line+area chart + series defs),
+                    EdgeTab, GatewayTab, PromptLogTab
+  pages/            FirewallPage (chat + route/gateway controls), AnalyticsPage (shell: state,
+                    loaders, tab strip, filters), CompliancePage
 ```
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
@@ -299,8 +302,11 @@ typecheck + build clean; deployed to prod.
 - [x] Remove dead code left by the file-upload removal — `postExtract`/`ExtractResponse`,
       `MAX_UPLOAD_BYTES`/`ALLOWED_UPLOAD_MIME`/`DEFAULT_CACHE_TTL`, and the stale `cacheTtl` field
       on the client `ChatRequest` type. All gone; zero residual references.
-- [ ] Split `web/src/pages/AnalyticsPage.tsx` (~1,200 lines, 11 components): shared primitives
-      (`Tile`/`Card`/`BarList`/`EventSeries`) into a charts module, one file per tab.
+- [x] Split `web/src/pages/AnalyticsPage.tsx` (was ~1,200 lines, 11 components) into
+      `web/src/components/analytics/` — `primitives.tsx` (Tile/Card/BarList), `EventSeries.tsx`
+      (chart + series defs), and one file per tab (`EdgeTab`/`GatewayTab`/`PromptLogTab`). The page
+      is now a ~250-line shell: state, loaders, tab strip, filters. Pure move — the built JS bundle
+      hashed identically before and after.
 - [ ] Compliance page: GRC reviewer to sanity-check the NIST subcategory titles + ISO/BOT/NCSA
       section descriptions before regulated-customer use (defensible, but not an audited crosswalk).
 - [ ] Optional: cache `/api/verdict` responses. `npm audit` reports 5 pre-existing advisories, all
