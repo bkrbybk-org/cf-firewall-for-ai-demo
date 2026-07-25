@@ -1,0 +1,18 @@
+# Secrets — never commit
+.env
+.dev.vars
+
+# Wrangler local state (may cache secrets/build output)
+.wrangler/
+
+# Dependencies
+node_modules/
+
+# OS / editor cruft
+.DS_Store
+
+# Vite build output
+dist/
+
+# TypeScript incremental build cache
+*.tsbuildinfo

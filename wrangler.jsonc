@@ -1,0 +1,48 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-ai-waf-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "account_id": "daf82c7c231958777ed36e9c0b6d347a",
+  "workers_dev": false,
+  "routes": [{ "pattern": "cf-ai-waf-demo.nttlab.org", "custom_domain": true }],
+  "vars": {
+    // Zone that hosts ai-demo.nttlab.org — used by GET /api/verdict.
+    // Account that owns the Workers AI usage — used by GET /api/neurons.
+    // Both need CF_ANALYTICS_TOKEN, a secret with BOTH "Zone Analytics: Read"
+    // (on this zone) AND "Account Analytics: Read" (on this account):
+    //   npx wrangler secret put CF_ANALYTICS_TOKEN
+    "CF_ZONE_ID": "6b1b2b6c349ba51e5ed8446c1b8c993d",
+    "CF_ACCOUNT_ID": "daf82c7c231958777ed36e9c0b6d347a",
+    // AI Gateway name for /api/gateway/chat. "default" auto-creates on first use.
+    "CF_AI_GATEWAY_ID": "cf-ai-sec-demo-gw-no-guardrail",
+    // Second gateway with Guardrails ENABLED (create it in dashboard → AI →
+    // AI Gateway, then turn on Guardrails). Powers the Guardrails toggle on
+    // the gateway page. Remove this var to hide the toggle.
+    "CF_AI_GATEWAY_GUARDED_ID": "cf-ai-sec-demo-gw",
+  },
+  "assets": {
+    // Built React SPA (Vite → dist). Unknown routes serve index.html so the
+    // client-side router (/, /gateway) works on hard refresh.
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+  },
+  "ai": {
+    "binding": "AI",
+  },
+  // Prompt log store (GET/DELETE /api/prompt-log). Prompts are PII-redacted
+  // before insert (src/redact.ts). Apply the schema with:
+  //   npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cf-ai-waf-demo-log",
+      "database_id": "e9bcced8-8057-4152-baa9-822244873837",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "observability": {
+    "enabled": true,
+  },
+}
