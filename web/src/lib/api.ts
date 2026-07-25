@@ -3,7 +3,6 @@ import type {
   Analytics,
   ChatResponse,
   ChatTurn,
-  ExtractResponse,
   GatewayAnalytics,
   GatewayMeta,
   ModelsResponse,
@@ -69,7 +68,6 @@ export interface ChatRequest {
   gateway?: boolean; // route inference through AI Gateway
   gatewayId?: string; // gateway only — which configured gateway to use
   skipCache?: boolean; // gateway only
-  cacheTtl?: number; // gateway only
 }
 
 // Non-stream result: status + raw text + parsed JSON (block pages aren't JSON).
@@ -185,19 +183,5 @@ export async function postChat(
   if (buffer) handleLine(buffer);
 
   return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway };
-}
-
-// POST /api/extract — file → text (unscanned; see ExtractResponse).
-export async function postExtract(file: File): Promise<{ status: number; data: ExtractResponse }> {
-  const form = new FormData();
-  form.append("file", file, file.name);
-  const res = await fetch("/api/extract", { method: "POST", body: form });
-  let data: ExtractResponse;
-  try {
-    data = await res.json();
-  } catch {
-    data = { error: `HTTP ${res.status}` };
-  }
-  return { status: res.status, data };
 }
 

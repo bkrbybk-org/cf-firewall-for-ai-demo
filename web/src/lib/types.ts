@@ -95,16 +95,6 @@ export interface Neurons {
   error?: string;
 }
 
-// POST /api/extract — file → text conversion result (Workers AI toMarkdown).
-// Never scanned by Firewall for AI; only the /api/chat prompt field is.
-export interface ExtractResponse {
-  name?: string;
-  mimeType?: string;
-  format?: "markdown" | "text";
-  data?: string;
-  error?: string;
-}
-
 // GET /api/analytics — aggregated payload, see Worker AnalyticsSummary.
 export interface Analytics {
   configured: boolean;
