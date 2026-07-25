@@ -98,8 +98,21 @@ web/src/
   pages/            FirewallPage (chat + route/gateway controls), AnalyticsPage, CompliancePage
 ```
 
-Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm run
-dev:worker` / `npm run dev:web`. `.claude/launch.json` has a `wrangler-dev` config.
+Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
+(vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"` and would
+otherwise hide the Worker's tests under `src/`) · `npm run dev:worker` / `npm run dev:web`.
+`.claude/launch.json` has a `wrangler-dev` config.
+
+**Version control**: `git init` done (branch `main`, initial commit `ed669b6`). `.gitignore`
+covers `.env`, `.wrangler/`, `dist/`, `node_modules/`, `*.tsbuildinfo` — verified with
+`git check-ignore` before the first commit, and the tracked set was secret-scanned.
+
+**Tests**: `src/redact.test.ts` — 18 cases over the PII redaction pass, run against the *real*
+Attack Library prompts from `web/src/lib/data.ts`. Assertions check the original identifier is
+**absent** from the output rather than matching an exact replacement string, because the failure
+mode that actually shipped was a *partial* mask (`card` ran before `iban` → `IBAN DE89 [card
+****3000]`, leaking `DE89`). Verified by mutation: reintroducing that ordering makes 2 tests fail
+with exactly that message. Also covers no-false-positives on clean prose and idempotency.
 
 ---
 
@@ -268,13 +281,20 @@ typecheck + build clean; deployed to prod.
 - [ ] Set WAF block-rule responses to Custom JSON (dashboard).
 - [ ] Prod smoke test after Access login: autopilot full run (expect 6/6), streaming + verdict on
       the prod hostname, analytics with fresh LLM-rule traffic, **and the Prompt log writing real
-      `cf-ray` rows** (redeploy first — the D1 binding + remote migration are done, but prod runs
-      the pre-D1 Worker until the next `npm run deploy`).
-- [ ] Automated tests for the pure functions (extractReply/stripThink, sanitizeHistory,
-      buildHistory, cost calc, verdict classify, SSE line parser, PDF sample builder).
+      `cf-ray` rows**. Prod (version `8a5a461a`, 2026-07-25) already carries the `DB` binding, so
+      prompt-log works there; **prompt-analytics needs a redeploy** (added after that version).
+- [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
+      buildHistory, cost calc, verdict classify, SSE line parser). `redact()` is now covered.
+- [ ] Remove dead code left by the file-upload removal: `postExtract`/`ExtractResponse`
+      (`web/src/lib/api.ts` — still calls the deleted `/api/extract`, so it would hit the SPA
+      fallback and fail on JSON parse), `MAX_UPLOAD_BYTES`/`ALLOWED_UPLOAD_MIME`/`DEFAULT_CACHE_TTL`
+      (`src/config.ts`), and the stale `cacheTtl` field on the client `ChatRequest` type.
+- [ ] Split `web/src/pages/AnalyticsPage.tsx` (~1,100 lines, 11 components): shared primitives
+      (`Tile`/`Card`/`BarList`/`EventSeries`) into a charts module, one file per tab.
 - [ ] Compliance page: GRC reviewer to sanity-check the NIST subcategory titles + ISO/BOT/NCSA
       section descriptions before regulated-customer use (defensible, but not an audited crosswalk).
-- [ ] Optional: cache `/api/verdict` responses; `git init` (still not a repo).
+- [ ] Optional: cache `/api/verdict` responses. `npm audit` reports 5 pre-existing advisories, all
+      under `node_modules/wrangler`.
 
 ## Setup checklist (fresh zone)
 
