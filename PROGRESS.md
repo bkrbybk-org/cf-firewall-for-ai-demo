@@ -67,8 +67,9 @@ Prod is behind **Cloudflare Access**, so functional testing is done on `wrangler
   underlined). Chat controls: model picker, **Workers AI ↔ AI Gateway toggle**, stream toggle, and
   — when gateway is on — a **Gateway dropdown** (all account gateways), skip-cache, TTL. File-upload
   buttons under the composer. `/gateway` redirects here (the old standalone page was removed).
-- **`/analytics`**: stat tiles (events / blocked / logged / PII), stacked events-over-time chart,
-  top-fired-rules bars, injection-score histogram. Range 1h/24h/7d, 60s auto-refresh.
+- **`/analytics`**: three tabs (edge / AI Gateway / prompt log) sharing one range picker. Stat
+  tiles, **line + area** events-over-time chart, top-fired-rules bars, injection-score histogram.
+  Range 1h/24h/7d, 60s auto-refresh.
 - **`/compliance`**: coverage matrix (capability × framework) + framework tabs with per-control
   detail cards. **Six frameworks**: NIST AI RMF · ISO 42001 · OWASP LLM Top 10 · MITRE ATLAS ·
   Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025).
@@ -222,6 +223,16 @@ no binary assets in the repo.
   by-model bars. An explicit in-page **Scope** card states gateway data is account-wide, unlike
   the zone-scoped edge tab. Empty + not-configured + error states verified on both tabs; light
   and dark checked; `EventSeries` generalized to take `rows`/`bucket`/`defs` so both tabs share it.
+- **Charts are line + area** (was stacked columns), shared by all three tabs: 10%-opacity area
+  wash for magnitude, 2px line for shape, markers only when the series is sparse (≤ 24 buckets),
+  hairline gridlines on clean `1/2/5 × 10ⁿ` ticks, and a **crosshair + single tooltip** that reads
+  out every series at the hovered bucket (value leads, label follows) so the pointer never has to
+  land on a line. Series are drawn **unstacked**, each from its own zero baseline — stacking was
+  tried first and is wrong for this data: it is sparse and zero-heavy, so a series sitting at 0
+  inherits the cumulative height beneath it and paints a flat line across the top that reads as a
+  constant nonzero value (the `error` line appeared pinned at 1 while errors were actually 0). The
+  tooltip still reports the total, so nothing is lost. Tick values are deduped after rounding —
+  with `max = 1` the fractional midpoint otherwise printed "1 / 1 / 0".
 - **Prompt analytics** (top of the Prompt log tab) — rollups over the *whole* log, computed as SQL
   `GROUP BY` **inside D1** (not a Worker-side pass over capped rows, so numbers stay right as the
   table grows — the payoff of picking D1). Tiles (prompts logged · carried PII % · guardrails-blocked
@@ -285,11 +296,10 @@ typecheck + build clean; deployed to prod.
       prompt-log works there; **prompt-analytics needs a redeploy** (added after that version).
 - [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
       buildHistory, cost calc, verdict classify, SSE line parser). `redact()` is now covered.
-- [ ] Remove dead code left by the file-upload removal: `postExtract`/`ExtractResponse`
-      (`web/src/lib/api.ts` — still calls the deleted `/api/extract`, so it would hit the SPA
-      fallback and fail on JSON parse), `MAX_UPLOAD_BYTES`/`ALLOWED_UPLOAD_MIME`/`DEFAULT_CACHE_TTL`
-      (`src/config.ts`), and the stale `cacheTtl` field on the client `ChatRequest` type.
-- [ ] Split `web/src/pages/AnalyticsPage.tsx` (~1,100 lines, 11 components): shared primitives
+- [x] Remove dead code left by the file-upload removal — `postExtract`/`ExtractResponse`,
+      `MAX_UPLOAD_BYTES`/`ALLOWED_UPLOAD_MIME`/`DEFAULT_CACHE_TTL`, and the stale `cacheTtl` field
+      on the client `ChatRequest` type. All gone; zero residual references.
+- [ ] Split `web/src/pages/AnalyticsPage.tsx` (~1,200 lines, 11 components): shared primitives
       (`Tile`/`Card`/`BarList`/`EventSeries`) into a charts module, one file per tab.
 - [ ] Compliance page: GRC reviewer to sanity-check the NIST subcategory titles + ISO/BOT/NCSA
       section descriptions before regulated-customer use (defensible, but not an audited crosswalk).
