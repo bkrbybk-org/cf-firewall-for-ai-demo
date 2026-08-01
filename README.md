@@ -1,53 +1,79 @@
 # Cloudflare AI Security for Apps — Customer Demo
 
-Chat app that demos **AI Security for Apps** (formerly *Firewall for AI*): real LLM traffic flows through a Cloudflare zone, the edge inspects each prompt, and WAF custom rules block PII, prompt injection, and unsafe topics **before they reach the model**.
+Chat app that demos **AI Security for Apps** (formerly *Firewall for AI*) together with **AI Gateway**: real LLM traffic flows through a Cloudflare zone, the edge inspects each prompt, and WAF custom rules block PII, prompt injection, unsafe topics and custom topics **before they reach the model**. The app then reads back what the edge did (GraphQL Analytics) and shows it per prompt.
 
 ```
-Browser chat UI ──POST /api/chat {"prompt","model"} ──▶ Cloudflare edge
-   ▲  (🧠 model picker)                                  │ 1. AI Security scans body (cf-llm endpoint)
-   │                                                     │ 2. WAF rules block → 403 custom JSON
-   └── reply (via <model>) / red "blocked" card ◀─ Worker ◀─┘ 3. Allowed → Worker → Workers AI (selected model)
+Browser chat UI ──POST /api/chat {"prompt", …} ──▶ Cloudflare edge
+   ▲                                               │ 1. AI Security scans the JSON body (cf-llm endpoint)
+   │                                               │ 2. WAF cf.llm.* rules → block 403 / log
+   └── reply / blocked card / guardrails card ◀─ Worker ◀─┘ 3. Allowed → Worker → Workers AI *or* AI Gateway
 ```
 
-- **Worker**: serves the static chat UI + `POST /api/chat` + `GET /api/models` (Workers AI binding, no API keys).
-- **Account**: NFR - TH - NTT (`daf82c7c231958777ed36e9c0b6d347a`) — set in `wrangler.jsonc`.
-- **URL**: the proxied custom domain in `wrangler.jsonc` `routes` (currently `cf-ai-waf-demo.nttlab.org`). `workers.dev` is disabled (`workers_dev: false`) because the AI detections only fire on a proxied zone hostname.
+- **Worker** (`src/`): the JSON API + serves the built React SPA as static assets.
+- **Account**: NFR - TH - NTT (`daf82c7c231958777ed36e9c0b6d347a`), zone `nttlab.org` — both in `wrangler.jsonc`.
+- **URL**: `cf-ai-waf-demo.nttlab.org` (proxied custom domain). `workers_dev: false` — the AI detections only fire on a proxied zone hostname on an Enterprise zone with the AI Security add-on.
+- **Prod is behind Cloudflare Access**, so `curl`/browser checks against prod need auth. Functional testing is normally done on `wrangler dev` (real Workers AI, real zone GraphQL, real AI Gateway REST) with a faked `cf-ray` header where the verdict/prompt-log join needs one.
+
+Day-to-day engineering state — decisions, open bugs, next tasks — lives in [`PROGRESS.md`](PROGRESS.md). This file is the product/setup reference.
+
+## Pages
+
+| Route | What it shows |
+|---|---|
+| `/` | Chat demo. System Prompt + AI Gateway settings (left) · chat (center) · Attack Library (right). Nav-tab label is "AI Guardrails Demo". |
+| `/analytics` | Three tabs: **edge** (zone WAF + AI Security), **AI Gateway** (account gateway logs), **prompt log** (D1). |
+| `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus through the real `/api/chat` and scores what the edge did. |
+| `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
+
+`/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
 
 ## Project layout
 
-**Frontend = React + Vite + Tailwind (v4) + lucide icons**, built to `dist/` and served by the Worker as static assets (SPA). **Backend = the Worker** (`src/`, esbuild-bundled by wrangler), unchanged API.
+**Frontend** = React 18 + Vite 6 + Tailwind v4 + lucide icons, built to `dist/` and served by the Worker (SPA fallback). **Backend** = the Worker in `src/`, esbuild-bundled by wrangler.
 
 ```
-src/                       Worker (TypeScript) — API + serves dist/
-  index.ts                 fetch entry + route dispatch
-  types.ts                 Env + shared interfaces
-  models.ts                MODEL_REGISTRY (id+label+pricing), single source of truth
-  config.ts                pricing/limit constants, upload limits, demo defaults
-  cloudflare.ts            gqlFetch() + queryVerdict() + queryNeuronUsage()
-  handlers.ts              one handler per endpoint + extractReply() + handleExtract() (toMarkdown);
-                           handleChat unifies direct + AI Gateway routing
-web/                       React app (Vite root)
-  index.html               SPA entry + pre-paint theme script
+src/                    Worker (TypeScript)
+  index.ts              fetch entry + route dispatch only
+  types.ts              Env + request/response interfaces
+  models.ts             MODEL_REGISTRY (id + label + pricing) — single source of truth
+  config.ts             reply/history limits, pricing, gateway + dynamic-route constants,
+                        verdict window/retention helpers (verdictWindow, isBeyondRetention)
+  cloudflare.ts         gqlFetch, queryVerdict (anchored), queryVerdictRetention,
+                        queryNeuronUsage, queryAnalytics, queryGatewayLogs, listAiGateways
+  handlers.ts           one handler per endpoint; handleChat unifies direct (binding) +
+                        AI Gateway (REST, incl. Dynamic Routing); runGatewayRest,
+                        appendRestGatewayEvent, parseTimeWindow, extractReply/stripThink,
+                        sanitizeHistory, logPrompt, gateway registry helpers
+  redact.ts             PII redaction for the prompt log (independent regex pass)
+  *.test.ts             vitest — redaction, dynamic-route parsing, verdict window
+migrations/
+  0001_prompt_log.sql   D1 schema for the prompt log
+web/                    React app (Vite root)
+  index.html            SPA entry + pre-paint theme script
   src/
-    main.tsx               React root + router ( /, /analytics, /compliance; /gateway → / )
-    index.css              Tailwind + CSS-var design tokens (light/dark)
+    main.tsx            router: /, /analytics, /redteam, /compliance ( /gateway → / )
+    index.css           Tailwind + CSS-var design tokens (light/dark, validated palette)
     lib/
-      data.ts              *** EDIT THIS for demo content: CATEGORIES,
-                           PRESET_SYSTEM_PROMPTS, DEMO_SCRIPT, UNSAFE_TOPICS ***
-      compliance.ts        *** EDIT THIS for the compliance page: MATRIX,
-                           FRAMEWORKS (NIST/ISO/OWASP/ATLAS mappings) ***
-      api.ts               typed fetch wrappers (incl. SSE stream parsing)
-      types.ts             API response types
-      format.ts            fmtTime/fmtCost/topicLabel
-      icons.ts             category iconKey → lucide icon
-      verdict.ts           shared verdict classify/poll (Verdict chip + autopilot)
-      sampleFiles.ts        on-the-fly PDF/image sample builders (no binary assets)
-    hooks/                 useTheme, useNeurons, useChat (session + send pipeline)
-    components/            Header, ThemeToggle, NeuronChip, SystemPromptPanel,
-                           AttackLibrary (searchable), Chat, Verdict, DemoMode,
-                           FileAttach (visual prompt injection upload)
-    pages/                 FirewallPage (chat + route selector), AnalyticsPage, CompliancePage
-dist/                      Vite build output (gitignored) → wrangler assets
+      data.ts           *** EDIT THIS for demo content: CATEGORIES, PRESET_SYSTEM_PROMPTS,
+                        ZONE_RULES, DEMO_SCRIPT, UNSAFE_TOPICS, isLlmRule ***
+      compliance.ts     *** EDIT THIS for the compliance page: MATRIX, FRAMEWORKS ***
+      redteam.ts        Prisma AIRS attack corpus + scoring helpers
+      api.ts            typed fetch wrappers (incl. TimeWindow + SSE stream parsing)
+      types.ts          API response types
+      verdict.ts        classify + poller + fetchVerdictOnce + per-ray cache
+      export.ts         session export (JSON / Markdown)
+      metadata.ts       AI Gateway custom-metadata parser
+      sessionStore.ts   module-level chat store (survives tab switch, cleared on reload)
+      format.ts icons.ts
+    hooks/              useTheme, useNeurons, useChat (send pipeline), useRedTeam (3-phase runner)
+    components/         Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel,
+                        GatewaySettingsPanel, Switch, AttackLibrary, Chat, Verdict,
+                        FlowTrace, DemoMode, ExportButton
+      analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
+                        GatewayTab, PromptLogTab
+      redteam/          Scorecard
+    pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
+dist/                   Vite build output (gitignored) → wrangler assets
 ```
 
 ### Scripts / dev
@@ -57,6 +83,7 @@ npm install
 npm run build      # tsc -b web + vite build → dist/
 npm run deploy     # build, then wrangler deploy
 npm run check      # worker typecheck
+npm test           # vitest (vitest.config.ts — separate from vite.config.ts, which sets root: "web")
 
 # Local dev (two terminals): Vite HMR proxies /api → wrangler dev
 npm run dev:worker # wrangler dev  (port 8787, serves API + built dist)
@@ -65,173 +92,96 @@ npm run dev:web    # vite          (HMR; proxies /api/* to :8787)
 
 Requires **Node ≥ 22** (`nvm use 24`) for wrangler.
 
-To change what the demo shows (attack prompts, personas), edit **`web/src/lib/data.ts`** — nothing else — then `npm run build` (or run `npm run dev:web` for live reload).
+To change what the demo shows (attack prompts, personas, the WAF-rule mirror), edit **`web/src/lib/data.ts`** — then `npm run build` (or run `npm run dev:web` for live reload).
 
-## AI Gateway routing (Route selector on the Firewall page)
+## API endpoints
 
-AI Gateway is **merged into the Firewall page** — there is no separate `/gateway` page (old links redirect to `/`). Above the composer, a **Workers AI ↔ AI Gateway toggle** picks the route; when AI Gateway is selected, a **Gateway dropdown** picks *which* configured gateway to use. One endpoint, `POST /api/chat`, powers both routes:
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default |
+| `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE |
+| `GET /api/verdict?ray=&ts=` | What the edge did to one request (GraphQL). `ts` anchors the lookup window |
+| `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
+| `GET /api/analytics?hours=` | Aggregated zone security events + AI scores (edge tab) |
+| `GET /api/gateway-analytics?gatewayId=&hours=` | Aggregated AI Gateway logs (gateway tab) |
+| `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1) |
+| `DELETE /api/prompt-log` | Clears the prompt log |
+| `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log |
 
-- **Workers AI** — `env.AI.run(model, inputs)`. Streaming + multi-turn, per-reply verdict.
-- **AI Gateway** — `env.AI.run(model, inputs, { gateway: { id, skipCache, cacheTtl } })`. Adds a cache HIT/MISS badge, latency, gateway **log id** — *and still shows the verdict.*
+Everything else falls through to the static assets (SPA fallback).
 
-**Which gateway** — `GET /api/models` returns a `gateways: [{ id, label, guarded }]` list. When `CF_ANALYTICS_TOKEN` (with the **AI Gateway Read** permission) and `CF_ACCOUNT_ID` are set, this is fetched **live from the account** via `GET /accounts/{id}/ai-gateway/gateways` (`listAiGateways()` in `src/cloudflare.ts`) — every gateway in the account appears in the dropdown, with the two demo gateways floated to the top. If the token lacks the permission or the call fails, it falls back to the two wrangler-var gateways (`resolveGateways()` handles both). The chosen `gatewayId` is sent to the Worker, sanity-checked to the gateway-id charset (invalid → default gateway), and the `guarded` flag — which drives the purple **GUARDRAILS** badge and Guardrails-block handling — is set for the gateway named in `CF_AI_GATEWAY_GUARDED_ID` (the list API does not report per-gateway Guardrails state, so this can't be auto-detected).
+## AI Gateway routing (route selector on the chat page)
 
-**Why the verdict works on both routes** — this is the whole point of merging at the endpoint. The edge WAF scans the inbound request to the `cf-llm`-labeled `/api/chat` path *before* the Worker runs, so it's identical regardless of whether the Worker then routes the inference through AI Gateway. The old standalone gateway page (a different `/api/gateway/chat` path) had **no** verdict; now every gateway-routed prompt gets the `cf.llm.*` edge verdict too.
+Above the composer, a **Workers AI ↔ AI Gateway** toggle picks the route; when AI Gateway is selected a **Gateway dropdown** picks which gateway, and a **Route** field can name a Dynamic Routing route. One endpoint, `POST /api/chat`, powers both routes:
 
-- Cache status is authoritative from `env.AI.gateway(id).getLog(env.AI.aiGatewayLogId).cached` (best-effort — `null`/"cache: ?" if the log lags). Non-streaming gives the cleanest HIT/MISS badge; for streaming the Worker appends a trailing `data: {"gateway": …}` SSE event (log id + latency; cache status may be `null` mid-stream).
-- **Caching + full features tradeoff**: a cache HIT needs an *identical request body*, so streaming and prior conversation turns weaken it. For a clean HIT: clear the conversation and send the same prompt twice. A note in the UI says so when the gateway route is active.
-- Gateway name = `CF_AI_GATEWAY_ID` var (`"default"` auto-creates on first request). System prompts flow through unchanged; a different system prompt gets its own cache entry (the cache key is the full request body).
+- **Workers AI** — the plain `env.AI.run(model, inputs)` binding. No token needed.
+- **AI Gateway** — the **OpenAI-compatible REST endpoint** (`POST /accounts/{id}/ai/v1/chat/completions` with `cf-aig-gateway-id`), *always*, not the binding's `gateway` option.
+
+**Why REST and not the binding**: the binding only ever exposed 3 of the 9 documented per-request `cf-aig-*` settings. REST is the only way to reach `cache-key`, `collect-log`, `request-timeout`, `max-attempts`, `retry-delay` and `backoff`, and it's the same path Dynamic Routing always needed (a route is addressed by putting `dynamic/<name>` in the `model` field, which the binding rejects). **Consequence**: every AI Gateway request now needs the `CF_AIG_TOKEN` secret — see below. The direct Workers AI route is unaffected.
+
+**Why the verdict works on both routes** — this is the point of merging at the endpoint. The edge WAF scans the inbound request to the `cf-llm`-labeled `/api/chat` path *before* the Worker runs, so it is identical regardless of what the Worker does next. Every gateway-routed prompt still gets the `cf.llm.*` edge verdict.
+
+### Per-request gateway settings
+
+`GatewaySettingsPanel` (left column, gateway route only) exposes all nine `cf-aig-*` headers plus custom metadata: skip-cache, cache TTL, cache key, collect-log, request timeout, max attempts (≤ 5), retry delay (≤ 5000 ms), backoff (constant/linear/exponential), and up to **5** metadata entries (AI Gateway silently drops the rest, so both sides cap at 5). Numeric fields show a live error out of range and clamp on blur; the Worker clamps the same values again server-side.
+
+Cache status comes straight off the `cf-aig-cache-status` response header (no async `getLog()` lookup). For a **streaming** gateway call the Worker appends a trailing `data: {"gateway": …}` SSE event with the log id, cache status and latency after the model's stream ends.
+
+**Caching tradeoff**: a cache HIT needs an *identical request body*, so streaming and multi-turn history weaken it. For a clean HIT, clear the conversation and send the same prompt twice. A different system prompt correctly gets its own cache entry.
 
 ### Guardrails (gateway-layer moderation)
 
-Picking the **Guardrails** gateway from the dropdown routes through a gateway with **AI Gateway Guardrails** enabled — Llama-Guard moderation of prompts and responses at the gateway layer. On a block the binding throws error **2016** (prompt) / **2017** (response); the Worker maps it to `{ guardrailsBlocked, direction }` and the UI shows a purple **“Blocked by AI Gateway Guardrails”** card — and the edge WAF verdict still appears below it, so you can see both control layers act on one prompt. WAF `cf.llm.*` rules act at the zone edge *before* the Worker; Guardrails act at the gateway *inside* the model call.
+Picking the gateway named in `CF_AI_GATEWAY_GUARDED_ID` routes through a gateway with **AI Gateway Guardrails** enabled (Llama-Guard moderation of prompts and responses). A block arrives as an HTTP error carrying code **2016** (prompt) / **2017** (response); the Worker maps either to `{ guardrailsBlocked, direction }` and the UI shows a purple **"Blocked by AI Gateway Guardrails"** card — with the edge WAF verdict still below it, so both control layers are visible on one prompt. WAF `cf.llm.*` rules act at the zone edge *before* the Worker; Guardrails act at the gateway *inside* the model call.
 
-**One-time setup**: dashboard → AI → AI Gateway → create the guarded gateway → Guardrails → enable for prompts + responses and pick categories to block. The default gateway keeps Guardrails **off** so the caching demo stays unmoderated. Until the guarded gateway exists, the toggle returns error 2001 (“configure AI Gateway”).
+The REST gateway list carries **no** guardrails field, so which gateway is guarded cannot be auto-detected — it is whichever id matches `CF_AI_GATEWAY_GUARDED_ID`.
 
-## Model selection
+**One-time setup**: dashboard → AI → AI Gateway → create the guarded gateway → Guardrails → enable for prompts + responses and pick categories. Keep the default gateway's Guardrails **off** so the caching demo stays unmoderated.
 
-The chat UI has a model picker (🧠 Model). The list is served by `GET /api/models` from a server-side allowlist in [`src/index.ts`](src/index.ts) (`ALLOWED_MODELS`), so the front end is never the source of truth. `POST /api/chat` accepts an optional `"model"` field; anything not on the allowlist falls back to the default. Each reply is tagged with the model that produced it.
+### Which gateways appear
 
-Default: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Also offered: Llama 4 Scout 17B, Llama 3.1 8B, Mistral Small 3.1 24B, GPT-OSS 120B, Qwen3 30B, Gemma 4 26B, DeepSeek R1 Distill 32B. Edit `ALLOWED_MODELS` to change the menu — see the full account list with:
+`GET /api/models` returns `gateways: [{ id, label, guarded }]`. When `CF_ANALYTICS_TOKEN` (with **AI Gateway Read**) and `CF_ACCOUNT_ID` are set this is fetched **live from the account** (`listAiGateways()`), with the two demo gateways floated to the top. Without the permission it falls back to the two wrangler-var gateways. The chosen `gatewayId` is sanity-checked server-side to the gateway-id charset (invalid → default gateway).
+
+## Prompt log (D1)
+
+`handleChat` writes one row per prompt that **reached the Worker** into D1 (`cf-ai-waf-demo-log`, schema in `migrations/0001_prompt_log.sql`), via `ctx.waitUntil` so it never blocks the reply. Edge-blocked 403s never invoke the Worker, so they are *not* here — the analytics edge tab covers those.
+
+- **PII-redacted at write time** by `src/redact.ts` — an independent regex pass (Thai national ID, IBAN, card, crypto wallet, email, IPv4, phone), deliberately over-masking. Firewall for AI reports PII *categories*, not offsets, so its output can't drive precise masking.
+- **Per-turn opt-out**: the "log prompt" switch sends `excludeFromLog: true` and the write is skipped. This is app-level and unrelated to AI Gateway's own `collect-log`.
+- ⚠️ **AI Gateway logs still store the raw prompt + response payload** (account-scoped, unredacted). The UI says so — it's a deliberate talking point.
+- Rows join to the live edge verdict by ray in the UI; detections are not stored (they ingest into GraphQL seconds *after* the row is written).
+- `DB` is optional — unbinding it degrades the tab to a setup hint.
 
 ```sh
-npx wrangler ai models   # or: dashboard → AI → Workers AI → Models (task: Text Generation)
+npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for wrangler dev
 ```
 
-Model choice does not affect the edge detections — `cf.llm.*` scanning happens on the request body before the Worker calls any model.
+## Live edge verdict
 
-## Compliance mapping page (`/compliance`)
+Each turn shows an **edge verdict** card: the matched WAF rule and its action, plus the Firewall-for-AI scores for that exact request. The browser calls `GET /api/verdict?ray=<cf-ray>`, which queries GraphQL (`firewallEventsAdaptive` for rule + action, `httpRequestsAdaptive` for `firewallForAiInjectionScore` / `…PiiCategories` / `…UnsafeTopicCategories` / `…CustomTopicCategories`). A **flow trace** expands from the card showing the pipeline: prompt → AI Security scan → WAF rule evaluation (matched vs. missed, from the `ZONE_RULES` mirror) → outcome.
 
-Customer-facing page showing how these two products support six AI risk frameworks: **NIST AI RMF**, **ISO/IEC 42001**, **OWASP LLM Top 10 (2025)**, **MITRE ATLAS**, and two Thai frameworks — the **Bank of Thailand AI risk management policy (2025)** and the **NCSA AI Security Guidelines (2025)**. Layout is a coverage matrix (capability × framework) on top, then framework tabs with one detail card per control.
+This is what makes **log-only** rules visible: a logged request still returns 200, but the verdict reveals the rule fired and what it detected — the "detect first, then enforce" story.
 
-Coverage is **graded, not inflated** — every control carries one of four honest levels:
+Three behaviours worth knowing:
 
-| Level | Meaning |
-|---|---|
-| Full | Cloudflare detects and enforces it at the edge, and records it |
-| Partial | Detected and enforceable, but the policy decision stays with the customer |
-| Supporting | Supplies evidence/telemetry only; the control itself is organizational |
-| Out of scope | Not addressed by these products (kept on the page deliberately) |
+- **The lookup window is anchored to the request's own timestamp.** A live send searches `[now−15 min, now+1 min]`; a historical row (prompt log) passes its stored `ts` and the window becomes `[ts ± 5 min]`. Without the anchor anything older than a few minutes looked like it was never scanned.
+- **Retention is queried, not guessed.** The GraphQL settings node's `notOlderThan` (cached per isolate, 30-day conservative fallback) decides whether a row is past retention — reported as `tooOld`, which is different from "not ingested yet".
+- **A block is only credited to the WAF when the response proves it.** A 403 with a structured JSON body is a genuine WAF/AI-Security block. A bare 403/HTML only proves the edge refused the request — Cloudflare Access and rate limiting look identical from here. `verdictOutcome()` cross-checks matched rules against the edge's own `httpStatus`; a non-2xx with only log-only (or no) rules resolves to a **STOPPED** pill, not BLOCKED. This caught a real production incident (an Access `Bypass` policy stopping traffic that the app was crediting to the WAF).
 
-Design decisions worth preserving if you edit it:
-
-- **All ten OWASP items are listed, including the four Cloudflare does not address** (LLM04 poisoning, LLM06 excessive agency, LLM08 vector/embedding, and the partial ones). Customers know the list is ten — omitting four reads as evasive, and naming the gaps is more credible than a page of green ticks.
-- **ISO/IEC 42001 is a paid standard**, so the page cites **top-level Annex A groups only** (`A.2`–`A.10`) and describes them in Cloudflare's own words. It never reproduces ISO control text. NIST AI RMF, OWASP and MITRE ATLAS are public and are cited by their real identifiers.
-- The **Bank of Thailand** and **NCSA** documents are Thai-language; the page paraphrases their structure (BOT: Part 1/2 §n; NCSA: lifecycle phases 0–6 + §n) and reproduces no Thai text. The BOT tab carries a "confirm against the official document for a regulated engagement" note. BOT's Part 2 §3.1 maps especially cleanly — it splits the cyber control into *prompt filtering* + *response filtering*, exactly Firewall for AI + Gateway Guardrails.
-- A banner states plainly that Cloudflare supplies *technical controls* and that full compliance is an organizational program, not a product.
-- Each control card cross-links to the live demo that exercises it, so a claim can be proven in the same session.
-
-All content lives in **`web/src/lib/compliance.ts`** (`MATRIX` + `FRAMEWORKS`) — edit that one file, then rebuild. No mappings are hardcoded in the page component.
-
-## Visual prompt injection — file upload (Firewall page)
-
-Tests hidden instructions carried inside an image or PDF rather than typed directly. This is deliberately a **two-stage** flow, because Firewall for AI only scans the `prompt` text field of `/api/chat` — it never sees file bytes:
-
-1. **Extract** — `POST /api/extract` (multipart, ≤1 MB, PDF/PNG/JPEG/WebP/GIF/BMP/SVG) converts the file to text via `env.AI.toMarkdown()`. This endpoint is **not** the `cf-llm`-labeled endpoint and is never scanned — the extraction card in the UI says so explicitly.
-2. **Load into prompt → Send** — the user reviews the extracted text and, if they choose, loads it into the chat input and sends it through the normal, scanned `/api/chat` path. Only at that point does Firewall for AI score it.
-
-The two file types behave very differently, and the UI is honest about the gap instead of implying uniform coverage:
-
-- **PDF** — `toMarkdown()` extracts the document's text layer directly, regardless of how it's painted. Text hidden via `1 1 1 rg` (white-on-white) or an invisible render mode comes back byte-for-byte. Verified against the real API: a hand-built sample PDF with one visible line and one white-on-white line returns **both** in the extracted text.
-- **Image** — `toMarkdown()`'s image path is object-detection + **captioning** (via a vision model), not OCR. A genuinely invisible overlay (0% opacity, exact background color) won't surface at all. Verified against the real API: a sample image with a faint, low-contrast instruction in one corner produced a caption that *noticed* “a line of extremely faint, low-contrast text… along the very bottom edge” but did **not** transcribe its content — the model saw that something was hidden, not what it said.
-
-Both sample files (`web/src/lib/sampleFiles.ts`) are generated on the fly in the browser — a hand-written minimal PDF (raw PDF syntax, no library) and a canvas-drawn PNG — so no binary assets live in the repo and the technique stays inspectable as plain code. Extraction cards render inline in the chat transcript (`kind: "extraction"` in `hooks/useChat.ts`) but are not chat turns: no prompt was sent, nothing was scanned, and they're excluded from session export's turn pairing.
-
-## Session export (Firewall page)
-
-The **Export** button (next to Clear conversation, once the chat has at least one turn) downloads the current session as:
-
-- **JSON** — full structured data: every turn's prompt, reply, model, tokens, cost, and edge verdict (matched rules, injection score, PII/unsafe/custom-topic categories). Meant for re-analysis or archiving.
-- **Markdown** — the same data as a readable report, meant for pasting into a doc or handing to a customer.
-
-Verdicts are **re-fetched fresh at export time** (`buildSessionExport()` in `web/src/lib/export.ts`) via a single `GET /api/verdict` lookup per turn — not the multi-minute poll the live UI uses. If analytics haven't ingested yet, that turn's verdict is marked unavailable rather than blocking the export.
-
-## Multi-turn conversations & streaming (Firewall page)
-
-- **Multi-turn**: the chat sends prior turns as `history: [{role, content}…]` alongside the top-level `prompt` (kept as-is so AI Security's body scanning is unchanged). The Worker re-validates roles and caps history at 10 turns / 8,000 chars (`sanitizeHistory`). Only completed user→assistant *pairs* are sent — a blocked prompt is deliberately **not** resent in history, or every later turn would be blocked too. The UI shows “N turns of context” and a **Clear conversation** button. The Attack Library has a **Multi-turn Jailbreak (Crescendo)** category with prompts designed to be sent in sequence — a good talking point: each request is scanned individually, while context accumulates model-side.
-- **Streaming**: the **stream replies** toggle (default on) makes `POST /api/chat` pass through the model's SSE stream (`stream: true` → `text/event-stream`); the UI renders tokens live with a cursor. Blocked requests are unaffected — the WAF acts before the Worker, so the response is a 403 HTML/JSON body, detected by content-type and routed to the normal blocked card. Token usage comes from the stream's final `usage` event when the model emits one, otherwise it's estimated (`~`); cost is computed client-side from the per-model prices included in `GET /api/models`.
-- The gateway page intentionally stays single-turn & non-streaming — history would make every request unique and defeat the cache demo.
-
-## Demo autopilot (▶ Run demo)
-
-One click in the Firewall page header runs a scripted attack tour (`DEMO_SCRIPT` in `web/src/lib/data.ts`): baseline → injection → PII → unsafe topic (block) → unsafe topic (log-only) → custom topic. Each step is sent through the real chat pipeline; the autopilot clears the conversation first, waits for the **edge verdict** per step (blocked 403s count immediately), compares the outcome against the step's `expect` (block / log / allow), and ends with a scorecard (“N/N verified steps behaved exactly as configured”). Stop button aborts between steps. On localhost there are no edge verdicts, so steps show “verdict pending” — run it on the production hostname for live scoring.
-
-## Analytics page (`/analytics`)
-
-Zone security dashboard fed by `GET /api/analytics?hours=1|24|168`: the Worker pulls the latest raw rows from `firewallEventsAdaptive` (rule, action) and `httpRequestsAdaptive` filtered to `/api/chat` (AI scores, PII), aggregates server-side (`queryAnalytics` in `src/cloudflare.ts`), and returns one payload: action totals, top fired rules, an hourly/daily stacked series (block/log/other), an injection-score histogram, and a PII-request count. Hand-rolled SVG/flex bars (no chart library), light+dark, auto-refresh every 60s with a fetch timestamp, range picker 1h/24h/7d. Needs the same `CF_ANALYTICS_TOKEN` secret as the verdict feature; localhost shows real zone data too (the query is zone-wide, not per-request).
-
-### System prompt (left panel)
-
-The left sidebar shows the **active system prompt** (name + preview), a dropdown of predefined personas, and a collapsible editor for a fully custom one:
-
-| Preset | Purpose |
-|---|---|
-| Default — Cloudflare demo assistant | server's real default (from `GET /api/models`'s `defaultSystemPrompt`) |
-| Customer support agent | empathetic, on-topic SaaS support persona |
-| Cloudflare product expert | precise, product-name-citing answers |
-| Strict / locked-down assistant | refuses everything except one topic — good for showing injection attempts failing against a tightly scoped prompt |
-| Pirate persona (fun demo) | lighthearted persona swap, obviously changes tone |
-| Custom… | opens the textarea; auto-selected the moment you edit away from any preset's exact text |
-
-Picking a preset immediately updates the textarea and the active-prompt preview; editing the textarea directly updates the preview live and flips the dropdown to "Custom…" once the text no longer matches a preset verbatim. "Reset to default" restores preset #1. `PRESET_SYSTEM_PROMPTS` in `public/index.html` is the place to add/edit personas — only the first entry's text comes from the server (`defaultSystemPrompt`), the rest are client-side.
-
-`POST /api/chat` accepts an optional `"systemPrompt"`; empty/whitespace-only falls back to the default, anything longer than `maxSystemPromptLen` (2000 chars) is truncated server-side.
-
-Useful for demoing prompt-injection resilience against a *stricter* system prompt, or for showing the detections are unaffected by system-prompt changes (they run on the raw request body, before any of this).
-
-### Per-reply metadata
-
-Each assistant reply is tagged with `via <model> · ray <cf-ray> · <n> tok (in / out) · ~$<cost>`. `POST /api/chat` returns:
-
-```jsonc
-{
-  "reply": "…", "model": "@cf/…",
-  "ray": "a1adfe7e4d618961-BKK",              // Cloudflare ray id — search it in Security → Events
-  "usage": { "prompt_tokens": 68, "completion_tokens": 24, "total_tokens": 92, "estimated": false },
-  "cost": 0.000074                             // USD estimate = tokens × per-model unit price
-}
-```
-
-- **ray id** ties a chat turn to its edge event, so you can look the exact request up in Security → Events / Analytics during the demo.
-- **tokens** come from the model's own `usage`; if a model omits it, the Worker estimates (~4 chars/token) and the count is prefixed `~`.
-- **cost** is estimated from Workers AI [unit pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/) (`PRICING` map in `src/index.ts`), so it is marked `~`. Billing is in Neurons at $0.011 / 1,000.
-- Note: gpt-oss models return OpenAI chat-completion shape (`choices[0].message.content`); the Worker's `extractReply()` handles that, the standard `{ response }`, and reasoning models (Gemma 4, DeepSeek R1) that put text in `message.reasoning` with `content: null`. `<think>…</think>` chain-of-thought is stripped so only the final answer shows; `max_tokens` is 2048 (`MAX_REPLY_TOKENS`) so reasoning models don't truncate mid-think.
-
-## Live edge verdict (per-prompt log)
-
-Each turn also shows a `🔎 edge verdict` line: **which WAF rule matched, its action (block / log / challenge / allow), and the Firewall-for-AI scores** for that exact request. The browser polls `GET /api/verdict?ray=<cf-ray>`, which the Worker answers by querying the GraphQL Analytics API (`firewallEventsAdaptive` for the rule + action, `httpRequestsAdaptive` for `firewallForAiInjectionScore` / `firewallForAiPiiCategories` / `firewallForAiUnsafeTopicCategories`).
-
-This is the piece that makes **log-only** rules visible: a logged request still returns 200 to the user, but the verdict line reveals the rule fired and what it detected — the "detect first, then enforce" story. Blocks already show instantly via the 403 card; the verdict enriches them with the rule name and score.
+**Timing**: GraphQL ingests ~1–2 min behind. The live poller waits 60 s, then checks every 5 s up to ~190 s. Historical lookups are **one-shot** (`fetchVerdictOnce`) with a module-level per-ray cache, so re-expanding a row never re-fetches. `firewallEventsAdaptive` and `httpRequestsAdaptive` ingest independently and in no fixed order; the poller waits for both when a rule is expected rather than silently dropping scores.
 
 ### Enable it (one secret)
 
-`CF_ZONE_ID` is already set in `wrangler.jsonc`. Add a scoped API token as a secret:
+`CF_ZONE_ID` / `CF_ACCOUNT_ID` are already set in `wrangler.jsonc`. Add the analytics token:
 
-1. Create a token at <https://dash.cloudflare.com/profile/api-tokens> → **Zone · Analytics · Read** on `nttlab.org` (Account Analytics Read also works).
-2. ```sh
-   npx wrangler secret put CF_ANALYTICS_TOKEN   # paste the token
-   npx wrangler deploy
-   ```
+```sh
+npx wrangler secret put CF_ANALYTICS_TOKEN
+```
 
-Without the token, `/api/verdict` returns `{ "configured": false }` and the UI shows a "live edge log disabled" hint — everything else keeps working.
+Without it `/api/verdict` returns `{ "configured": false }` and the UI shows a hint — everything else keeps working.
 
-### Notes
+> **`CF_ANALYTICS_TOKEN` scopes** — one token backs four features: **Zone Analytics: Read** (`/api/verdict`, `/api/analytics`), **Account Analytics: Read** (`/api/neurons`), and **AI Gateway Read** (the gateway dropdown *and* the analytics gateway tab). A missing scope degrades only its own feature.
 
-- **ray id is always shown** — on the blocked card immediately (no polling needed), and again as the first field of the verdict line.
-- **PII and unsafe-topic categories always show**, even when empty (`PII: none`), once the request is scored — no more silent omission.
-- **Ingestion order quirk**: for blocked/logged requests, the matched-rule row (`firewallEventsAdaptive`) can land ~5s *before* the row carrying the AI scores (`httpRequestsAdaptive`). The poller specifically waits for the AI-score row before rendering, so scores don't get silently dropped; if it never arrives within ~100s it falls back to showing the rule with an explicit "AI scores: pending" note instead of hiding them.
-- **Near-real-time, not instant.** GraphQL analytics ingest ~15–90s behind; the UI polls every 5s for up to ~100s, then says "no edge event yet".
-- Until the zone is onboarded, the verdict reads **`action: allowed — no matching rule · AI scan: not scored (endpoint not labeled cf-llm — AI Security not scanning)`**. This is expected: `securityAction` comes back as the raw enum `unknown` (no security layer acted), `firewallForAiInjectionScore` is `100` (= not scored), and `webAssetsLabelsManaged` is empty (endpoint not registered/labeled). The Worker maps these to the readable line via `scored`/`cfLlmLabeled` flags in `queryVerdict()`; the UI's `renderVerdict()` translates the raw `unknown` action into "allowed — no matching rule".
-- Once onboarded, `securityAction` becomes `block`/`log`/`managed_challenge`, `firewallEventsAdaptive` returns the matched rule, and `injection_score` becomes a real 1–99.
-- `/api/verdict` only accepts a ray id and only returns rows for this zone's recent traffic; the analytics token stays server-side (never sent to the browser).
-
-### Reading the verdict line
-
-Every field that's an identifier/score/category is rendered in **monospace** so it's easy to eyeball and copy: ray id, rule name, `injection_score`, PII category names, unsafe-topic codes, and custom-topic labels. Unsafe-topic codes show their meaning inline, e.g. `S7 (Privacy)`, from the full S1–S14 taxonomy baked into the UI (`UNSAFE_TOPICS` in `public/index.html`) — see the [reference table](#unsafe-topic-taxonomy-s1s14) below. Custom topics (if configured on your ruleset) show as `label (score N)` — lower score = more relevant.
-
-`firewallEventsAdaptive` (the matched rule) and `httpRequestsAdaptive` (the AI scores) ingest **independently and in no fixed order** — either can lag the other by anywhere from a few seconds up to the ~130s poll budget. The UI waits for both when a rule is expected; if the poll budget runs out before the rule row appears, it says `rule: not yet visible (still ingesting)` rather than silently omitting it — check Security → Events directly if that happens.
-
-Each prompt/response also gets a small **timestamp** (`HH:MM:SS`, local time) under its bubble/card.
+> **`CF_AIG_TOKEN` is separate and required for the whole AI Gateway route.** It needs **AI Gateway - Read**, **AI Gateway - Edit** and **Workers AI - Read** on a normal API token — *not* the gateway-scoped "Run" token from Authenticated Gateway, which this REST endpoint rejects with a bare `{"code":10000,"message":"Authentication error"}`. Without it, any gateway request returns 501 naming the missing secret; the direct route is unaffected. Kept apart from the read-only analytics token on purpose.
 
 ### Unsafe-topic taxonomy (S1–S14)
 
@@ -245,72 +195,159 @@ Each prompt/response also gets a small **timestamp** (`HH:MM:SS`, local time) un
 | S6 | Specialized advice | S13 | Elections |
 | S7 | Privacy | S14 | Code interpreter abuse |
 
-Source: [AI Security for Apps — unsafe topics](https://developers.cloudflare.com/waf/detections/ai-security-for-apps/unsafe-topics/).
+Source: [AI Security for Apps — unsafe topics](https://developers.cloudflare.com/waf/detections/ai-security-for-apps/unsafe-topics/). The table is mirrored in `UNSAFE_TOPICS` (`web/src/lib/data.ts`).
 
 ### Raw block response viewer
 
-Every blocked-request card has a **▸ View raw response** toggle showing exactly what the browser received — pretty-printed JSON if the WAF rule returns a custom JSON body, or the raw HTML otherwise.
+Every blocked card has a **▸ View raw response** toggle showing exactly what the browser received — pretty-printed JSON if the rule returns a custom JSON body, raw HTML otherwise.
 
-⚠️ **Current live state**: the deployed rules return Cloudflare's **default HTML "Attention Required" block page**, not a custom JSON body. The chat UI's "reason" text on the blocked card is therefore a generic fallback, not something read from the response — the real detail (rule, action, scores, categories) comes from the **edge verdict line below it**, which is accurate regardless of the block page format. To get a structured JSON block body instead, edit each WAF rule's response: set "With response type" → **Custom JSON** (see the rule table above) and the raw-response viewer will pretty-print it instead of showing HTML.
+⚠️ **Current live state**: the deployed rules return Cloudflare's **default HTML block page**, not Custom JSON, so the card's reason text is a generic fallback. The accurate detail comes from the edge verdict below it. Set each block rule's response type to **Custom JSON** to fix.
 
-## Workers AI Neuron monitor
+## Analytics page (`/analytics`)
 
-The header shows a live **⚡ Neurons** chip: total Neurons consumed by the account today (resets 00:00 UTC) against the free daily allocation, from `GET /api/neurons` (queries the account-level `aiInferenceAdaptiveGroups` GraphQL dataset). Refreshes on load, after every chat turn, and every 60s.
+**Edge tab** — `GET /api/analytics?hours=1|24|168`. The Worker pulls the latest 500 raw rows per dataset (`firewallEventsAdaptive`, and `httpRequestsAdaptive` filtered to `/api/chat`) plus the **immediately preceding window** via aliased fields, aggregates server-side, and returns one payload: action totals, top fired rules, a time series, an injection-score histogram, PII/unsafe/custom-topic breakdowns, and scanned-vs-labeled request counts.
 
-- **Free allocation**: 10,000 Neurons/day (from [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/), 2026-07). Beyond that: **$0.011 / 1,000 Neurons** on Workers Paid, or requests fail on Workers Free.
-- Chip turns **amber** at ≥80% of the daily allocation, **red** at ≥100%.
-- Needs `CF_ACCOUNT_ID` (already set in `wrangler.jsonc`) **and** the `CF_ANALYTICS_TOKEN` secret to also carry **"Account Analytics: Read"** (separate from the "Zone Analytics: Read" scope `/api/verdict` needs — add both scopes to the same token). Without it, `/api/neurons` returns `{"configured":true,"error":"not authorized for that account"}` and the chip shows "Neuron monitor error"; without `CF_ACCOUNT_ID` it shows "not configured".
+Two honesty rules are enforced server-side and must not be "simplified" away:
 
-> **`CF_ANALYTICS_TOKEN` scopes recap** — this one token now backs three features: **Zone Analytics: Read** (`/api/verdict`, `/api/analytics`), **Account Analytics: Read** (`/api/neurons`), and **AI Gateway Read** (the account-wide gateway dropdown via `/api/models`). Any scope it's missing degrades only its own feature — the gateway list falls back to the two wrangler-var gateways, so the page still works.
+- A dataset returning exactly the 500-row cap is **truncated**, so the total is a floor — the tile renders `500+` with a banner, never a flat 500.
+- The previous-window comparison is **omitted entirely** when that window was itself truncated, and the client then shows no delta and no rate. A delta between two capped windows reads precise while meaning nothing.
+
+**AI Security rules are shown separately from unrelated zone rules.** On real traffic `(P) AI Red Team`, `Geography-based rule` and `cw-lab-kali OWASP ZAP` outrank the `cf.llm.*` rules by event count; listing them together reads as though AI Security fired them. `isLlmRule()` matches the `ZONE_RULES` mirror by name with a `\bLLM\b` fallback, and the tab renders two labelled groups. The account-level rule "Monitor Likely Attacks (Score GE 20 AND LE 50)" is a **red herring** — it fires on a non-LLM attack score despite the name, and now lands in the "not AI Security" group.
+
+**Gateway tab** — `GET /api/gateway-analytics`. AI Gateway has no GraphQL dataset, so this pages the logs REST API (50/page, up to 500 rows) and sums Worker-side: requests, cache hits, cost, tokens, avg/p50/p95 latency, status codes, per-model rows, hit/miss/error series. These logs are **account-scoped** — they include any other app using the same gateway, which the UI states.
+
+**Prompt log tab** — sortable, paginated table (10/25/50/100 rows, default 25) over D1, with a client-side text filter and a multi-select outcome filter. It has its **own** time range (1h/24h/7d/all/custom picker, default 1h) since it's reviewed differently from the edge tabs. Route/outcome/time filters are server-side; sorting and text search are client-side over the fetched page.
+
+**Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the prompt log with the window matched and a context banner. For a *blocking* rule the banner says outright that those prompts never reached the Worker and cannot appear in the log.
+
+All three tabs auto-refresh every 60 s. The chart (`EventSeries`) measures its own box with a `ResizeObserver` so 1 SVG unit = 1 CSS px and text doesn't scale with container width; it also offers a **"Show data" table view** and full keyboard parity (`←`/`→`/Home/End drive the crosshair with an `aria-live` announcement).
+
+## Red Team page (`/redteam`)
+
+Replays a curated **36 of the 116** enumerated attacks from a Prisma AIRS scan (target `cw-ai-red-team`, 2026-07-30, Thai-language) through the real `/api/chat`, and scores what the Cloudflare edge did.
+
+- **The headline metric is deliberately not the scan's ASR.** Prisma's ASR means *the model complied*; there is no LLM judge here, so the app only claims **whether the edge stopped the request** ("reached the model"). The scan's own per-prompt ASR sits in a separate, attributed column.
+- **Scoring contract** (pinned by tests): `log` counts as *reached the model* — a detection is not a defense; `block`/`challenge` do not; `denied`/`guardrails`/`pending`/`error` are shown but **excluded from the denominator**, so the percentage never credits the WAF for an Access refusal nor punishes it for ingestion lag.
+- **Runner is 3-phase**, not one poll per attack (which would cost ~36 min): send all prompts → wait once ~90 s for ingestion → batch-resolve every ray through `fetchVerdictOnce` under a concurrency cap. ≈4 min for 36 attacks. It calls the API directly, so a run never enters the chat transcript, and leaves `excludeFromLog` false so rows land in D1 as the evidence trail.
+- Route selector (Workers AI ↔ any account gateway), locked mid-run so a batch never mixes routes.
+- Corpus caveat, stated in the UI: it is a curated subset, and several prompts are the report's truncated preview text.
+
+Local dev has no `cf-ray`, so verdicts never resolve there — only the runner mechanics are exercised. Scoring needs the production hostname.
+
+## Compliance page (`/compliance`)
+
+Maps the two products to six AI risk frameworks: **NIST AI RMF**, **ISO/IEC 42001**, **OWASP LLM Top 10 (2025)**, **MITRE ATLAS**, and two Thai ones — the **Bank of Thailand AI risk management policy (2025)** and the **NCSA AI Security Guidelines (2025)**. Layout: coverage matrix (capability × framework) on top, then framework tabs with one detail card per control.
+
+Coverage is **graded, not inflated**:
+
+| Level | Meaning |
+|---|---|
+| Full | Cloudflare detects and enforces it at the edge, and records it |
+| Partial | Detected and enforceable, but the policy decision stays with the customer |
+| Supporting | Supplies evidence/telemetry only; the control itself is organizational |
+| Out of scope | Not addressed by these products (kept on the page deliberately) |
+
+Design decisions worth preserving if you edit it:
+
+- **All ten OWASP items are listed, including the four Cloudflare does not address** (LLM04 poisoning, LLM06 excessive agency, LLM08 vector/embedding, plus the partials). Naming the gaps is more credible than a page of green ticks.
+- **ISO/IEC 42001 is a paid standard**, so the page cites **top-level Annex A groups only** (`A.2`–`A.10`) in Cloudflare's own words and never reproduces ISO text. NIST, OWASP and ATLAS are public and cited by real identifiers.
+- The **BOT** and **NCSA** documents are Thai-language; the page paraphrases their structure (BOT: Part 1/2 §n; NCSA: lifecycle phases 0–6 + §n) and reproduces no Thai text. The BOT tab carries a "confirm against the official document for a regulated engagement" note. BOT Part 2 §3.1 maps especially cleanly — it splits the cyber control into *prompt filtering* + *response filtering*, exactly Firewall for AI + Gateway Guardrails.
+- A banner states that Cloudflare supplies *technical controls* and that full compliance is an organizational program.
+- Control cards cross-link to the live demo that exercises them (OWASP LLM01 and MITRE AML.T0051 link to `/redteam`).
+- ⚠️ Open item: a GRC reviewer should sanity-check the subcategory titles and section descriptions before regulated-customer use.
+
+All content lives in **`web/src/lib/compliance.ts`** (`MATRIX` + `FRAMEWORKS`) — nothing is hardcoded in the page component.
+
+## Chat features
+
+**Model selection** — the picker is served by `GET /api/models` from the server-side allowlist in [`src/models.ts`](src/models.ts) (`MODEL_REGISTRY`), so the front end is never the source of truth. `POST /api/chat` accepts an optional `model`; anything off the allowlist falls back to the default. Currently enabled: **Llama 3.2 3B** (default), Gemma 4 26B, Mistral 7B, Qwen3 30B — with GPT-OSS 20B, DeepSeek R1 Distill 32B and Llama Guard 3 8B commented out in the registry, ready to re-enable. Model choice does not affect the edge detections; `cf.llm.*` scanning happens on the request body before the Worker calls any model.
+
+```sh
+npx wrangler ai models   # or: dashboard → AI → Workers AI → Models (task: Text Generation)
+```
+
+**System prompt (left panel)** — the active prompt, a dropdown of personas from `PRESET_SYSTEM_PROMPTS` (`web/src/lib/data.ts`), and a collapsible custom editor. Editing away from a preset's exact text flips the dropdown to "Custom…". `POST /api/chat` truncates anything past `maxSystemPromptLen` (2000) server-side and falls back to the default when empty. Useful for demoing injection resilience against a stricter prompt — and for showing the detections are unaffected by it, since they run on the raw body first.
+
+**Multi-turn** — prior turns ride in `history: [{role, content}…]` while the top-level `prompt` stays the latest user message, so AI Security's body scan is unchanged. The Worker re-validates roles and caps at 10 turns / 8,000 chars (`sanitizeHistory`). Only completed user→assistant *pairs* are sent — a blocked prompt is deliberately never resent, or every later turn would block too. The Attack Library's **Multi-turn Jailbreak (Crescendo)** category is built for this: each request is scanned individually while context accumulates model-side.
+
+**Streaming** — the stream toggle (default on) makes the Worker pass through the model's SSE (`text/event-stream`); the client parses `data:` lines (`response` ?? `choices[0].delta.content` ?? `.reasoning`) and renders tokens live. On the gateway/dynamic-route path it also reads the real model id off each chunk, since the *route* — not the dropdown — picks the model there. Blocked requests come back as 403 HTML/JSON regardless; content-type decides the parse path. Usage comes from the stream's final `usage` event when present, else it's estimated (`~`), with cost computed client-side from the prices in `GET /api/models`.
+
+**Per-reply metadata** — `via <model> · ray <cf-ray> · <n> tok (in / out) · ~$<cost>`:
+
+```jsonc
+{
+  "reply": "…", "model": "@cf/…",
+  "ray": "a1adfe7e4d618961-BKK",   // search it in Security → Events
+  "usage": { "prompt_tokens": 68, "completion_tokens": 24, "total_tokens": 92, "estimated": false },
+  "cost": 0.000074,               // USD estimate = tokens × per-model unit price
+  "gateway": { "gatewayId": "…", "cached": false, "latencyMs": 812, "logId": "…", "guarded": false }
+}
+```
+
+Token counts come from the model's own `usage`; if a model omits it the Worker estimates (~4 chars/token) and the UI prefixes `~`. Cost is estimated from Workers AI [unit pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/) (`MODEL_REGISTRY`). `extractReply()` handles the standard `{ response }`, the OpenAI `choices[0].message.content` shape, and reasoning models that put text in `message.reasoning` with `content: null`; `<think>…</think>` is stripped and `max_tokens` is 2048 so reasoning models don't truncate mid-think.
+
+**Demo autopilot (▶ Run demo)** — runs `DEMO_SCRIPT` (`web/src/lib/data.ts`): baseline → injection → PII → unsafe topic (block) → unsafe topic (log-only) → custom topic. Each step goes through the real pipeline; the autopilot clears the conversation first, waits for the edge verdict per step, compares against the step's `expect`, and ends with a scorecard. On localhost there are no verdicts, so steps show "verdict pending".
+
+**Session export** — the Export button (next to Clear conversation) downloads the session as **JSON** (full structured data incl. verdicts) or **Markdown** (readable report). Verdicts are re-fetched fresh at export time via a single lookup per turn, not the multi-minute poll. ⚠️ Known bug: `export.ts` still uses the *unanchored* window, so a session left open >15 min marks every turn "not yet ingested" — see PROGRESS.md.
+
+**Workers AI Neuron monitor** — the header chip shows Neurons consumed by the account today (resets 00:00 UTC) against the free daily allocation, from `GET /api/neurons`. Amber at ≥80%, red at ≥100%. Free allocation 10,000 Neurons/day; beyond that $0.011 / 1,000 on Workers Paid.
+
+## Zone setup (one time)
+
+On the Enterprise zone (with the AI Security add-on) that hosts the demo hostname:
+
+1. **Enable the feature** — Security → Settings → **AI Security for Apps**.
+2. **Label the endpoint** — Security → Web Assets: ensure `POST <host>/api/chat` exists and carries the managed label **`cf-llm`**. Detection only runs on labeled endpoints with `application/json` bodies.
+3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}`.
+
+   The deployed zone currently runs these 10 rules. **`ZONE_RULES` in `web/src/lib/data.ts` is a hand-maintained mirror of this list, matched by name** — rename or add a rule in the dashboard and update that file, or the flow trace and the AI-Security rule split will drift.
+
+   | Rule | Action | Checks |
+   |---|---|---|
+   | Block LLM Injection | block | `injection_score ≤ 15` |
+   | Monitor LLM Injection | log | `injection_score ≤ 50` |
+   | Block LLM PII Categories | block | credit card / crypto / email / phone / IBAN |
+   | Monitor LLM PII Categories | log | + IP address / … |
+   | Block LLM Unsafe Categories | block | unsafe topics S1–S5, S8–S12 |
+   | Monitor LLM Unsafe Categories | log | unsafe topics S1–S14 |
+   | Monitor LLM Custom Topic - Sensitive Data | log | custom topic score ≤ 50 |
+   | Monitor LLM Custom Topic - Financial Advice | log | custom topic score ≤ 50 |
+   | Monitor LLM Custom Topics - Politics and Election | **block** | custom topic score ≤ 40 |
+   | Monitor LLM Custom Topics - Telco Use Cases | log | custom topic score ≤ 50 |
+
+   `injection_score` is 1–99 and **low = likely attack**; `100` means *not scored*. Custom-topic scores invert the same way — lower = stronger match.
+
+4. **AI Gateway** — create the two demo gateways; set `CF_AI_GATEWAY_ID` (Guardrails **off**) and `CF_AI_GATEWAY_GUARDED_ID` (Guardrails **on**) in `wrangler.jsonc`.
+5. **Secrets** — `wrangler secret put CF_ANALYTICS_TOKEN` and `wrangler secret put CF_AIG_TOKEN` (scopes above).
+6. **D1** — `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote`.
+7. **Cloudflare Access** — if exempting an endpoint for an automated caller (e.g. a red-team scanner), scope the Access application to that **exact path** and use a **Service Auth** policy with a service token — *not* `Bypass`. `Bypass` disables Access logging and is documented as unreliable behind a Worker (which this app always is). A Service-Auth-only app still needs a companion `Allow` policy for human IdP logins on the same path.
 
 ## Deploy
 
 ```sh
 npm install
-npx wrangler deploy   # requires Node >= 22 (nvm use 24)
+npm run deploy    # build + wrangler deploy; requires Node >= 22 (nvm use 24)
 ```
 
-`wrangler.jsonc` already pins the custom domain, so deploy creates/updates the proxied DNS record and cert for `ai-demo.nttlab.org` automatically:
+`wrangler.jsonc` pins the custom domain, so deploy creates/updates the proxied DNS record and cert for `cf-ai-waf-demo.nttlab.org`.
 
-```jsonc
-"workers_dev": false,
-"routes": [{ "pattern": "ai-demo.nttlab.org", "custom_domain": true }]
-```
+> ⚠️ AI Security for Apps is a *zone* feature — detections only fire on the proxied zone hostname on an **Enterprise zone with the AI Security add-on**, never on `workers.dev`.
 
-> ⚠️ AI Security for Apps is a *zone* feature — detections only fire on this proxied `nttlab.org` hostname on an **Enterprise zone with the AI Security add-on**, never on `workers.dev`.
+## Attack Library — framework mapping
 
-## One-time zone setup (dashboard)
+The right panel groups demo prompts into the categories below (`CATEGORIES` in `web/src/lib/data.ts`), each carrying its **OWASP LLM Top 10 (2025)** and **MITRE ATLAS** reference where one applies. The Cloudflare column is the field that catches it — useful when narrating the demo:
 
-On the Enterprise zone that hosts the demo hostname:
-
-1. **Enable the feature** — Security → Settings → turn on **AI Security for Apps**.
-2. **Label the endpoint** — Security → Web Assets (Endpoint Management):
-   - Ensure `POST ai-demo.nttlab.org/api/chat` exists (add manually or wait for API discovery after sending a few requests).
-   - Apply the managed label **`cf-llm`** to it. Detection only runs on labeled endpoints with `application/json` bodies.
-3. **Create 3 custom rules** — Security → WAF → Custom rules. For each: action **Block**, "With response type" = **Custom JSON**, status 403, body as below.
-
-   | Rule | Expression | Custom JSON response body |
-   |---|---|---|
-   | AI demo — block PII | `(http.request.uri.path eq "/api/chat" and cf.llm.prompt.pii_detected)` | `{"blocked": true, "detection": "pii", "reason": "Personally identifiable information found in the prompt"}` |
-   | AI demo — block injection | `(http.request.uri.path eq "/api/chat" and cf.llm.prompt.detected and cf.llm.prompt.injection_score lt 20)` | `{"blocked": true, "detection": "injection", "reason": "Prompt injection likelihood score below threshold"}` |
-   | AI demo — block unsafe topics | `(http.request.uri.path eq "/api/chat" and cf.llm.prompt.unsafe_topic_detected)` | `{"blocked": true, "detection": "unsafe_topic", "reason": "Prompt matches an unsafe topic category"}` |
-
-   Notes:
-   - `injection_score` is 1–99 and **low = likely attack**; `100` = not scored. Tune the `lt 20` threshold live during the demo if you like.
-   - Custom JSON responses are static — the chat UI shows the reason from this JSON; detected *categories* (e.g. `CREDIT_CARD`, `S2`) are visible in Security → Events.
-   - The UI understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "..."}` and renders a red 🛡️ card.
-
-## Attack Library (right panel) — framework mapping
-
-The UI groups the demo prompts by threat category, each tagged with its **OWASP LLM Top 10 (2025)** and **MITRE ATLAS** references and the Cloudflare field that catches it:
-
-| Category | OWASP LLM Top 10 (2025) | MITRE ATLAS | Cloudflare field |
+| Category (as shown in the UI) | OWASP LLM Top 10 (2025) | MITRE ATLAS | Cloudflare field |
 |---|---|---|---|
 | Baseline — safe traffic | — | — | (none flagged) |
 | Prompt Injection / Jailbreak | LLM01:2025 Prompt Injection | AML.T0051 LLM Prompt Injection | `cf.llm.prompt.injection_score` |
+| Multi-turn Jailbreak (Crescendo) | LLM01:2025 Prompt Injection | AML.T0054 LLM Jailbreak | `cf.llm.prompt.injection_score` (per request; context builds model-side) |
 | System Prompt Leakage | LLM07:2025 System Prompt Leakage | AML.T0056 LLM Meta Prompt Extraction | `cf.llm.prompt.injection_score` |
-| Sensitive Info Disclosure (PII) | LLM02:2025 Sensitive Information Disclosure | AML.T0057 LLM Data Leakage | `cf.llm.prompt.pii_detected` → `pii_categories` |
-| Unsafe / Harmful Topics | LLM01:2025 (Jailbreak variant) | AML.T0054 LLM Jailbreak | `cf.llm.prompt.unsafe_topic_categories` (S1–S13) |
+| PII — Sensitive Info Disclosure | LLM02:2025 Sensitive Information Disclosure | AML.T0057 LLM Data Leakage | `cf.llm.prompt.pii_detected` → `pii_categories` |
+| Unsafe / Harmful Topics · Other Unsafe / Harmful Topics | LLM01:2025 (content safety) | AML.T0054 LLM Jailbreak | `cf.llm.prompt.unsafe_topic_categories` (S1–S14) |
+| Custom Topic — Sensitive Data / Financial Advice / Politics & Election / Telco Use Cases | — | — | custom-topic score (lower = stronger match) |
+
+The demo prompts are mostly Thai-language and telco-flavoured (SIM swap, OTP bypass, subscriber location, customer records). Custom-topic prompts are labelled **Direct** or **Indirect** (asks *about* the subject rather than for it) — send both and compare the custom-topic scores in the verdict to pick a threshold live.
 
 References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) · [MITRE ATLAS AML.T0054](https://atlas.mitre.org/techniques/AML.T0054) · [ATLAS matrix](https://atlas.mitre.org/matrices/ATLAS)
 
@@ -318,29 +355,31 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 | Step | Category (right panel) | Expected |
 |---|---|---|
-| 1 | ✅ Baseline → "Legit product question" | LLM answers. Security Analytics shows request with `cf-llm` label, prompt detected, no flags. |
-| 2 | 🪪 PII → "Credit card + email" | 403 → red card "PII detected". Security Events shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. |
-| 3 | 💉 Prompt Injection → "Ignore instructions" | 403 → red card "Prompt injection". Events shows low `injection_score`. |
-| 4 | 🕵️ System Prompt Leakage → "Dump the system prompt" | 403 → red card. Ties to OWASP LLM07 / ATLAS AML.T0056. |
-| 5 | ☠️ Unsafe Topics → "Non-violent crime (S2)" | 403 → red card "Unsafe topic". Events shows S-category (S2 = non-violent crimes). |
-| 6 | Flip a rule's action Block → Log, resend | Prompt now reaches the LLM but is still flagged in Analytics → "detect first, then enforce" story. |
+| 1 | Baseline → "Legit product question" | LLM answers. Verdict shows `cf-llm` labeled, scored, nothing flagged. |
+| 2 | PII → "Credit card + email" | 403 → red card. Verdict shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. |
+| 3 | Prompt Injection → "Ignore instructions" | 403 → red card, low `injection_score`. |
+| 4 | System Prompt Leakage → "Dump the system prompt" | 403 → red card. OWASP LLM07 / ATLAS AML.T0056. |
+| 5 | Unsafe Topics → "Non-violent crime (S2)" | 403 → red card, S-category shown. |
+| 6 | Flip a rule Block → Log, resend | Prompt reaches the LLM but the verdict still shows the detection — "detect first, then enforce". |
+| 7 | Switch route to AI Gateway (guarded) | Same edge verdict, plus a purple Guardrails card when the gateway blocks. |
+| 8 | `/analytics` → `/redteam` | Aggregate view, then replay the scan corpus and score the edge. |
 
-Full unsafe-topic taxonomy (S1–S13) and custom topics: <https://developers.cloudflare.com/waf/detections/ai-security-for-apps/unsafe-topics/>
+## Tests
 
-## Verify after setup
+`npm test` — **64 tests across 6 files**. Each exists because a real bug shipped, and each was mutation-verified.
 
-```sh
-# Clean → 200 + reply
-curl -s https://ai-demo.nttlab.org/api/chat -H 'content-type: application/json' \
-  -d '{"prompt":"hello"}'
-
-# PII → 403 + block JSON
-curl -s https://ai-demo.nttlab.org/api/chat -H 'content-type: application/json' \
-  -d '{"prompt":"my credit card is 4111 1111 1111 1111"}'
-```
+| File | Covers |
+|---|---|
+| `src/redact.test.ts` (18) | PII redaction against the real Attack Library prompts; asserts the identifier is *absent* rather than matching an exact mask (the shipped bug leaked part of an IBAN); no false positives; idempotency |
+| `src/config.test.ts` (8) | `normalizeDynamicRoute` — accepts both `demo-routes` and `dynamic/demo-routes`, returns `null` (never a silently wrong value) for traversal or junk |
+| `src/verdict-window.test.ts` (9) | `verdictWindow()` anchored vs. live bracketing (incl. the regression itself) and `isBeyondRetention()` — an unknown timestamp must never read as expired |
+| `web/src/lib/verdict.test.ts` (8) | Built from a real incident's payload: a 403 with only log-only rules classifies as `denied`, not `log` |
+| `web/src/lib/redteam.test.ts` (15) | The red-team scoring contract, corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns |
+| `web/src/lib/metadata.test.ts` (6) | The 5-entry metadata cap and malformed-pair handling |
 
 ## Requirements recap
 
 - Enterprise plan + **AI Security for Apps add-on** on the zone (LLM endpoint *discovery* works on all plans; the `cf.llm.*` rule fields do not).
-- Endpoint saved in Web Assets and labeled `cf-llm`.
-- Requests must be `application/json` (the UI always sends this).
+- Endpoint saved in Web Assets and labeled `cf-llm`; requests must be `application/json` (the UI always sends this).
+- Node ≥ 22 for wrangler.
+- `CF_ANALYTICS_TOKEN` for verdict/analytics/neurons/gateway-list; `CF_AIG_TOKEN` for any AI Gateway request; D1 binding for the prompt log. Each is optional and degrades only its own feature.

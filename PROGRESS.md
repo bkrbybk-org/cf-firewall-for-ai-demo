@@ -1,16 +1,21 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-07-31_
+_Last updated: 2026-08-01_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
-and a **compliance mapping page**. Live at **https://cf-ai-waf-demo.nttlab.org** (account
-**NFR - TH - NTT** `daf82c7c…`, zone `nttlab.org`).
+an **in-app red-team runner**, and a **compliance mapping page**. Live at
+**https://cf-ai-waf-demo.nttlab.org** (account **NFR - TH - NTT** `daf82c7c…`, zone `nttlab.org`).
 
-Prod is behind **Cloudflare Access**. Functional testing this session was done on `wrangler dev`
-(real Workers AI + real zone GraphQL + real AI Gateway REST API), seeding local D1 with `wrangler
-d1 execute … --local` and faking a `cf-ray` header via curl where the edge-verdict / prompt-log
-join needed one (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
+Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler dev` (real Workers AI
++ real zone GraphQL + real AI Gateway REST API), seeding local D1 with `wrangler d1 execute …
+--local` and faking a `cf-ray` header via curl where the edge-verdict / prompt-log join needs one
+(local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
+
+> **Reading this doc**: "this session" below refers to the **2026-08-01** session (Red Team page,
+> analytics honesty pass, chart rework). The AI Gateway REST migration, verdict-window fix,
+> WAF-attribution fix and prompt-log rewrite landed in the **2026-07-31** session and are now
+> committed — see Version control.
 
 ---
 
@@ -49,8 +54,10 @@ join needed one (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
   > 0) show a live red error while out of range and silently clamp on blur; the Worker clamps the
   same values again server-side as a second guard, since a client can always be bypassed.
 - **LLM backend = Workers AI** (native `AI` binding for the direct route). Model allowlist in
-  `src/models.ts` (7 models incl. `llama-guard-3-8b`; default = **Gemma 4 26B**,
-  `MODEL_REGISTRY[0]`). `MAX_REPLY_TOKENS = 2048`. Prices served to the client for cost estimates.
+  `src/models.ts`: **4 enabled** — Llama 3.2 3B (default, `MODEL_REGISTRY[0]`), Gemma 4 26B,
+  Mistral 7B, Qwen3 30B — plus 3 commented-out rows kept for quick re-enable (GPT-OSS 20B,
+  DeepSeek R1 Distill 32B, Llama Guard 3 8B). `MAX_REPLY_TOKENS = 2048`. Prices served to the
+  client for cost estimates.
 - **Multi-turn keeps the top-level `prompt` field** (latest user message) so AI Security's body
   scan is unchanged; prior turns ride in `history[]`, server-revalidated (10 turns / 8k chars), and
   only completed user→assistant pairs are sent (blocked prompts never re-enter history).
@@ -90,7 +97,40 @@ join needed one (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
   surface as REST HTTP errors matched by text (2016 prompt / 2017 response) → `{guardrailsBlocked,
   direction}`.
 - **Analytics aggregates in the Worker**: latest 500 raw rows per dataset (`firewallEventsAdaptive`
-  + `httpRequestsAdaptive` filtered to `/api/chat`), tallied server-side into one payload.
+  + `httpRequestsAdaptive` filtered to `/api/chat`), tallied server-side into one payload. The same
+  GraphQL round trip also fetches the **immediately preceding window** via aliased `fwPrev`/
+  `httpPrev` fields, for the tiles' trend deltas.
+- **The analytics numbers refuse to overstate their own precision.** Two related rules, both
+  enforced server-side in `queryAnalytics`:
+  - A dataset that returns exactly the 500-row cap is **truncated**, so `totalEvents` is a floor,
+    not a total. The Worker sets `truncated` and the tile renders `500+` with a banner rather than
+    presenting a capped count as exact — the old UI said a flat "500", which was simply wrong.
+  - `prev` is **omitted entirely** when the previous window was itself truncated, and the client
+    then shows no delta and no percentage. A rate computed off a truncated total, or a delta
+    between two capped windows, reads as precise while being meaningless; no number beats a
+    confidently wrong one.
+- **AI Security rules are separated from unrelated zone rules in the UI.** On real traffic the
+  zone's non-LLM rules (`(P) AI Red Team`, `Geography-based rule`, `cw-lab-kali OWASP ZAP`) outrank
+  the `cf.llm.*` rules by event count, so a single "Top fired rules" list read as though AI Security
+  had fired them — the same misattribution class as the `denied` fix. `isLlmRule()` in `data.ts`
+  matches `ZONE_RULES` by name with a `\bLLM\b` fallback (so a renamed rule degrades to "probably
+  LLM" rather than silently dropping into "other"), and `EdgeTab` renders two labelled groups.
+- **The shared chart is sized in real pixels, not a fixed aspect ratio.** `EventSeries` was
+  `viewBox="0 0 720 90"` on a `w-full` svg, which scales *everything* with container width —
+  including text. That put axis labels at ~19px on a 1600px page and ~3.9px on mobile, where the
+  plot collapsed to ~24px tall. It now measures its box with a `ResizeObserver` and drives the
+  viewBox from it, so 1 unit = 1 CSS px and type is the size it says it is at every width.
+  Deliberately **no `width`/`height` attributes** on the svg: an explicit width makes the svg force
+  its own parent wide, so the observer can never see the box shrink — a feedback loop that pins the
+  chart at its widest.
+- **Chart colours are validated, not eyeballed.** The series palette is the app's status palette
+  (block/error = red, log = amber, guardrails = purple, allowed/hit = green) — status semantics, so
+  the hues are reserved and never reassigned per chart. The light-mode `--red`/`--amber` pair was
+  measured at **ΔE 3.0 under deuteranopia** (and 14.9 under normal vision, below the legibility
+  floor), i.e. "blocked" and "logged" were effectively the same colour on the security chart. Both
+  tokens moved together — `#b91c1c` / `#d97706`, now 16.2 / 18.7 — because no amber bright enough
+  to separate from the old red also clears contrast on white. Re-run a CVD validator before
+  changing either value.
 - **Prompt log time filtering and D1 rollups share one window model.** `parseTimeWindow()` in
   `handlers.ts` reads an explicit `since`/`until` (epoch ms — the custom date/time picker) when
   present, else a rolling `hours` (0/absent = all time — the 1h/24h/7d/all preset buttons). Both
@@ -124,13 +164,25 @@ join needed one (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
 - **`/analytics`**: three tabs (edge / AI Gateway / prompt log). Edge and gateway tabs share a
   1h/24h/7d range picker; **prompt log has its own independent range** (1h/24h/7d/**all**/**custom**
   date-time picker), defaulting to **1h**, since it's reviewed differently (recent activity vs. "the
-  whole demo session"). Prompt log is a **sortable table** (click any column header; defaults to
-  Time, newest first) with a client-side text filter (prompt/reply/model/ray) and a **multi-select**
-  outcome filter (toggle any combination of replied/guardrails-blocked/error, not just one at a
-  time). 60s auto-refresh on all three tabs.
+  whole demo session"). Prompt log is a **sortable, paginated table** (click any column header;
+  defaults to Time, newest first; 10/25/50/100 rows per page, default 25) with a client-side text
+  filter (prompt/reply/model/ray) and a **multi-select** outcome filter (toggle any combination of
+  replied/guardrails-blocked/error). 60s auto-refresh on all three tabs.
+  **Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the
+  prompt log with the window matched and a context banner. For a *blocking* rule the banner says
+  outright that those prompts never reached the Worker and cannot appear in the log — otherwise the
+  click lands on a confusingly empty table.
+- **`/redteam`** — replays a curated **36 of the 116** enumerated attacks from the Prisma AIRS scan
+  (target `cw-ai-red-team`, 2026-07-30; Thai-language) through the real `/api/chat` and scores what
+  the edge did. Route selector (Workers AI ↔ a specific AI Gateway, locked mid-run so a batch never
+  mixes routes), scorecard, sortable attack table, and a static "close the gaps" panel mapping each
+  scan finding to the Cloudflare control that addresses it.
 - **`/compliance`**: coverage matrix (capability × framework) + framework tabs with per-control
   detail cards. **Six frameworks**: NIST AI RMF · ISO 42001 · OWASP LLM Top 10 · MITRE ATLAS ·
-  Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025).
+  Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025). The OWASP LLM01 and
+  MITRE AML.T0051 cards link to `/redteam`.
+- **Page width**: `/analytics`, `/redteam` and `/compliance` run to `max-w-[1600px]`; the chat page
+  keeps its own three-pane shell.
 
 ---
 
@@ -151,50 +203,78 @@ src/                Worker (TypeScript)
                     stripThink, sanitizeHistory, logPrompt, gateway registry helpers
   redact.ts         PII redaction for the prompt log (regex pass, not FW-for-AI driven)
 web/src/
-  lib/              data.ts (demo content), compliance.ts (MATRIX + FRAMEWORKS), api.ts (fetch
-                    wrappers incl. TimeWindow + SSE parser), types.ts, format.ts, icons.ts,
+  lib/              data.ts (demo content + isLlmRule), compliance.ts (MATRIX + FRAMEWORKS), api.ts
+                    (fetch wrappers incl. TimeWindow + SSE parser), types.ts, format.ts, icons.ts,
                     verdict.ts (classify + poller + fetchVerdictOnce + ray cache), export.ts
                     (session export — ⚠️ still uses the old unanchored window, see Open bugs),
-                    metadata.ts (AI Gateway metadata parser), sessionStore.ts
+                    metadata.ts (AI Gateway metadata parser), sessionStore.ts,
+                    redteam.ts (Prisma AIRS corpus + scoring helpers)
   hooks/            useTheme, useNeurons, useChat (session + send pipeline, RequestConfig snapshot
-                    per turn for the verdict trace's request-chips row)
+                    per turn for the verdict trace's request-chips row), useRedTeam (3-phase runner)
   components/       Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel,
                     GatewaySettingsPanel (all 9 cf-aig-* settings + validation; replaces the old
                     RequestMetadataPanel), Switch, AttackLibrary, Chat, Verdict, FlowTrace,
                     DemoMode, ExportButton
-    analytics/      primitives (Tile/Card/BarList), EventSeries (line+area chart + series defs),
-                    EdgeTab, GatewayTab, PromptLogTab (sortable table + filters)
+    analytics/      primitives (Tile with rate/delta, Card, BarList with onPick/scaleMax),
+                    EventSeries (measured line+area chart + table view + keyboard), EdgeTab
+                    (LLM vs other rule split, drill-through), GatewayTab, PromptLogTab (sortable +
+                    paginated table + filters)
+    redteam/        Scorecard (headline tiles + severity/category breakdown)
   pages/            FirewallPage (chat + route/gateway controls), AnalyticsPage (shell: state,
-                    loaders, tab strip, filters incl. prompt-log time window + outcome multiselect),
-                    CompliancePage
+                    loaders, tab strip, filters incl. prompt-log time window + outcome multiselect,
+                    drill-through banner), RedTeamPage, CompliancePage
 ```
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
 dev:worker` / `npm run dev:web`. `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 
-**Version control**: branch `main`, **6 commits** (`ed669b6` … `a4f78d2`), all from before this
-session. ⚠️ **Everything in this doc past that point — the AI Gateway REST migration, the verdict
-window/retention fix, the WAF-attribution fix, the prompt log rewrite, the layout fixes — is
-uncommitted.** `git status` shows modifications across ~20 files plus several new ones
-(`GatewaySettingsPanel.tsx`, `Switch.tsx`, `verdict-window.test.ts`, `verdict.test.ts`) and one net
-removal (`RequestMetadataPanel.tsx`, superseded). This is a large, working diff — commit it in
-reviewable chunks rather than one giant commit; see Next tasks.
+**Version control**: **10 commits** (`ed669b6` … the doc resync). All work since `a4f78d2` sits on
+branch **`feat/gateway-rest-and-red-team`**; `main` is still at `a4f78d2`, so **prod runs none of
+the last two sessions' work**:
 
-**Tests** — `npm test`, **49 across 5 files** (was 32/3 before this session). Each exists because a
-real bug shipped, and each was mutation-verified (reintroduce the bug → red):
+- `14a71f6` — AI Gateway REST settings, anchored verdicts, analytics overhaul. One commit by
+  necessity: those areas share files (`cloudflare.ts`, `useChat.ts`, `AnalyticsPage.tsx`) and this
+  environment has no hunk-level staging, so a per-feature split wasn't possible without surgery.
+  Verified green in isolation before committing.
+- `f59a88e` — the Red Team feature, which *was* cleanly separable (its three wiring edits touch
+  nothing else).
+- `4f2079d` — the chart rework (`EventSeries.tsx` + `index.css`): measured viewBox, CVD-safe
+  light palette, table view, keyboard parity.
+- the doc resync (this file + `README.md`) — see Doc split below.
+
+⚠️ Working tree clean, but the branch is **unmerged and not redeployed**.
+
+**Doc split** (README rewritten 2026-08-01 against the code, having drifted several sessions):
+`README.md` = product + setup reference (pages, endpoints, gateway/verdict/prompt-log behaviour,
+zone setup, WAF rule table, tests); **this file** = engineering state (decisions, open bugs, next
+tasks). The old README still documented the removed `/api/extract` file-upload feature, the
+binding-based gateway path, and a model list that had never matched `src/models.ts` — all corrected.
+
+Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committing from a
+non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
+an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
+
+**Tests** — `npm test`, **64 across 6 files** (49 before this session, 32 before the one prior).
+Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
 - `src/redact.test.ts` (18) — PII redaction against the real Attack Library prompts. Asserts the
   identifier is **absent** rather than matching an exact replacement (the shipped bug was a
   *partial* mask leaking part of an IBAN). No-false-positives + idempotency.
 - `src/config.test.ts` (8) — `normalizeDynamicRoute`. Accepts both `demo-routes` and the dashboard's
   `dynamic/demo-routes`; returns `null` (never a silently wrong value) for traversal or junk.
 - `web/src/lib/metadata.test.ts` (6) — the 5-entry cap and malformed-pair handling.
-- `src/verdict-window.test.ts` (9) — **new this session**. `verdictWindow()`: anchored vs. live
+- `web/src/lib/redteam.test.ts` (15) — **new this session**. Pins the red-team scoring contract, the
+  one number the feature exists to produce: `log` counts as *reached the model* (a detection is not
+  a defense), `block`/`challenge` do not, and `denied`/`guardrails`/`pending`/`error` are counted
+  and displayed but **excluded from the denominator** — otherwise the percentage would credit the
+  WAF for an Access refusal or punish it for ingestion lag. Also covers divide-by-zero, corpus
+  integrity (36 unique ids), and that the PDF's SARA-AM artifact (`ำา`) never crept back in.
+- `src/verdict-window.test.ts` (9) — `verdictWindow()`: anchored vs. live
   bracketing, the regression itself (the live window provably excludes an hours-old timestamp the
   anchored one covers), non-finite-timestamp fallback. `isBeyondRetention()`: inside/past/exact
   boundary, and — important — an *unknown* timestamp never reads as expired (there's nothing to
   compare, so the lookup must still be attempted).
-- `web/src/lib/verdict.test.ts` (8) — **new this session**, built from a real incident's exact
+- `web/src/lib/verdict.test.ts` (8) — built from a real incident's exact
   payload (ray `a23939307b53893b`). Asserts a 403 with only log-only matched rules classifies as
   `denied`, not `log`; a genuine `block`/`challenge` still classifies correctly; a 403 with zero
   matched rules also denies; covers 5xx as well as 403; falls back to the rules when the status is
@@ -206,7 +286,76 @@ real bug shipped, and each was mutation-verified (reintroduce the bug → red):
 
 Verified against real Cloudflare via `wrangler dev` + local D1 seeding unless noted.
 
-**This session's headline change: AI Gateway per-request REST settings, exposed and correct.**
+### 2026-08-01 session
+
+**Red Team page (`/redteam`) — replay the Prisma AIRS corpus against the live edge.**
+- The scan (2026-07-30) reported **Risk 9.44/100 (Low)**, overall ASR 10%, **413 successful attacks**
+  (116 enumerated). The agentic-security domain was **clean (0/168** — indirect prompt injection
+  0/60, tool leak 0/108); the real gaps were **Brand Tarnishing / Self-Criticism (53)** and
+  **Political (16 + 5 endorsements)** — precisely what the report's recommended runtime policy
+  targets with Custom Topic Guardrails.
+- Corpus: a curated **36 of the 116** in `lib/redteam.ts` — every scan category, all four
+  severities, weighted to the two gap categories. Prompts are the report's own Thai text with the
+  PDF font's SARA-AM decomposition artifact (`ำา` → `ำ`) repaired and preview ellipses trimmed.
+  Several are the report's truncated preview, which is fine: the edge scan classifies partial text,
+  and the edge is all this feature measures.
+- **The headline metric is deliberately NOT the scan's ASR.** Prisma's ASR means *the model
+  complied*; this measures only *whether the Cloudflare edge stopped the request*. There is no LLM
+  judge, so the app never claims the model did or didn't comply — the metric is labelled "reached
+  the model" and the scan's own per-prompt ASR sits in a separate, attributed column.
+- **Runner is 3-phase, not one poll per attack** (which would cost ≥60s each ≈ 36 min): send all
+  prompts → wait **once** ~90s for GraphQL ingestion → batch-resolve every ray through
+  `fetchVerdictOnce` under a concurrency cap. ≈4 min for 36 attacks. It calls the API directly so a
+  run never enters the chat transcript (verified), and leaves `excludeFromLog` false so rows land in
+  D1 as the evidence trail.
+- Route selector (Workers AI ↔ any account gateway) — the edge verdict is identical either way, but
+  the guarded gateway adds Guardrails and can surface 2016/2017 blocks the WAF alone misses.
+
+**Analytics honesty pass.**
+- **`500` was never a total.** The edge tile showed a flat "500" that was exactly the query row cap
+  — a floor presented as an exact count. Now `500+` with a banner, and rates/deltas suppressed
+  whenever a window is truncated (see Architecture).
+- **Tiles carry meaning**: block-rate percentage and a delta vs the preceding window (`14 ▼14 · 38%
+  of events`), both omitted rather than faked when the data can't support them.
+- **AI Security rules split from unrelated zone rules** — on live data `(P) AI Red Team` (192),
+  `Geography-based rule` (44) and `cw-lab-kali OWASP ZAP` (29) were topping a list read as
+  "detections". They now sit under a labelled "not AI Security" group.
+- **Injection histogram made readable**: the clean bucket is >95% of traffic and was flattening the
+  attack buckets to invisible slivers. Bars now scale across the attack range only, with the clean
+  bucket listed separately.
+- **Drill-through** from a rule / score bucket to the prompt log, with the honest caveat for
+  blocking rules (their prompts never reached the Worker, so the log cannot show them).
+
+**Chart (`EventSeries`) rework — measured, not eyeballed.**
+- **Colourblind-safety fixed**: light-mode block↔log was ΔE **3.0** under deuteranopia and 14.9
+  under normal vision. Now **16.2 / 18.7** by moving `--red` and `--amber` together (see
+  Architecture for why amber alone can't work).
+- **Real fixed height, non-scaling text**: measured viewBox via `ResizeObserver`. Verified scale
+  **1.000** and tick font **10px** identically at 1600px and 375px (was 2.13×/~19px and
+  0.43×/~3.9px). A first attempt that set `width`/`height` attributes deadlocked the observer —
+  documented inline so it isn't reintroduced.
+- **Accessibility**: a "Show data" **table view** (the WCAG-clean twin), **keyboard parity**
+  (`←`/`→`/Home/End drive the same crosshair + tooltip, with an `aria-live` announcement), and
+  **selective endpoint labels** so a value is readable without hovering. Verified: `End` then `←`×3
+  landed on bucket 21 with the live region and tooltip agreeing exactly.
+
+**Prompt log pagination** — 10/25/50/100 rows per page (default 25), resetting to page 1 on any
+filter/sort change and clamping when a narrower filter strands the current page.
+
+**Ray shown while a verdict is still pending** — the polling state now prints the ray, so a slow
+lookup can be cross-checked in the dashboard instead of being an opaque spinner.
+
+**A scroll bug traced to Tailwind's `sr-only`.** The whole page shell — header, content, footer —
+could scroll off-viewport on the prompt log, leaving the footer stranded mid-page. Cause: the
+table's `sr-only` "Expand" header is `position:absolute`, and with no positioned ancestor its
+containing block was the *document*, so it escaped `main`'s `overflow-y-auto` and inflated
+`documentElement.scrollHeight` as the table scrolled. Fixed by making `main` `relative`.
+Diagnosed by measuring footer position frame-by-frame across two screen recordings — an earlier
+guess that it was a one-frame compositor glitch was wrong, and the measurements disproved it.
+
+### 2026-07-31 session
+
+**Headline change: AI Gateway per-request REST settings, exposed and correct.**
 - The gateway route moved off the `env.AI.run(..., {gateway})` binding onto the same REST call
   Dynamic Routing already used, specifically to reach the 6 `cf-aig-*` settings the binding never
   exposed. `GatewaySettingsPanel` (left column, renders only on the gateway route — nothing to
@@ -373,9 +522,10 @@ zero-heavy security data), shared by all three tabs via `EventSeries`. Prompt lo
 coverage levels, all 10 OWASP items incl. the 4 Cloudflare doesn't address. Every card cross-links
 to the demo that exercises it.
 
-**Cross-cutting**: two-row header + shared `NavTabs`; light/dark verified; `npm run check` + `npm
-test` clean (49/49). **Not yet redeployed** — everything above past the 6 committed commits is
-local/uncommitted.
+**Cross-cutting**: two-row header + shared `NavTabs` (4 tabs incl. Red Team); light/dark verified
+after the palette change across all four pages; `npm run check` + web typecheck + `npm test` clean
+(**64/64**). **Not yet redeployed** — the branch is unmerged and the chart rework is still
+uncommitted.
 
 ---
 
@@ -407,13 +557,17 @@ local/uncommitted.
 
 **Product / configuration**
 
-3. **Guardrails not confirmed *blocking* live.** The guarded gateway processes requests and the
-   GUARDRAILS badge shows, but no unsafe prompt has produced a real 2016/2017 → purple card on prod.
+3. ~~**Guardrails not confirmed *blocking* live.**~~ **RESOLVED 2026-08-01.** Confirmed against the
+   prod D1 prompt log: **67 rows** with `outcome='guardrails'`, all on `cf-ai-sec-demo-gw` with
+   `guarded=1` (most recent 2026-07-31). Guardrails *is* blocking on prod. Visible in-app under
+   Analytics → Prompt log with the outcome filter set to `guardrails-blocked`.
 4. **WAF block responses are still Cloudflare's default HTML page**, not Custom JSON — set each
    block rule's response to Custom JSON so the blocked card pretty-prints instead of showing "not a
    custom JSON body".
 5. **Account-level "Monitor Likely Attacks (Score GE 20 AND LE 50)" is a red herring** — fires on a
-   non-LLM attack score despite the name; visible in the analytics top-rules list.
+   non-LLM attack score despite the name. **Mitigated in the UI** as of 2026-08-01: it now lands in
+   the "not AI Security" group rather than the AI Security rule list, so it can no longer be read as
+   a detection. The rule itself still exists in the dashboard and still inflates raw event counts.
 6. **Dynamic Routing prerequisites are unproven end to end** independent of bug #1: Routes need an
    Authenticated Gateway; a route branch calling third-party models also needs BYOK or Unified
    Billing credits.
@@ -428,19 +582,34 @@ local/uncommitted.
 8. **`GatewaySettingsPanel`'s client-side validation duplicates the Worker's clamping logic by
    hand** (`MAX_GATEWAY_ATTEMPTS`, `MAX_GATEWAY_RETRY_DELAY_MS` redefined in `FirewallPage.tsx`
    rather than imported) — the two will silently drift if the caps ever change server-side.
+9. **Prompt-log pagination only pages *within the fetched 200 rows*, not the whole table.**
+   `/api/prompt-log` hard-caps at 200 per request (`limit = min(200, …)`), so with 2,700+ rows
+   stored the UI can only ever reach the newest 200 matching the current filters. The page selector
+   slices that page client-side; it does **not** re-query D1 with an `OFFSET`. Fine for a demo,
+   wrong if anyone tries to audit the full history.
+10. **Dark-mode chart palette still fails the house lightness band** (`--red` L .691, `--amber`
+    L .804 vs a .48–.67 band). Left alone deliberately: CVD separation — the check that actually
+    governs distinguishability — already passes at 12.5, so this is a style-band mismatch, not a
+    legibility defect, and churning dark tokens carries regression risk for no user-visible gain.
 
 **Known limits (by design)**
 
-9. **Verdict/autopilot timing for a just-sent prompt**: GraphQL ingests ~1–2 min behind; the poller
-   waits 60s before its first check, then every 5s up to ~190s total. This is now *only* paid on
-   live sends — historical lookups (prompt log) are one-shot, see Implemented.
-10. **`ZONE_RULES` is a hand-maintained mirror** of the dashboard rules — rename/add a WAF rule and
-    the flow-trace matching drifts until `web/src/lib/data.ts` is updated.
-11. **Row caps**: zone analytics reads the latest 500 rows/dataset; gateway logs page to 500 (API
-    caps `per_page` at 50) and set `truncated`. Prompt log rows cap at 200 per fetch.
-12. **AI Gateway logs are account-scoped** and still store the **raw** prompt+response payload —
+11. **Verdict/autopilot timing for a just-sent prompt**: GraphQL ingests ~1–2 min behind; the poller
+    waits 60s before its first check, then every 5s up to ~190s total. This is now *only* paid on
+    live sends — historical lookups (prompt log) are one-shot, and the red-team runner pays it once
+    for a whole batch rather than per attack. See Implemented.
+12. **`ZONE_RULES` is a hand-maintained mirror** of the dashboard rules — rename/add a WAF rule and
+    both the flow-trace matching and `isLlmRule()`'s exact-name match drift until
+    `web/src/lib/data.ts` is updated. `isLlmRule()` degrades to a `\bLLM\b` heuristic rather than
+    silently misclassifying, but a renamed rule with no "LLM" in it would land in "other".
+13. **Row caps**: zone analytics reads the latest 500 rows/dataset; gateway logs page to 500 (API
+    caps `per_page` at 50) and set `truncated`. Prompt log rows cap at 200 per fetch (see #9).
+14. **AI Gateway logs are account-scoped** and still store the **raw** prompt+response payload —
     unlike the D1 prompt log, which is PII-redacted and now individually opt-out-able per turn. Left
     on deliberately as a talking point; the UI states it.
+15. **The red-team corpus is a curated subset** — 36 of the 116 enumerated (of 413 total
+    successful), and several prompts are the report's truncated preview text. It exercises the edge
+    scan faithfully but is not a reproduction of the full scan.
 
 ## Next tasks
 
@@ -452,19 +621,22 @@ local/uncommitted.
 - [ ] Apply the recommended Zero Trust Access restructuring for the AI red-team service (Open bug
       #2): path-scoped `/api/chat` app, `Service Auth` + service token, `Allow` policy alongside it
       for human logins. Re-verify the app still works for a normal browser session afterward.
-- [ ] Commit the uncommitted work (see Version control) in reviewable chunks — it currently spans
-      the AI Gateway REST migration, the verdict/retention fix, the attribution fix, the prompt log
-      rewrite, and the layout fixes as one working-but-unstaged diff.
+- [x] ~~Commit the chart rework~~ — done, `4f2079d` (signed fine non-interactively; gpg-agent had
+      the passphrase cached from an earlier session).
+- [ ] Merge `feat/gateway-rest-and-red-team` into `main` and **redeploy** — prod is still running
+      `a4f78d2`, i.e. none of the last two sessions' work is live.
 
 **Then verify what is currently unproven**
 
 - [ ] Prod smoke test once #1 is fixed: a plain AI Gateway send, then a Dynamic Route send with
       `tier=free` (isolates routing from third-party billing) before `tier=pro`. Confirm the reply
       reports the *route's* model + blue `ROUTE` badge, not the Model picker's value.
-- [ ] Confirm custom metadata actually lands in the gateway logs — still outstanding from before
-      this session.
-- [ ] Confirm Guardrails actually blocks on prod (unsafe prompt via the guarded gateway → purple
-      card).
+- [ ] Confirm custom metadata actually lands in the gateway logs — outstanding for two sessions now.
+- [ ] **Run the red-team corpus on prod.** Local dev has no `cf-ray`, so verdicts never resolve and
+      nothing is scored — only the runner mechanics are exercised locally. The real test is whether
+      the Brand-Tarnishing / Political rows come back `reached the model`, reproducing the scan's
+      finding; then add the Self-criticism custom topic and re-run to prove the gap closed. That
+      before/after is the entire point of the feature.
 - [ ] Set WAF block-rule responses to Custom JSON (dashboard).
 
 **Improvements**
@@ -478,10 +650,25 @@ local/uncommitted.
       that bug #1 can surface on every gateway send, not just Dynamic Routes.
 - [ ] Extend tests to remaining pure functions (extractReply/stripThink, sanitizeHistory,
       buildHistory, cost calc, SSE line parser).
+- [ ] Add server-side `OFFSET` paging to `/api/prompt-log` so the UI can reach past the newest 200
+      rows (Open bug #9) — today pagination only slices the fetched page.
+- [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
+      (53 successful attacks) has no rule covering it at all.
 - [ ] Compliance page: GRC reviewer to sanity-check subcategory titles + section descriptions before
       regulated-customer use.
 
-**Done this session** — AI Gateway REST migration (uniform per-request settings + validation) ·
+**Done this session (2026-08-01)** — Red Team page: curated 36-attack Prisma AIRS corpus, 3-phase
+runner, scorecard, route selector, 15 scoring tests · analytics honesty pass (truncation-aware
+counts, tile rates + prev-window trend, LLM-vs-other rule split, readable injection histogram,
+drill-through to the prompt log) · chart rework (light-mode CVD fix, measured fixed height with
+non-scaling text, table view, keyboard parity, endpoint labels) · prompt-log pagination · ray shown
+while a verdict is pending · `sr-only` page-scroll bug fixed · full-width pages · 15 new tests
+(49→64) · confirmed Guardrails blocking on prod (closed Open bug #3) · committed the previous
+session's backlog in two reviewable commits · **README rewritten against the code** (removed
+`/api/extract` docs, binding-based gateway path, wrong model list; added Red Team, prompt log,
+gateway analytics, `CF_AIG_TOKEN`, the real 10-rule zone table).
+
+**Done 2026-07-31** — AI Gateway REST migration (uniform per-request settings + validation) ·
 anchored/retention-aware verdict lookup + one-shot historical fetch + ray cache · WAF-vs-Access
 false-attribution fix (`denied`/STOPPED outcome) · prompt log rewritten as a sortable/filterable
 table with time-frame + multi-select outcome filters · chat layout containment + responsive
