@@ -1,6 +1,7 @@
 // Time-series chart shared by all three Analytics tabs, plus the series
 // definitions that configure it.
 import { useEffect, useRef, useState } from "react";
+import type { SeriesBucket } from "./primitives";
 
 // `cls` fills the area wash, `stroke` draws the 2px line, `dot` keys the legend
 // and tooltip. Colors are the app's existing status palette (block/error = red,
@@ -60,7 +61,7 @@ export function EventSeries({
   ariaLabel,
 }: {
   rows: Record<string, number | string>[];
-  bucket?: "hour" | "day";
+  bucket?: SeriesBucket;
   defs: SeriesDef[];
   ariaLabel: string;
 }) {

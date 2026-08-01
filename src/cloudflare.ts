@@ -1,18 +1,24 @@
 // Cloudflare GraphQL Analytics API client + the two queries the app uses.
 
-import { GRAPHQL_ENDPOINT, VERDICT_RETENTION_FALLBACK_S, verdictWindow } from "./config";
+import {
+  bucketFor,
+  GRAPHQL_ENDPOINT,
+  VERDICT_RETENTION_FALLBACK_S,
+  verdictWindow,
+  type SeriesBucket,
+} from "./config";
 import type { AnalyticsSummary, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
 
-// Time-bucket scaffold shared by the zone analytics and the gateway analytics:
-// hourly buckets up to 48h, daily beyond. Buckets are pre-filled across the
-// whole range so gaps render as zero rather than going missing.
+// Time-bucket scaffold shared by the zone analytics and the gateway analytics.
+// Width comes from bucketFor() (5-minute buckets at 1h, hourly to 48h, daily
+// beyond). Buckets are pre-filled across the whole range so gaps render as
+// zero rather than going missing.
 function makeBuckets<T extends { t: string }>(
   now: number,
   hours: number,
   blank: (t: string) => T,
-): { bucket: "hour" | "day"; stepMs: number; series: Map<string, T>; floor: (iso: string) => string } {
-  const bucket: "hour" | "day" = hours <= 48 ? "hour" : "day";
-  const stepMs = bucket === "hour" ? 3_600_000 : 86_400_000;
+): { bucket: SeriesBucket; stepMs: number; series: Map<string, T>; floor: (iso: string) => string } {
+  const { bucket, stepMs } = bucketFor(hours);
   const series = new Map<string, T>();
   for (let t = Math.floor((now - hours * 3_600_000) / stepMs) * stepMs; t <= now; t += stepMs) {
     const key = new Date(t).toISOString();
@@ -267,7 +273,7 @@ export async function queryAnalytics(
 
   const empty: AnalyticsSummary = {
     rangeHours: hours, since, until, totalEvents: 0, actions: {}, topRules: [],
-    series: [], bucket: hours <= 48 ? "hour" : "day", aiScored: 0, scoreBuckets: [], piiRequests: 0,
+    series: [], bucket: bucketFor(hours).bucket, aiScored: 0, scoreBuckets: [], piiRequests: 0,
     unsafeTopics: [], piiCategories: [], customTopics: [], scannedRequests: 0, labeledRequests: 0,
   };
 
@@ -302,7 +308,7 @@ export async function queryAnalytics(
   }
   const topRules = [...ruleCounts.values()].sort((a, b) => b.count - a.count).slice(0, 8);
 
-  // Time series: hourly buckets up to 48h, daily beyond (shared helper).
+  // Time series: 5-minute buckets at 1h, hourly to 48h, daily beyond.
   const { bucket, series, floor } = makeBuckets(now, hours, (t) => ({ t, block: 0, log: 0, other: 0 }));
   for (const e of fw) {
     const row = series.get(floor(e.datetime));

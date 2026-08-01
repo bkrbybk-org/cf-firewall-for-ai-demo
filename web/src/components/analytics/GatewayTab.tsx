@@ -3,7 +3,7 @@
 // below states explicitly.
 import { Link } from "react-router-dom";
 import { CircleDollarSign, Route, ShieldCheck, Timer, Zap } from "lucide-react";
-import { BarList, Card, Tile } from "./primitives";
+import { BarList, bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, GW_SERIES } from "./EventSeries";
 import { fmtCost } from "../../lib/format";
 import type { GatewayAnalytics as GatewayAnalyticsData } from "../../lib/types";
@@ -94,7 +94,7 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
         <>
           <Card
             title="Gateway requests over time"
-            subtitle={`per ${d.bucket === "day" ? "day" : "hour"} · cache hit vs miss vs error`}
+            subtitle={`per ${bucketLabel(d.bucket)} · cache hit vs miss vs error`}
           >
             <EventSeries
               rows={d.series ?? []}

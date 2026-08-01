@@ -1,6 +1,15 @@
 // Layout primitives shared by every Analytics tab. Kept dependency-free so the
 // tab modules can import them without pulling in chart or data-fetching code.
 
+// Bucket width as it reads in a chart subtitle ("per 5 min"). The server picks
+// the width (src/config.ts bucketFor), so every tab must be able to say what it
+// got rather than assuming hourly.
+export type SeriesBucket = "5m" | "hour" | "day";
+
+export function bucketLabel(bucket: SeriesBucket | undefined): string {
+  return bucket === "day" ? "day" : bucket === "5m" ? "5 min" : "hour";
+}
+
 export function Tile({
   label,
   value,

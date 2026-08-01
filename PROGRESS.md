@@ -115,6 +115,19 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   had fired them — the same misattribution class as the `denied` fix. `isLlmRule()` in `data.ts`
   matches `ZONE_RULES` by name with a `\bLLM\b` fallback (so a renamed rule degrades to "probably
   LLM" rather than silently dropping into "other"), and `EdgeTab` renders two labelled groups.
+- **Chart bucket width is chosen in one place and follows the window the caller asked for.**
+  `bucketFor()` in `config.ts`: **5-minute buckets at 1h**, hourly to 48h, daily beyond. The 1h
+  range used to bucket hourly, i.e. one or two points — a number, not a chart. Three call sites
+  (zone analytics, gateway analytics, prompt analytics) each carried their own copy of the ternary
+  and could drift, so they now share the helper. The prompt-log rollup additionally passes the
+  **requested** span rather than re-measuring `Date.now() − since`: re-measuring is long by the
+  milliseconds spent parsing, which pushed the 1h preset just past 1.0 hours and silently dropped
+  it back to hourly buckets.
+- **The prompt-log series is zero-filled across the window**, like the zone analytics scaffold
+  always was. Previously it only held buckets that had rows, so the line interpolated straight
+  across quiet stretches — drawing activity that never happened. Invisible at hourly width on a
+  1h range (1–2 points); obvious at 5 minutes, which is what surfaced it. Pre-fill is capped at
+  400 buckets so a hand-typed `since` far in the past can't spin the loop.
 - **The shared chart is sized in real pixels, not a fixed aspect ratio.** `EventSeries` was
   `viewBox="0 0 720 90"` on a `w-full` svg, which scales *everything* with container width —
   including text. That put axis labels at ~19px on a 1600px page and ~3.9px on mobile, where the

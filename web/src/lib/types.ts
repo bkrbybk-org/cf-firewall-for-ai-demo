@@ -119,7 +119,7 @@ export interface Analytics {
   prev?: { totalEvents: number; blocked: number; logged: number; piiRequests: number };
   topRules?: { name: string; action: string; count: number }[];
   series?: { t: string; block: number; log: number; other: number }[];
-  bucket?: "hour" | "day";
+  bucket?: "5m" | "hour" | "day";
   aiScored?: number;
   scoreBuckets?: { label: string; count: number }[];
   piiRequests?: number;
@@ -170,7 +170,7 @@ export interface PromptAnalytics {
   byModel?: { model: string; count: number; promptTokens: number; completionTokens: number }[];
   repeated?: { prompt: string; count: number; redactions: number }[];
   series?: { t: string; reply: number; guardrails: number; error: number }[];
-  bucket?: "hour" | "day";
+  bucket?: "5m" | "hour" | "day";
   firstTs?: number | null;
   lastTs?: number | null;
   error?: string;
@@ -195,7 +195,7 @@ export interface GatewayAnalytics {
   statusCodes?: { code: number; count: number }[];
   byModel?: { model: string; count: number; tokensIn: number; tokensOut: number; cost: number }[];
   series?: { t: string; hit: number; miss: number; error: number }[];
-  bucket?: "hour" | "day";
+  bucket?: "5m" | "hour" | "day";
   truncated?: boolean;
   error?: string;
 }

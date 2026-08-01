@@ -2,7 +2,7 @@
 // detection breakdowns behind them.
 import { Link } from "react-router-dom";
 import { BarChart3, ShieldAlert, ShieldCheck, ShieldX, UserSearch } from "lucide-react";
-import { BarList, Card, Tile } from "./primitives";
+import { BarList, bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, SERIES } from "./EventSeries";
 import { topicLabel } from "../../lib/format";
 import { isLlmRule } from "../../lib/data";
@@ -185,7 +185,7 @@ export function EdgeTab({
             <>
               <Card
                 title="Events over time"
-                subtitle={`per ${data.bucket === "day" ? "day" : "hour"} · block vs log vs other`}
+                subtitle={`per ${bucketLabel(data.bucket)} · block vs log vs other`}
               >
                 <EventSeries
                   rows={data.series ?? []}

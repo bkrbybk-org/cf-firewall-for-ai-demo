@@ -21,6 +21,28 @@ export const OVERAGE_USD_PER_1K_NEURONS = 0.011;
 export const GRAPHQL_ENDPOINT = "https://api.cloudflare.com/client/v4/graphql";
 export const CF_API_BASE = "https://api.cloudflare.com/client/v4";
 
+// --- Time-series bucket width --------------------------------------------
+// Every chart in the app buckets by one of these widths. Picked from the
+// window length, in one place, because three separate call sites used to
+// carry their own copy of the ternary (zone analytics, gateway analytics,
+// prompt analytics) and could drift apart.
+//
+// The 1-hour range needs finer than hourly: an hourly bucket over a 1-hour
+// window is one or two points, which is a number, not a chart. 5-minute
+// buckets give 12–13 across the range.
+export type SeriesBucket = "5m" | "hour" | "day";
+
+export const BUCKET_STEP_MS: Record<SeriesBucket, number> = {
+  "5m": 300_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+};
+
+export function bucketFor(hours: number): { bucket: SeriesBucket; stepMs: number } {
+  const bucket: SeriesBucket = hours <= 1 ? "5m" : hours <= 48 ? "hour" : "day";
+  return { bucket, stepMs: BUCKET_STEP_MS[bucket] };
+}
+
 // --- Edge-verdict lookup window ------------------------------------------
 // A verdict is found by filtering the analytics datasets to a time range
 // around the request. Two very different ranges are needed:

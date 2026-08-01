@@ -220,6 +220,8 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 
 **Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the prompt log with the window matched and a context banner. For a *blocking* rule the banner says outright that those prompts never reached the Worker and cannot appear in the log.
 
+**Bucket width** is picked server-side by `bucketFor()` (`src/config.ts`) from the requested window: **5 minutes at 1h**, hourly to 48h, daily beyond — the subtitle says which ("per 5 min"). Series are zero-filled across the whole window so a quiet stretch reads as zero instead of the line interpolating across the gap.
+
 All three tabs auto-refresh every 60 s. The chart (`EventSeries`) measures its own box with a `ResizeObserver` so 1 SVG unit = 1 CSS px and text doesn't scale with container width; it also offers a **"Show data" table view** and full keyboard parity (`←`/`→`/Home/End drive the crosshair with an `aria-live` announcement).
 
 ## Red Team page (`/redteam`)

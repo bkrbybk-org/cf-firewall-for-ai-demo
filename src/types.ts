@@ -1,5 +1,7 @@
 // Shared type definitions for the Worker.
 
+import type { SeriesBucket } from "./config";
+
 export interface Env {
   AI: Ai;
   ASSETS: Fetcher;
@@ -136,9 +138,9 @@ export interface AnalyticsSummary {
   prev?: { totalEvents: number; blocked: number; logged: number; piiRequests: number };
   actions: Record<string, number>; // raw action → count (block, log, …)
   topRules: { name: string; action: string; count: number }[];
-  // Time buckets: hourly for ranges ≤ 48h, daily beyond that.
+  // Time buckets: 5-minute at 1h, hourly to 48h, daily beyond (see bucketFor).
   series: { t: string; block: number; log: number; other: number }[];
-  bucket: "hour" | "day";
+  bucket: SeriesBucket;
   aiScored: number; // requests AI Security actually scored
   scoreBuckets: { label: string; count: number }[]; // injection-score histogram
   piiRequests: number; // requests with ≥1 PII category detected
@@ -168,7 +170,7 @@ export interface PromptAnalytics {
   // Same prompt text seen more than once — attack replay / autopilot reruns.
   repeated: { prompt: string; count: number; redactions: number }[];
   series: { t: string; reply: number; guardrails: number; error: number }[];
-  bucket: "hour" | "day";
+  bucket: SeriesBucket;
   firstTs: number | null;
   lastTs: number | null;
   error?: string;
@@ -195,7 +197,7 @@ export interface GatewayAnalytics {
   statusCodes: { code: number; count: number }[];
   byModel: { model: string; count: number; tokensIn: number; tokensOut: number; cost: number }[];
   series: { t: string; hit: number; miss: number; error: number }[];
-  bucket: "hour" | "day";
+  bucket: SeriesBucket;
   truncated: boolean; // hit the row cap — totals are a floor, not exact
   error?: string;
 }

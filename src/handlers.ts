@@ -1,6 +1,7 @@
 // Route handlers, one per endpoint. Each returns a Response.
 
 import {
+  bucketFor,
   CF_API_BASE,
   DEFAULT_AI_GATEWAY_ID,
   DEFAULT_SYSTEM_PROMPT,
@@ -762,17 +763,35 @@ export async function handleGatewayAnalytics(url: URL, env: Env): Promise<Respon
 // since/until (epoch ms) pair wins when present — that is the custom
 // date/time picker — otherwise `hours` (0/absent = all time) picks a rolling
 // window ending now, which is what the 1h/24h/7d/all preset buttons send.
-function parseTimeWindow(url: URL): { since: number | null; until: number | null } {
+//
+// `spanHours` is the width the caller ASKED for, carried alongside so the
+// chart's bucket width can be derived from the request rather than re-measured
+// from `Date.now() - since`. Re-measuring is off by the milliseconds spent
+// parsing, which is enough to push the 1h preset just past 1.0 hours and drop
+// it from 5-minute buckets to hourly. Null when the width is unknowable here
+// (all-time, or an open-ended `since`) — the caller then derives it from the
+// data's own first/last row.
+function parseTimeWindow(url: URL): {
+  since: number | null;
+  until: number | null;
+  spanHours: number | null;
+} {
   const sinceRaw = url.searchParams.get("since");
   const untilRaw = url.searchParams.get("until");
   const since = sinceRaw != null ? Number(sinceRaw) : NaN;
   const until = untilRaw != null ? Number(untilRaw) : NaN;
   if (Number.isFinite(since) || Number.isFinite(until)) {
-    return { since: Number.isFinite(since) ? since : null, until: Number.isFinite(until) ? until : null };
+    const s = Number.isFinite(since) ? since : null;
+    const u = Number.isFinite(until) ? until : null;
+    return { since: s, until: u, spanHours: s != null && u != null ? (u - s) / 3_600_000 : null };
   }
   const rawHours = parseInt(url.searchParams.get("hours") || "0", 10) || 0;
   const hours = Math.min(168, Math.max(0, rawHours));
-  return { since: hours > 0 ? Date.now() - hours * 3_600_000 : null, until: null };
+  return {
+    since: hours > 0 ? Date.now() - hours * 3_600_000 : null,
+    until: null,
+    spanHours: hours > 0 ? hours : null,
+  };
 }
 
 // GET  /api/prompt-log?limit=&route=&outcome=&hours=|since=&until= — recent
@@ -849,7 +868,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
 export async function handlePromptAnalytics(url: URL, env: Env): Promise<Response> {
   if (!env.DB) return Response.json({ configured: false });
 
-  const { since, until } = parseTimeWindow(url);
+  const { since, until, spanHours } = parseTimeWindow(url);
   const whereParts: string[] = [];
   const binds: number[] = [];
   if (since != null) {
@@ -907,17 +926,37 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       ),
     ]);
 
-    // Time series bucket width. With no lower bound the span is derived from
-    // the data itself, so a long-idle demo log still buckets sensibly; with a
-    // custom range the actual since/until width decides hour vs day buckets.
-    const spanMs =
-      since != null
-        ? Math.max(1, (until ?? Date.now()) - since)
-        : Math.max(1, (totals?.lastTs ?? 0) - (totals?.firstTs ?? 0));
-    const spanHours = Math.max(1, Math.ceil(spanMs / 3_600_000));
-    const bucket: "hour" | "day" = spanHours <= 48 ? "hour" : "day";
-    const stepMs = bucket === "hour" ? 3_600_000 : 86_400_000;
-    const series = new Map<string, { t: string; reply: number; guardrails: number; error: number }>();
+    // Time series bucket width, from the width the caller asked for. Only when
+    // that is unknowable (all time / open-ended since) is it derived from the
+    // data itself, so a long-idle demo log still buckets sensibly. Fractional
+    // hours throughout: a 40-minute window must land on 5-minute buckets, not
+    // be rounded up into hourly ones.
+    const dataSpanHours = Math.max(0, (totals?.lastTs ?? 0) - (totals?.firstTs ?? 0)) / 3_600_000;
+    const { bucket, stepMs } = bucketFor(spanHours ?? dataSpanHours);
+    type SeriesRow = { t: string; reply: number; guardrails: number; error: number };
+    const series = new Map<string, SeriesRow>();
+
+    // Pre-fill every bucket across the window so a quiet stretch renders as
+    // zero instead of vanishing. Without this the chart only holds buckets
+    // that had rows and the line interpolates straight across the gaps —
+    // drawing activity that never happened. The zone analytics scaffold
+    // (makeBuckets) has always done this; the prompt log never did, which only
+    // became visible once 5-minute buckets made gaps common. Capped so a
+    // hand-typed `since` far in the past can't spin here.
+    const MAX_PREFILL_BUCKETS = 400;
+    const rangeStart = since ?? totals?.firstTs ?? null;
+    const rangeEnd = until ?? (since != null ? Date.now() : (totals?.lastTs ?? null));
+    if (rangeStart != null && rangeEnd != null && rangeEnd >= rangeStart) {
+      const first = Math.floor(rangeStart / stepMs) * stepMs;
+      const count = Math.floor((rangeEnd - first) / stepMs) + 1;
+      if (count <= MAX_PREFILL_BUCKETS) {
+        for (let t = first; t <= rangeEnd; t += stepMs) {
+          const key = new Date(t).toISOString();
+          series.set(key, { t: key, reply: 0, guardrails: 0, error: 0 });
+        }
+      }
+    }
+
     for (const r of rows.results ?? []) {
       const key = new Date(Math.floor(r.ts / stepMs) * stepMs).toISOString();
       const row = series.get(key) ?? { t: key, reply: 0, guardrails: 0, error: 0 };

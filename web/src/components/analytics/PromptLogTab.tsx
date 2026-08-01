@@ -24,7 +24,7 @@ import {
   Trash2,
   UserSearch,
 } from "lucide-react";
-import { BarList, Card, Tile } from "./primitives";
+import { BarList, bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, PLOG_SERIES } from "./EventSeries";
 import { Verdict } from "../Verdict";
 import type { PromptAnalytics, PromptLog, PromptLogRow as PromptLogRowData } from "../../lib/types";
@@ -246,7 +246,7 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
       </div>
 
       {(a.series ?? []).length > 0 && (
-        <Card title="Prompts over time" subtitle={`per ${a.bucket === "day" ? "day" : "hour"} · by outcome${span ? ` · ${span}` : ""}`}>
+        <Card title="Prompts over time" subtitle={`per ${bucketLabel(a.bucket)} · by outcome${span ? ` · ${span}` : ""}`}>
           <EventSeries rows={a.series ?? []} bucket={a.bucket} defs={PLOG_SERIES} ariaLabel="Prompts over time" />
         </Card>
       )}
