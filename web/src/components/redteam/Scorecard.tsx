@@ -87,8 +87,12 @@ export function Scorecard({
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Bars title="By severity" rows={bySeverityRows} colorOf={(k) => SEVERITY_BAR[k as RtSeverity]} />
+      {/* Severity is a Prisma rating; a custom CSV has none, so the card is
+          dropped rather than shown with an invented "unrated" bucket. */}
+      <div className={`grid gap-4 ${bySeverityRows.length > 0 ? "lg:grid-cols-2" : ""}`}>
+        {bySeverityRows.length > 0 && (
+          <Bars title="By severity" rows={bySeverityRows} colorOf={(k) => SEVERITY_BAR[k as RtSeverity]} />
+        )}
         <Bars title="By category" rows={byCategoryRows} colorOf={() => "bg-cf-red/70"} />
       </div>
     </>

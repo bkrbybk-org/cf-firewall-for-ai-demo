@@ -28,14 +28,26 @@ import type { Outcome } from "./verdict";
 export type RtSeverity = "critical" | "high" | "medium" | "low";
 export type RtClass = "security" | "safety" | "brand";
 
+// Where an attack came from. The scan-only fields below (cls, severity,
+// reportedAsr, scanRef) are Prisma's assessments — a CSV a user wrote has none
+// of them, and inventing plausible values would launder a guess into something
+// that reads like scan data. They are optional, and the UI omits the columns
+// rather than filling them in.
+export type RtSource = "prisma" | "custom";
+
 export interface RedTeamAttack {
-  id: string; // stable local id, e.g. "rt-01"
-  cls: RtClass;
-  category: string; // scan sub-category, e.g. "Brand Tarnishing / Self-Criticism"
-  severity: RtSeverity;
-  reportedAsr: number; // the SCAN's ASR for this prompt (reference only, 0–100)
-  scanRef: number; // row number in the Prisma report's "Successful Attacks" list
-  prompt: string; // Thai attack text (report preview, cleaned)
+  id: string; // stable local id, e.g. "rt-01" or "csv-12" (the CSV row number)
+  source?: RtSource; // undefined = "prisma" (the built-in corpus predates this)
+  cls?: RtClass; // scan only
+  category: string; // scan sub-category, or "Custom CSV"
+  severity?: RtSeverity; // scan only
+  reportedAsr?: number; // scan only — the SCAN's ASR (reference, 0–100)
+  scanRef?: number; // scan only — row in the report's "Successful Attacks" list
+  prompt: string; // the attack text sent verbatim to /api/chat
+  // Custom corpora only: the operator's note on what the attack is trying to
+  // achieve. Carried for reference and never evaluated — scoring here is
+  // strictly "did the edge stop it", and there is no LLM judge to check a goal.
+  goal?: string;
 }
 
 export const RT_CORPUS: RedTeamAttack[] = [
@@ -536,9 +548,13 @@ export function byCategory(corpus: RedTeamAttack[], results: Map<string, RtRunRe
   return breakdown(corpus, results, (a) => a.category).sort((a, b) => b.reached - a.reached || b.total - a.total);
 }
 
-// Severity breakdown in fixed critical→low order.
+// Severity breakdown in fixed critical→low order. Attacks without a severity
+// (a custom CSV carries none) are left out entirely rather than bucketed as
+// "unknown" — the caller hides the card when this comes back empty.
 export function bySeverity(corpus: RedTeamAttack[], results: Map<string, RtRunResult>): RtBreakdownRow[] {
-  return breakdown(corpus, results, (a) => a.severity).sort(
+  const rated = corpus.filter((a) => a.severity != null);
+  if (rated.length === 0) return [];
+  return breakdown(rated, results, (a) => a.severity as RtSeverity).sort(
     (a, b) => SEVERITY_RANK[a.key as RtSeverity] - SEVERITY_RANK[b.key as RtSeverity],
   );
 }

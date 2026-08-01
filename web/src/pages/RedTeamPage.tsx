@@ -5,17 +5,21 @@
 //
 // The headline metric is "reached the model" (edge miss rate), NOT the scan's
 // ASR (model compliance) — the two are deliberately kept apart in the UI.
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  CircleAlert,
+  Download,
   Info,
   Loader2,
   Play,
   Square,
   Swords,
+  Trash2,
+  Upload,
   Wrench,
 } from "lucide-react";
 import { Header } from "../components/Header";
@@ -23,6 +27,10 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { Scorecard } from "../components/redteam/Scorecard";
 import { useRedTeam, type RtAttackState } from "../hooks/useRedTeam";
 import { getModels } from "../lib/api";
+import { CSV_TEMPLATE, parseAttackCsv } from "../lib/attackCsv";
+import { customCorpusStore } from "../lib/customCorpus";
+import { downloadFile } from "../lib/export";
+import { useStore } from "../lib/sessionStore";
 import type { GatewayOption } from "../lib/types";
 import {
   RT_CORPUS,
@@ -69,19 +77,42 @@ function StateCell({ s }: { s?: RtAttackState }) {
 }
 
 // ── sortable table ──────────────────────────────────────────────────────────
-type SortKey = "severity" | "category" | "reportedAsr" | "state";
+// "ref" is the file/report row number, which is the only ordering a custom CSV
+// has — severity and scan ASR exist on the Prisma corpus alone.
+type SortKey = "ref" | "severity" | "category" | "reportedAsr" | "state";
 type SortDir = "asc" | "desc";
-const DEFAULT_DIR: Record<SortKey, SortDir> = { severity: "asc", category: "asc", reportedAsr: "desc", state: "asc" };
+const DEFAULT_DIR: Record<SortKey, SortDir> = {
+  ref: "asc",
+  severity: "asc",
+  category: "asc",
+  reportedAsr: "desc",
+  state: "asc",
+};
 const STATE_ORDER: Record<string, number> = { allow: 0, log: 1, denied: 2, guardrails: 3, pending: 4, error: 5, block: 6, challenge: 7 };
 
-function sortValue(a: RedTeamAttack, states: Record<string, RtAttackState>, key: SortKey): number | string {
+// Row label: the scan's reference number, or the CSV line the prompt came from.
+function refOf(a: RedTeamAttack, index: number): number {
+  if (a.scanRef != null) return a.scanRef;
+  const n = Number(a.id.replace(/^csv-/, ""));
+  return Number.isFinite(n) ? n : index + 1;
+}
+
+function sortValue(
+  a: RedTeamAttack,
+  index: number,
+  states: Record<string, RtAttackState>,
+  key: SortKey,
+): number | string {
   switch (key) {
+    case "ref":
+      return refOf(a, index);
     case "severity":
-      return SEVERITY_RANK[a.severity];
+      // Unrated rows sort last rather than pretending to be "low".
+      return a.severity ? SEVERITY_RANK[a.severity] : 99;
     case "category":
       return a.category;
     case "reportedAsr":
-      return a.reportedAsr;
+      return a.reportedAsr ?? -1;
     case "state": {
       const s = states[a.id];
       return s != null && s in STATE_ORDER ? STATE_ORDER[s] : 99;
@@ -141,9 +172,62 @@ const CONTROLS: { finding: string; count: string; control: string }[] = [
 ];
 
 export function RedTeamPage() {
-  const { phase, attackStates, results, settleLeftMs, run, stop } = useRedTeam();
+  const { phase, attackStates, results, settleLeftMs, run, stop, reset } = useRedTeam();
   const [sortKey, setSortKey] = useState<SortKey>("severity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  // Which corpus is loaded: the built-in scan replay, or a CSV the operator
+  // brought. The custom one lives in a module store so switching to Analytics
+  // and back does not discard it.
+  const custom = useStore(customCorpusStore);
+  const [useCustom, setUseCustom] = useState(false);
+  const [csvError, setCsvError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const corpus = useCustom && custom ? custom.attacks : RT_CORPUS;
+  const isCustom = useCustom && !!custom;
+
+  // Switching corpora must drop the previous run's results — the scorecard
+  // sums every result held, so keeping them would print the old corpus's score
+  // above the new corpus's table.
+  function selectCorpus(next: boolean) {
+    if (next === isCustom) return;
+    reset();
+    setUseCustom(next);
+    setSortKey(next ? "ref" : "severity");
+    setSortDir("asc");
+  }
+
+  async function onPickFile(file: File | undefined) {
+    if (!file) return;
+    setCsvError(null);
+    const parsed = parseAttackCsv(await file.text());
+    if (parsed.error) {
+      setCsvError(parsed.error);
+      return;
+    }
+    reset();
+    customCorpusStore.set({
+      name: file.name,
+      attacks: parsed.attacks,
+      warnings: parsed.warnings,
+      loadedAt: Date.now(),
+    });
+    setUseCustom(true);
+    // Severity is a Prisma field; a CSV has none, so default to file order.
+    setSortKey("ref");
+    setSortDir("asc");
+  }
+
+  function clearCustom() {
+    reset();
+    customCorpusStore.set(null);
+    setUseCustom(false);
+    setCsvError(null);
+    setSortKey("severity");
+    setSortDir("asc");
+    // Without this, re-picking the SAME file fires no change event.
+    if (fileRef.current) fileRef.current.value = "";
+  }
 
   // Route the batch runs through — mirrors the chat page's Route control. The
   // edge WAF verdict is the same on both, but the gateway route adds Guardrails,
@@ -164,18 +248,24 @@ export function RedTeamPage() {
 
   const resultList: RtRunResult[] = useMemo(() => [...results.values()], [results]);
   const score = useMemo(() => scoreRun(resultList), [resultList]);
-  const sevRows = useMemo(() => bySeverity(RT_CORPUS, results), [results]);
-  const catRows = useMemo(() => byCategory(RT_CORPUS, results), [results]);
+  // Empty for a custom corpus — bySeverity drops unrated attacks rather than
+  // inventing a bucket, and the card is hidden below when it comes back empty.
+  const sevRows = useMemo(() => bySeverity(corpus, results), [corpus, results]);
+  const catRows = useMemo(() => byCategory(corpus, results), [corpus, results]);
 
   const rows = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
-    return [...RT_CORPUS].sort((a, b) => {
-      const av = sortValue(a, attackStates, sortKey);
-      const bv = sortValue(b, attackStates, sortKey);
-      if (av === bv) return SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
-      return (av > bv ? 1 : -1) * dir;
-    });
-  }, [sortKey, sortDir, attackStates]);
+    const indexed = corpus.map((a, i) => ({ a, i }));
+    return indexed
+      .sort((x, y) => {
+        const av = sortValue(x.a, x.i, attackStates, sortKey);
+        const bv = sortValue(y.a, y.i, attackStates, sortKey);
+        // Ties fall back to file/report order, which is stable for both corpora.
+        if (av === bv) return refOf(x.a, x.i) - refOf(y.a, y.i);
+        return (av > bv ? 1 : -1) * dir;
+      })
+      .map((x) => x.a);
+  }, [corpus, sortKey, sortDir, attackStates]);
 
   function onSort(k: SortKey) {
     if (k === sortKey) setSortDir((c) => (c === "asc" ? "desc" : "asc"));
@@ -187,13 +277,17 @@ export function RedTeamPage() {
 
   const sentCount = Object.values(attackStates).filter((s) => s !== "queued").length;
   let phaseText = "";
-  if (phase === "sending") phaseText = `sending ${sentCount}/${RT_CORPUS.length}…`;
+  if (phase === "sending") phaseText = `sending ${sentCount}/${corpus.length}…`;
   else if (phase === "settling") phaseText = `waiting for edge ingestion — ${Math.ceil(settleLeftMs / 1000)}s`;
-  else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${RT_CORPUS.length}…`;
+  else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${corpus.length}…`;
   else if (phase === "done") phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})`;
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
+  // Sends are sequential (~4s each on this account) plus one 90s settle and the
+  // capped-concurrency resolve. Derived rather than hardcoded now that the
+  // corpus size is the operator's choice.
+  const runMinutes = Math.max(1, Math.round((corpus.length * 4 + 90 + corpus.length * 1.5) / 60));
 
   return (
     <div className="flex h-full flex-col">
@@ -212,8 +306,9 @@ export function RedTeamPage() {
             <Info size={16} className="mt-0.5 shrink-0 text-cf-blue" />
             <p className="text-[12.5px] leading-relaxed text-muted">
               This replays a curated <b className="text-text">36 of the 116</b> attacks from the Prisma AIRS scan
-              (Thai-language) through the real <code className="font-mono">/api/chat</code> route, then reads each
-              request's edge verdict. The headline is{" "}
+              (Thai-language) — or <b className="text-text">your own prompts from a CSV</b> — through the real{" "}
+              <code className="font-mono">/api/chat</code> route, then reads each request's edge verdict. The headline
+              is{" "}
               <b className="text-text">“reached the model”</b> — how often the Cloudflare edge did <i>not</i> stop the
               request. It is <b className="text-text">not</b> the scan's ASR, which measures whether the model actually
               complied; the scan's own ASR is shown per row for reference only. Runs land in the{" "}
@@ -237,10 +332,10 @@ export function RedTeamPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined })}
+                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined }, corpus)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20"
               >
-                <Play size={13} /> {hasResults ? "Re-run" : "Run"} {RT_CORPUS.length} attacks
+                <Play size={13} /> {hasResults ? "Re-run" : "Run"} {corpus.length} attack{corpus.length === 1 ? "" : "s"}
               </button>
             )}
 
@@ -285,9 +380,105 @@ export function RedTeamPage() {
               </span>
             )}
             <span className="ml-auto text-[11.5px] text-subtle">
-              full run ≈ 4 min (send · 90s edge settle · resolve)
+              ≈ {runMinutes} min (send · 90s edge settle · resolve)
             </span>
           </div>
+
+          {/* Corpus picker — the built-in scan replay, or the operator's own CSV. */}
+          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
+            <span className="text-[11.5px] font-bold uppercase tracking-wider text-subtle">Corpus</span>
+            <div className="inline-flex overflow-hidden rounded-full border border-line text-[12px]">
+              <button
+                type="button"
+                disabled={running}
+                onClick={() => selectCorpus(false)}
+                className={`px-3 py-1.5 transition disabled:opacity-50 ${
+                  !isCustom ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                }`}
+              >
+                Prisma AIRS ({RT_CORPUS.length})
+              </button>
+              <button
+                type="button"
+                disabled={running || !custom}
+                title={custom ? undefined : "Load a CSV first"}
+                onClick={() => selectCorpus(true)}
+                className={`px-3 py-1.5 transition disabled:opacity-40 ${
+                  isCustom ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                }`}
+              >
+                Custom CSV{custom ? ` (${custom.attacks.length})` : ""}
+              </button>
+            </div>
+
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".csv,text/csv"
+              disabled={running}
+              onChange={(e) => void onPickFile(e.target.files?.[0])}
+              className="hidden"
+              aria-hidden="true"
+              tabIndex={-1}
+            />
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => fileRef.current?.click()}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent disabled:opacity-50"
+            >
+              <Upload size={13} /> {custom ? "Replace CSV" : "Load CSV"}
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadFile("attack-corpus-template.csv", CSV_TEMPLATE, "text/csv")}
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent"
+            >
+              <Download size={13} /> Template
+            </button>
+            {custom && (
+              <button
+                type="button"
+                disabled={running}
+                onClick={clearCustom}
+                className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-cf-red hover:text-cf-red disabled:opacity-50"
+              >
+                <Trash2 size={13} /> Clear
+              </button>
+            )}
+            {custom && (
+              <span className="text-[11.5px] text-subtle">
+                <span className="font-mono text-muted">{custom.name}</span> · {custom.attacks.length} prompt
+                {custom.attacks.length === 1 ? "" : "s"}
+              </span>
+            )}
+            <span className="ml-auto text-[11.5px] text-subtle">
+              <code className="font-mono">prompt,goal</code> header · same shape as the Prisma AIRS upload
+            </span>
+          </div>
+
+          {csvError && (
+            <div className="flex items-start gap-2.5 rounded-xl border border-cf-red/40 bg-cf-red/[0.06] px-3.5 py-2.5 text-[12px] text-cf-red">
+              <CircleAlert size={15} className="mt-px shrink-0" />
+              <span>{csvError}</span>
+            </div>
+          )}
+          {isCustom && custom!.warnings.length > 0 && (
+            <div className="rounded-xl border border-cf-amber/40 bg-cf-amber/[0.06] px-3.5 py-2.5 text-[12px] text-muted">
+              {custom!.warnings.map((w) => (
+                <div key={w}>{w}</div>
+              ))}
+            </div>
+          )}
+          {isCustom && (
+            <div className="rounded-xl border border-cf-blue/30 bg-cf-blue/[0.06] px-3.5 py-2 text-[11.5px] leading-relaxed text-muted">
+              Running your own prompts. Severity and scan ASR are Prisma's assessments, so those columns are hidden
+              rather than filled in with guesses. <b className="text-text">Goals are carried for reference and never
+              evaluated</b> — there is no LLM judge here, so the only thing measured is whether the Cloudflare edge
+              stopped the request. Prompts are parsed in the browser and reach the Worker only by being sent as normal
+              chat requests, which is what makes them subject to the real edge scan.
+            </div>
+          )}
           {route === "gateway" && (
             <div className="rounded-xl border border-cf-purple/30 bg-cf-purple/[0.06] px-3.5 py-2 text-[11.5px] text-muted">
               Gateway route: the edge WAF verdict is unchanged, but a guarded gateway adds Guardrails — watch for{" "}
@@ -303,53 +494,86 @@ export function RedTeamPage() {
             <div className="border-b border-line px-4 py-2.5">
               <h2 className="text-[13px] font-bold text-text">Attacks</h2>
               <div className="mt-0.5 text-[11.5px] text-muted">
-                {RT_CORPUS.length} prompts · click a column to sort · “scan ASR” is Prisma's number, not ours
+                {corpus.length} prompts · click a column to sort ·{" "}
+                {isCustom ? (
+                  <>
+                    from <span className="font-mono">{custom!.name}</span> · “goal” is your note, not something this
+                    page evaluates
+                  </>
+                ) : (
+                  <>“scan ASR” is Prisma's number, not ours</>
+                )}
               </div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[820px] text-left text-[12px]">
                 <thead className="text-[10px] uppercase tracking-wider text-subtle">
                   <tr>
-                    <th scope="col" className="px-2.5 py-1.5 font-semibold">
-                      <span className="sr-only">Ref</span>#
-                    </th>
-                    <SortHeader label="Severity" col="severity" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
-                    <SortHeader label="Category" col="category" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    <SortHeader label="#" col="ref" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    {/* Severity and scan ASR exist only on the Prisma corpus. */}
+                    {!isCustom && (
+                      <SortHeader label="Severity" col="severity" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    )}
+                    {!isCustom && (
+                      <SortHeader label="Category" col="category" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
+                    )}
                     <th scope="col" className="w-full px-2.5 py-1.5 font-semibold">
                       Prompt
                     </th>
-                    <SortHeader
-                      label="Scan ASR"
-                      col="reportedAsr"
-                      sortKey={sortKey}
-                      sortDir={sortDir}
-                      onSort={onSort}
-                      className="text-right"
-                    />
+                    {isCustom && (
+                      <th scope="col" className="px-2.5 py-1.5 font-semibold">
+                        Goal
+                      </th>
+                    )}
+                    {!isCustom && (
+                      <SortHeader
+                        label="Scan ASR"
+                        col="reportedAsr"
+                        sortKey={sortKey}
+                        sortDir={sortDir}
+                        onSort={onSort}
+                        className="text-right"
+                      />
+                    )}
                     <SortHeader label="Edge result" col="state" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((a) => (
+                  {rows.map((a, i) => (
                     <tr key={a.id} className="border-t border-line align-top">
                       <td className="px-2.5 py-1.5 font-mono text-[11px] whitespace-nowrap text-subtle tabular-nums">
-                        {a.scanRef}
+                        {refOf(a, i)}
                       </td>
-                      <td className="px-2.5 py-1.5">
-                        <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${SEV_PILL[a.severity]}`}>
-                          {a.severity}
-                        </span>
-                      </td>
-                      <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">{a.category}</td>
+                      {!isCustom && (
+                        <td className="px-2.5 py-1.5">
+                          {a.severity ? (
+                            <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${SEV_PILL[a.severity]}`}>
+                              {a.severity}
+                            </span>
+                          ) : (
+                            <span className="text-subtle">—</span>
+                          )}
+                        </td>
+                      )}
+                      {!isCustom && <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">{a.category}</td>}
                       {/* max-w-0 + w-full lets the prompt absorb the slack and truncate. */}
                       <td className="w-full max-w-0 px-2.5 py-1.5">
-                        <div className="truncate text-text" title={a.prompt} lang="th">
+                        <div className="truncate text-text" title={a.prompt} lang={isCustom ? undefined : "th"}>
                           {a.prompt}
                         </div>
                       </td>
-                      <td className="px-2.5 py-1.5 text-right font-mono text-[11px] whitespace-nowrap text-subtle tabular-nums">
-                        {a.reportedAsr}%
-                      </td>
+                      {isCustom && (
+                        <td className="max-w-[220px] px-2.5 py-1.5">
+                          <div className="truncate text-muted" title={a.goal}>
+                            {a.goal ?? <span className="text-subtle">—</span>}
+                          </div>
+                        </td>
+                      )}
+                      {!isCustom && (
+                        <td className="px-2.5 py-1.5 text-right font-mono text-[11px] whitespace-nowrap text-subtle tabular-nums">
+                          {a.reportedAsr != null ? `${a.reportedAsr}%` : "—"}
+                        </td>
+                      )}
                       <td className="px-2.5 py-1.5 whitespace-nowrap">
                         <StateCell s={attackStates[a.id]} />
                       </td>

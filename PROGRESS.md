@@ -115,6 +115,18 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   had fired them — the same misattribution class as the `denied` fix. `isLlmRule()` in `data.ts`
   matches `ZONE_RULES` by name with a `\bLLM\b` fallback (so a renamed rule degrades to "probably
   LLM" rather than silently dropping into "other"), and `EdgeTab` renders two labelled groups.
+- **The red-team corpus can be the operator's own CSV, in Prisma's upload shape.** `prompt,goal`
+  header, parsed **in the browser** (`lib/attackCsv.ts` — quoted fields, embedded newlines, doubled
+  quotes, BOM, CRLF; 200-prompt cap because each row is a real inference call sent sequentially).
+  Three deliberate refusals, all the same principle — never render a guess as if it were data:
+  a file with no `prompt` column is **rejected** rather than parsed from column 0 (importing the
+  wrong column yields a run that looks fine and tests nothing); custom rows carry **no severity,
+  scan ASR or scan ref**, so those columns and the by-severity breakdown are *removed* rather than
+  filled with plausible values; and `goal` is displayed but **never scored**, because Prisma's goal
+  steers an LLM judge and this app has none — it measures only whether the edge stopped the request.
+  Switching corpora resets results, so the scorecard can never describe a different corpus than the
+  table beneath it. The corpus lives in a module store (survives tab switches, cleared by refresh,
+  deliberately not localStorage — someone else's attack prompts should not outlive the session).
 - **WAF rules are read live from the zone, and classified by expression, not by name.**
   `/api/zone-rules` reads the `http_request_firewall_custom` entrypoint ruleset (Rulesets API,
   isolate-cached) and marks each rule `llm` when its **expression** references `cf.llm.*`. The old
@@ -211,7 +223,9 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   prompt log with the window matched and a context banner. For a *blocking* rule the banner says
   outright that those prompts never reached the Worker and cannot appear in the log — otherwise the
   click lands on a confusingly empty table.
-- **`/redteam`** — replays a curated **36 of the 116** enumerated attacks from the Prisma AIRS scan
+- **`/redteam`** — a **Corpus** control picks the built-in scan replay or an uploaded `prompt,goal`
+  CSV (see Architecture for what a custom corpus deliberately does *not* claim). The built-in one
+  replays a curated **36 of the 116** enumerated attacks from the Prisma AIRS scan
   (target `cw-ai-red-team`, 2026-07-30; Thai-language) through the real `/api/chat` and scores what
   the edge did. Route selector (Workers AI ↔ a specific AI Gateway, locked mid-run so a batch never
   mixes routes), scorecard, sortable attack table, and a static "close the gaps" panel mapping each
@@ -245,9 +259,11 @@ web/src/
   lib/              data.ts (demo content + isLlmRule), compliance.ts (MATRIX + FRAMEWORKS), api.ts
                     (fetch wrappers incl. TimeWindow + SSE parser), types.ts, format.ts, icons.ts,
                     verdict.ts (classify + poller + fetchVerdictOnce + ray cache), export.ts
-                    (session export — ⚠️ still uses the old unanchored window, see Open bugs),
+                    (session export — now anchored per turn via Msg.tsMs),
                     metadata.ts (AI Gateway metadata parser), sessionStore.ts,
-                    redteam.ts (Prisma AIRS corpus + scoring helpers)
+                    redteam.ts (Prisma AIRS corpus + scoring helpers),
+                    attackCsv.ts (custom-corpus CSV parser + template),
+                    customCorpus.ts (the uploaded corpus, page-load lifetime)
   hooks/            useTheme, useNeurons, useChat (session + send pipeline, RequestConfig snapshot
                     per turn for the verdict trace's request-chips row), useRedTeam (3-phase runner)
   components/       Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel,
@@ -297,7 +313,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **102 across 10 files** (64 before the hygiene pass, 49 before that).
+**Tests** — `npm test`, **124 across 11 files** (102 before the CSV corpus, 64 before the hygiene pass).
 Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
 - `src/promptlog.test.ts` (17) — the prompt-log query builder. Offset reaching past the old 200-row
   ceiling, LIKE-wildcard escaping (searching `100%` used to match everything), and an `ORDER BY`

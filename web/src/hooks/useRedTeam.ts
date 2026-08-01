@@ -15,7 +15,7 @@
 import { useCallback, useRef, useState } from "react";
 import { postChat } from "../lib/api";
 import { fetchVerdictOnce, verdictOutcome } from "../lib/verdict";
-import { RT_CORPUS, type RtResultState, type RtRunResult } from "../lib/redteam";
+import type { RedTeamAttack, RtResultState, RtRunResult } from "../lib/redteam";
 
 export type RtPhase = "idle" | "sending" | "settling" | "resolving" | "done" | "stopped";
 
@@ -113,8 +113,13 @@ export interface RedTeamRun {
   attackStates: Record<string, RtAttackState>;
   results: Map<string, RtRunResult>;
   settleLeftMs: number; // countdown shown during the settle phase
-  run: (cfg: RtRouteConfig) => void;
+  /** The corpus is passed in per run — the built-in scan set or an uploaded CSV. */
+  run: (cfg: RtRouteConfig, corpus: RedTeamAttack[]) => void;
   stop: () => void;
+  /** Drop results. Required when the corpus changes: the scorecard sums every
+   *  result in the map, so keeping them would score the OLD corpus beside the
+   *  new corpus's table. */
+  reset: () => void;
 }
 
 export function useRedTeam(): RedTeamRun {
@@ -135,16 +140,17 @@ export function useRedTeam(): RedTeamRun {
     setPhase("stopped");
   }, []);
 
-  const run = useCallback(async (cfg: RtRouteConfig) => {
+  const run = useCallback(async (cfg: RtRouteConfig, corpus: RedTeamAttack[]) => {
+    if (corpus.length === 0) return;
     stopRef.current = false;
     setResults(new Map());
     setSettleLeftMs(0);
-    setAttackStates(Object.fromEntries(RT_CORPUS.map((a) => [a.id, "queued" as RtAttackState])));
+    setAttackStates(Object.fromEntries(corpus.map((a) => [a.id, "queued" as RtAttackState])));
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
     const sent: { id: string; ray?: string; ts: number; kind: "reply" | "blocked" | "guardrails" | "error" }[] = [];
-    for (const a of RT_CORPUS) {
+    for (const a of corpus) {
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
@@ -189,5 +195,14 @@ export function useRedTeam(): RedTeamRun {
     setPhase("done");
   }, [setOne]);
 
-  return { phase, attackStates, results, settleLeftMs, run, stop };
+  const reset = useCallback(() => {
+    stopRef.current = true;
+    if (settleTimer.current) window.clearInterval(settleTimer.current);
+    setResults(new Map());
+    setAttackStates({});
+    setSettleLeftMs(0);
+    setPhase("idle");
+  }, []);
+
+  return { phase, attackStates, results, settleLeftMs, run, stop, reset };
 }
