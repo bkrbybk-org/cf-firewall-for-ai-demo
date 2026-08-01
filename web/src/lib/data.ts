@@ -372,6 +372,25 @@ export const ZONE_RULES: ZoneRule[] = [
   { name: "Monitor LLM Custom Topics - Telco Use Cases", action: "log", summary: "custom topic score ≤ 50" },
 ];
 
+// Is a fired rule one of the AI Security / cf.llm.* rules, or an unrelated zone
+// rule that merely happens to fire on the same traffic?
+//
+// This matters for honesty, not tidiness: the zone also runs rules like
+// "(P) AI Red Team", "Geography-based rule" and "cw-lab-kali OWASP ZAP", and on
+// real traffic those outrank the LLM rules by event count. Listing them
+// together under "Top fired rules" reads as though AI Security fired them —
+// the same class of misattribution as the account-level "Monitor Likely
+// Attacks" red herring.
+//
+// Matching is by ZONE_RULES name first (the hand-maintained mirror of the
+// dashboard), then a \bLLM\b fallback so a renamed or newly-added LLM rule is
+// still classified correctly instead of silently dropping into "other".
+export function isLlmRule(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  if (ZONE_RULES.some((r) => r.name.toLowerCase() === n)) return true;
+  return /\bllm\b/i.test(name);
+}
+
 // Demo autopilot script — a guided tour the presenter can run with one click.
 // Each step is sent as a real prompt; the autopilot waits for the edge verdict
 // and compares the outcome against `expect`.

@@ -72,6 +72,10 @@ export interface Verdict {
   configured?: boolean;
   ray?: string;
   found?: boolean;
+  // What the edge actually returned. Load-bearing: a 4xx here with no
+  // blocking rule means something above the WAF (Access, rate limiting)
+  // rejected the request, which the rule list alone cannot reveal.
+  httpStatus?: number | null;
   securityAction?: string | null;
   ai?: {
     injectionScore: number | null;
@@ -83,6 +87,10 @@ export interface Verdict {
   rules?: VerdictRule[];
   cfLlmLabeled?: boolean;
   scored?: boolean;
+  // Request predates the analytics retention window — the data is gone, so
+  // unlike "not ingested yet" this will never resolve by waiting.
+  tooOld?: boolean;
+  retentionDays?: number;
   error?: string;
 }
 
@@ -104,6 +112,11 @@ export interface Analytics {
   until?: string;
   totalEvents?: number;
   actions?: Record<string, number>;
+  // totalEvents is a floor, not an exact count, when this is set (row cap hit).
+  truncated?: boolean;
+  // Preceding same-length window, for trend deltas. Absent when that window was
+  // itself truncated — see AnalyticsSummary in src/types.ts.
+  prev?: { totalEvents: number; blocked: number; logged: number; piiRequests: number };
   topRules?: { name: string; action: string; count: number }[];
   series?: { t: string; block: number; log: number; other: number }[];
   bucket?: "hour" | "day";

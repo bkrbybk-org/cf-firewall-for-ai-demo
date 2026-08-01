@@ -6,6 +6,12 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-lc", "source ~/.nvm/nvm.sh && nvm use 24 >/dev/null && npx wrangler dev --port 8787"],
       "port": 8787
+    },
+    {
+      "name": "vite-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "source ~/.nvm/nvm.sh && nvm use 24 >/dev/null && npx vite --port 5173"],
+      "port": 5173
     }
   ]
 }

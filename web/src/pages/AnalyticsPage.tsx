@@ -1,10 +1,11 @@
 // Security analytics dashboard shell: shared range picker, per-tab filters, and
 // the fetch/refresh cycle. The tabs themselves live in components/analytics/.
 import { useCallback, useEffect, useState } from "react";
+import { CalendarClock, Crosshair, X } from "lucide-react";
 import { RefreshCw } from "lucide-react";
 import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { EdgeTab } from "../components/analytics/EdgeTab";
+import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";
 import { GatewayTab } from "../components/analytics/GatewayTab";
 import { PromptLogTab } from "../components/analytics/PromptLogTab";
 import {
@@ -14,6 +15,7 @@ import {
   getModels,
   getPromptAnalytics,
   getPromptLog,
+  type TimeWindow,
 } from "../lib/api";
 import { fmtTime } from "../lib/format";
 import type {
@@ -24,11 +26,36 @@ import type {
   PromptLog,
 } from "../lib/types";
 
+// <input type="datetime-local"> reads/writes local time with no timezone
+// suffix ("2026-07-31T14:30"), which Date() parses as local time — exactly
+// what the picker should mean ("2:30pm here"), so no manual TZ math needed.
+const toLocalMs = (v: string): number | undefined => {
+  if (!v) return undefined;
+  const ms = new Date(v).getTime();
+  return Number.isFinite(ms) ? ms : undefined;
+};
+const fromMs = (ms: number): string => {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
 const RANGES = [
   { label: "1h", hours: 1 },
   { label: "24h", hours: 24 },
   { label: "7d", hours: 168 },
 ];
+// Matches OUTCOME_TONE in PromptLogTab so the filter chips read as the same
+// vocabulary as the rows they filter.
+const OUTCOME_FILTERS = [
+  { value: "reply", label: "replied", tone: "border-cf-green/50 text-cf-green" },
+  { value: "guardrails", label: "guardrails-blocked", tone: "border-cf-purple/50 text-cf-purple" },
+  { value: "error", label: "error", tone: "border-cf-red/50 text-cf-red" },
+];
+// The prompt log is deliberately small and often reviewed as "the whole demo
+// session so far", so it gets an explicit all-time option the other tabs
+// don't need (their datasets are too large to ever want unbounded).
+const PLOG_RANGES = [...RANGES, { label: "all", hours: 0 }];
 const REFRESH_MS = 60_000;
 
 type Tab = "edge" | "gateway" | "promptlog";
@@ -48,7 +75,36 @@ export function AnalyticsPage() {
   const [plog, setPlog] = useState<PromptLog | null>(null);
   const [pstats, setPstats] = useState<PromptAnalytics | null>(null);
   const [plogRoute, setPlogRoute] = useState("");
-  const [plogOutcome, setPlogOutcome] = useState("");
+  // Multi-select: any combination of outcomes at once (e.g. reply + error,
+  // hiding only guardrails-blocked). Empty = no filter, same as before.
+  const [plogOutcomes, setPlogOutcomes] = useState<string[]>([]);
+  const [plogHours, setPlogHours] = useState(1); // latest 1h by default
+  // Custom date/time range: a fifth option alongside the presets, not a
+  // separate control — only one of {preset, custom} is ever in effect.
+  const [plogCustom, setPlogCustom] = useState(false);
+  // Context banner set when the user drilled in from the edge tab, so the
+  // prompt log says which slice they clicked — and, when that slice was
+  // blocked at the edge, that those prompts cannot appear here at all.
+  const [drill, setDrill] = useState<EdgeDrill | null>(null);
+
+  // Drill in from the edge tab: switch to the prompt log and widen its window
+  // to match the edge range being viewed, so the two views describe the same
+  // span. The log can only ever show prompts that REACHED the Worker — the
+  // banner carries that caveat when the clicked slice was blocked.
+  const onDrill = useCallback(
+    (d: EdgeDrill) => {
+      setDrill(d);
+      setPlogCustom(false);
+      setPlogHours(hours);
+      setTab("promptlog");
+    },
+    [hours],
+  );
+  const [plogSince, setPlogSince] = useState(""); // datetime-local strings;
+  const [plogUntil, setPlogUntil] = useState(""); // "" = open-ended on that side
+  const plogWindow: TimeWindow = plogCustom
+    ? { sinceMs: toLocalMs(plogSince), untilMs: toLocalMs(plogUntil) }
+    : { hours: plogHours };
 
   const load = useCallback(async (h: number) => {
     setLoading(true);
@@ -84,13 +140,14 @@ export function AnalyticsPage() {
       .catch(() => {});
   }, []);
 
-  // Rollups cover the whole log, so they ignore the row filters on purpose.
-  const loadPlog = useCallback(async (route: string, outcome: string) => {
+  // Rollups share the same time frame as the rows so both describe the same
+  // window (see TimeWindow — hours preset, or an explicit custom range).
+  const loadPlog = useCallback(async (route: string, outcome: string[], window: TimeWindow) => {
     setLoading(true);
     try {
       const [log, stats] = await Promise.all([
-        getPromptLog({ route, outcome, limit: 200 }),
-        getPromptAnalytics(0),
+        getPromptLog({ route, outcome, limit: 200, ...window }),
+        getPromptAnalytics(window),
       ]);
       setPlog(log);
       setPstats(stats);
@@ -105,8 +162,12 @@ export function AnalyticsPage() {
   const refresh = useCallback(() => {
     if (tab === "edge") load(hours);
     else if (tab === "gateway") loadGw(gatewayId, hours);
-    else loadPlog(plogRoute, plogOutcome);
-  }, [tab, hours, gatewayId, plogRoute, plogOutcome, load, loadGw, loadPlog]);
+    else loadPlog(plogRoute, plogOutcomes, plogWindow);
+    // plogWindow is a fresh object every render, so its own primitive inputs
+    // — not the object itself — are the real dependencies here. plogOutcomes
+    // is an array too, but it only ever changes via setPlogOutcomes (a new
+    // array each time), so referential comparison here is fine.
+  }, [tab, hours, gatewayId, plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil, load, loadGw, loadPlog]);
 
   useEffect(() => {
     refresh();
@@ -127,8 +188,14 @@ export function AnalyticsPage() {
         actions={<ThemeToggle />}
       />
 
-      <main className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="mx-auto flex max-w-5xl flex-col gap-4">
+      {/* `relative` is load-bearing: Tailwind's `sr-only` (the prompt log's
+          "Expand" column header) is position:absolute, and without a positioned
+          ancestor its containing block is the document, not this scroll box —
+          so it escapes overflow-y clipping, inflates documentElement.scrollHeight
+          as the table scrolls, and lets the whole shell (footer included) scroll
+          off the viewport. */}
+      <main className="relative min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
           {/* Tab strip: edge (zone-scoped) vs AI Gateway (account-scoped). */}
           <div className="flex overflow-hidden rounded-full border border-line text-[12.5px] self-start">
             {(
@@ -141,7 +208,12 @@ export function AnalyticsPage() {
               <button
                 key={t.id}
                 type="button"
-                onClick={() => setTab(t.id)}
+                onClick={() => {
+                  // Switching tabs by hand ends the drill context — the banner
+                  // would otherwise outlive the click that created it.
+                  if (t.id !== "promptlog") setDrill(null);
+                  setTab(t.id);
+                }}
                 className={`px-4 py-1.5 transition ${
                   tab === t.id ? "bg-accent/15 font-bold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
                 }`}
@@ -152,7 +224,91 @@ export function AnalyticsPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 text-[12.5px] text-muted">
-            {tab !== "promptlog" && (
+            {tab === "promptlog" ? (
+              <>
+                <div className="flex overflow-hidden rounded-full border border-line">
+                  {PLOG_RANGES.map((r) => (
+                    <button
+                      key={r.hours}
+                      type="button"
+                      onClick={() => {
+                        setPlogCustom(false);
+                        setPlogHours(r.hours);
+                      }}
+                      className={`px-3.5 py-1.5 transition ${
+                        !plogCustom && plogHours === r.hours
+                          ? "bg-accent/15 font-bold text-accent"
+                          : "bg-surface hover:bg-surface-hover"
+                      }`}
+                    >
+                      {r.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Seed both fields with the currently active preset's
+                      // range on first switch, so Custom starts as an
+                      // editable version of what was just showing rather
+                      // than an empty (all-time) range.
+                      if (!plogCustom && !plogSince && !plogUntil) {
+                        const now = Date.now();
+                        setPlogUntil(fromMs(now));
+                        setPlogSince(fromMs(plogHours > 0 ? now - plogHours * 3_600_000 : now - 24 * 3_600_000));
+                      }
+                      setPlogCustom(true);
+                    }}
+                    className={`border-l border-line px-3.5 py-1.5 transition ${
+                      plogCustom ? "bg-accent/15 font-bold text-accent" : "bg-surface hover:bg-surface-hover"
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+                {plogCustom && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex items-center gap-1.5 rounded-xl border border-line bg-surface px-1 py-1 shadow-sm transition focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/20">
+                      <CalendarClock size={14} className="ml-1.5 shrink-0 text-subtle" />
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-subtle">from</span>
+                        <input
+                          type="datetime-local"
+                          value={plogSince}
+                          max={plogUntil || undefined}
+                          onChange={(e) => setPlogSince(e.target.value)}
+                          className="rounded-lg bg-transparent px-1.5 py-1 text-[12.5px] text-text outline-none"
+                        />
+                      </label>
+                      <div className="h-4 w-px bg-line" />
+                      <label className="flex items-center gap-1.5">
+                        <span className="text-subtle">to</span>
+                        <input
+                          type="datetime-local"
+                          value={plogUntil}
+                          min={plogSince || undefined}
+                          onChange={(e) => setPlogUntil(e.target.value)}
+                          className="rounded-lg bg-transparent px-1.5 py-1 text-[12.5px] text-text outline-none"
+                        />
+                      </label>
+                    </div>
+                    {(plogSince || plogUntil) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPlogSince("");
+                          setPlogUntil("");
+                        }}
+                        title="Clear custom range"
+                        className="flex items-center gap-1 rounded-full border border-line bg-surface px-2 py-1 text-subtle transition hover:border-line-strong hover:text-text"
+                      >
+                        <X size={12} />
+                        clear
+                      </button>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
               <div className="flex overflow-hidden rounded-full border border-line">
                 {RANGES.map((r) => (
                   <button
@@ -198,19 +354,40 @@ export function AnalyticsPage() {
                     <option value="gateway">AI Gateway</option>
                   </select>
                 </label>
-                <label className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5">
                   Outcome
-                  <select
-                    value={plogOutcome}
-                    onChange={(e) => setPlogOutcome(e.target.value)}
-                    className="rounded-lg border border-line bg-surface px-2.5 py-1.5 text-[12.5px] text-text outline-none focus:border-accent"
-                  >
-                    <option value="">all</option>
-                    <option value="reply">replied</option>
-                    <option value="guardrails">guardrails-blocked</option>
-                    <option value="error">error</option>
-                  </select>
-                </label>
+                  <div className="flex flex-wrap gap-1">
+                    {OUTCOME_FILTERS.map((o) => {
+                      const active = plogOutcomes.includes(o.value);
+                      return (
+                        <button
+                          key={o.value}
+                          type="button"
+                          onClick={() =>
+                            setPlogOutcomes((cur) =>
+                              cur.includes(o.value) ? cur.filter((v) => v !== o.value) : [...cur, o.value],
+                            )
+                          }
+                          aria-pressed={active}
+                          className={`rounded-full border px-2.5 py-1 text-[11.5px] font-semibold transition ${
+                            active ? o.tone + " bg-current/10" : "border-line text-subtle hover:text-text"
+                          }`}
+                        >
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                    {plogOutcomes.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setPlogOutcomes([])}
+                        className="rounded-full border border-line px-2.5 py-1 text-[11.5px] text-subtle underline decoration-dotted hover:text-text"
+                      >
+                        clear
+                      </button>
+                    )}
+                  </div>
+                </div>
               </>
             )}
             <button
@@ -224,16 +401,33 @@ export function AnalyticsPage() {
             {fetchedAt && <span className="text-subtle">fetched {fetchedAt} · auto-refresh 60s</span>}
           </div>
 
+          {tab === "promptlog" && drill && (
+            <div className="flex items-start gap-3 rounded-xl border border-accent/40 bg-accent/[0.07] px-3.5 py-2.5">
+              <Crosshair size={15} className="mt-0.5 shrink-0 text-accent" />
+              <div className="min-w-0 text-[12px]">
+                <div className="font-semibold text-text">{drill.label}</div>
+                {drill.note && <div className="mt-0.5 text-[11.5px] text-muted">{drill.note}</div>}
+              </div>
+              <button
+                type="button"
+                onClick={() => setDrill(null)}
+                className="ml-auto shrink-0 rounded-full border border-line px-2 py-0.5 text-[11px] text-muted transition hover:text-text"
+              >
+                clear
+              </button>
+            </div>
+          )}
+
           {tab === "promptlog" ? (
             <PromptLogTab
               d={plog}
               a={pstats}
-              onClear={() => clearPromptLog().then(() => loadPlog(plogRoute, plogOutcome))}
+              onClear={() => clearPromptLog().then(() => loadPlog(plogRoute, plogOutcomes, plogWindow))}
             />
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />
           ) : (
-            <EdgeTab data={data} hours={hours} />
+            <EdgeTab data={data} hours={hours} onDrill={onDrill} />
           )}
         </div>
       </main>

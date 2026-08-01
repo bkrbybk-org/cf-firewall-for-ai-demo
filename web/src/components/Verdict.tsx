@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
-import { pollVerdict, verdictOutcome, type Outcome, type PollResult } from "../lib/verdict";
+import { fetchVerdictOnce, pollVerdict, verdictOutcome, type Outcome, type PollResult } from "../lib/verdict";
 import { FlowTrace, type GuardrailsBlock } from "./FlowTrace";
 import type { GatewayMeta, Verdict as VerdictData } from "../lib/types";
+import type { RequestConfig } from "../hooks/useChat";
 
 type Status = { phase: "pending"; tries: number } | PollResult;
 
@@ -17,6 +18,7 @@ const CARD: Record<Outcome, string> = {
   challenge: "border-cf-amber/40 bg-cf-amber/[0.06]",
   log: "border-cf-amber/40 bg-cf-amber/[0.06]",
   allow: "border-cf-green/40 bg-cf-green/[0.06]",
+  denied: "border-cf-red/40 bg-cf-red/[0.06]",
 };
 
 // Filled action badge so the outcome pops at a glance.
@@ -25,16 +27,28 @@ const PILL: Record<Outcome, { label: string; cls: string }> = {
   challenge: { label: "CHALLENGE", cls: "bg-cf-amber text-[#241a04]" },
   log: { label: "LOGGED", cls: "bg-cf-amber text-[#241a04]" },
   allow: { label: "ALLOWED", cls: "bg-cf-green text-[#04140d]" },
+  // Deliberately not "BLOCKED": nothing in the WAF stopped this.
+  denied: { label: "STOPPED", cls: "bg-cf-red text-white" },
 };
 
 // Plain-language summary of what actually happened — the headline of the card.
-function summaryLine(cls: Outcome, ruleCount: number, gateway?: GatewayMeta, guardrails?: GuardrailsBlock): string {
+function summaryLine(
+  cls: Outcome,
+  ruleCount: number,
+  gateway?: GatewayMeta,
+  guardrails?: GuardrailsBlock,
+  httpStatus?: number | null,
+): string {
   if (guardrails) {
     return guardrails.direction === "response"
       ? "Model replied, but the gateway withheld it — response moderation (2017)."
       : "Stopped at the gateway — prompt moderation (2016). The model never ran.";
   }
   if (cls === "block") return "Blocked at the edge — 403. The prompt never reached the model.";
+  // No rule stopped this, yet the edge refused it — say so plainly rather
+  // than crediting a security control that did not act.
+  if (cls === "denied")
+    return `Stopped at the edge — ${httpStatus ?? "error"}, but no WAF rule blocked it. Another layer (Access, rate limiting) refused the request.`;
   if (cls === "challenge") return "Challenged at the edge before reaching the model.";
   if (cls === "log")
     return `Reached the model — ${ruleCount} log-only rule${ruleCount === 1 ? "" : "s"} flagged it for analytics.`;
@@ -46,15 +60,17 @@ function VerdictBody({
   prompt,
   gateway,
   guardrails,
+  requestCfg,
 }: {
   d: VerdictData;
   prompt?: string;
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock;
+  requestCfg?: RequestConfig;
 }) {
   const cls = verdictOutcome(d);
   const ruleCount = d.rules?.length ?? 0;
-  const summary = summaryLine(cls, ruleCount, gateway, guardrails);
+  const summary = summaryLine(cls, ruleCount, gateway, guardrails, d.httpStatus);
 
   // AI Gateway Guardrails is a separate control from the edge WAF, so its block
   // gets a purple badge instead of the edge action pill.
@@ -77,38 +93,65 @@ function VerdictBody({
 
       {/* The flow trace IS the body — every detection lives in its node. */}
       <div className="mt-3">
-        <FlowTrace d={d} prompt={prompt} gateway={gateway} guardrails={guardrails} />
+        <FlowTrace d={d} prompt={prompt} gateway={gateway} guardrails={guardrails} requestCfg={requestCfg} />
       </div>
     </div>
   );
 }
 
+// Below this age a request counts as "just sent": analytics may still be
+// ingesting, so the card polls. Above it, ingestion has long since finished
+// and a single lookup answers immediately — no reason to make someone
+// browsing history wait out the ingestion delay.
+const LIVE_WINDOW_MS = 2 * 60_000;
+
 export function Verdict({
   ray,
+  ts,
   prompt,
   gateway,
   guardrails,
+  requestCfg,
 }: {
   ray: string;
+  /** epoch ms of the request itself, when known (prompt-log rows have it) */
+  ts?: number;
   prompt?: string;
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock;
+  requestCfg?: RequestConfig;
 }) {
   const [status, setStatus] = useState<Status>({ phase: "pending", tries: 0 });
 
   useEffect(() => {
     if (!ray) return;
-    const poll = pollVerdict(ray, (tries) => setStatus({ phase: "pending", tries }));
+    // Derived from the timestamp rather than an explicit mode flag, so a
+    // prompt-log row that happens to be seconds old still polls correctly.
+    const historical = ts != null && Date.now() - ts > LIVE_WINDOW_MS;
+    if (historical) {
+      let live = true;
+      fetchVerdictOnce(ray, ts).then((r) => {
+        if (live) setStatus(r);
+      });
+      return () => {
+        live = false;
+      };
+    }
+    const poll = pollVerdict(ray, (tries) => setStatus({ phase: "pending", tries }), ts);
     poll.promise.then(setStatus);
     return poll.cancel;
-  }, [ray]);
+  }, [ray, ts]);
 
   if (status.phase === "done")
-    return <VerdictBody d={status.data} prompt={prompt} gateway={gateway} guardrails={guardrails} />;
+    return <VerdictBody d={status.data} prompt={prompt} gateway={gateway} guardrails={guardrails} requestCfg={requestCfg} />;
 
   let text: string;
-  if (status.phase === "pending") text = `checking Cloudflare edge log… (${status.tries})`;
+  if (status.phase === "pending") text = `checking Cloudflare edge log… ray ${ray} (${status.tries})`;
   else if (status.phase === "disabled") text = `live edge log disabled — set CF_ANALYTICS_TOKEN (ray ${status.ray ?? ""})`;
+  else if (status.phase === "expired")
+    text = status.retentionDays
+      ? `older than the ${status.retentionDays}-day edge analytics window — detections no longer retained`
+      : "older than the edge analytics retention window — detections no longer retained";
   else text = status.message;
 
   return (

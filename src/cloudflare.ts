@@ -1,6 +1,6 @@
 // Cloudflare GraphQL Analytics API client + the two queries the app uses.
 
-import { GRAPHQL_ENDPOINT } from "./config";
+import { GRAPHQL_ENDPOINT, VERDICT_RETENTION_FALLBACK_S, verdictWindow } from "./config";
 import type { AnalyticsSummary, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
 
 // Time-bucket scaffold shared by the zone analytics and the gateway analytics:
@@ -68,13 +68,52 @@ type VerdictData = {
   };
 };
 
+// How far back the analytics datasets can still be queried, in seconds.
+// Cloudflare publishes no fixed number — it varies by plan and dataset — but
+// the GraphQL settings node reports it per zone, so ask rather than guess.
+// Cached for the isolate's lifetime: it only changes with the plan.
+type SettingsData = {
+  viewer?: {
+    zones?: {
+      settings?: {
+        httpRequestsAdaptive?: { notOlderThan?: number };
+        firewallEventsAdaptive?: { notOlderThan?: number };
+      };
+    }[];
+  };
+};
+
+let retentionCache: number | null = null;
+
+export async function queryVerdictRetention(zoneId: string, token: string): Promise<number> {
+  if (retentionCache != null) return retentionCache;
+  const query = `query($z:String!){viewer{zones(filter:{zoneTag:$z}){settings{
+    httpRequestsAdaptive { notOlderThan }
+    firewallEventsAdaptive { notOlderThan }
+  }}}}`;
+  try {
+    const j = await gqlFetch<SettingsData>(token, query, { z: zoneId });
+    const s = j.data?.viewer?.zones?.[0]?.settings;
+    // A verdict needs BOTH datasets, so the usable window is the shorter one.
+    const spans = [s?.httpRequestsAdaptive?.notOlderThan, s?.firewallEventsAdaptive?.notOlderThan].filter(
+      (v): v is number => typeof v === "number" && v > 0,
+    );
+    retentionCache = spans.length ? Math.min(...spans) : VERDICT_RETENTION_FALLBACK_S;
+  } catch {
+    // Never let a diagnostic break the actual lookup.
+    retentionCache = VERDICT_RETENTION_FALLBACK_S;
+  }
+  return retentionCache;
+}
+
 export async function queryVerdict(
   zoneId: string,
   token: string,
   ray: string,
+  atMs?: number,
 ): Promise<VerdictResult> {
-  const since = new Date(Date.now() - 15 * 60000).toISOString();
-  const until = new Date(Date.now() + 60000).toISOString();
+  // Anchored to the request's own timestamp when known — see verdictWindow.
+  const { since, until } = verdictWindow(atMs);
   const query = `query($z:String!,$s:Time!,$e:Time!,$ray:String!){viewer{zones(filter:{zoneTag:$z}){
     http:httpRequestsAdaptive(limit:1,filter:{datetime_geq:$s,datetime_leq:$e,rayName:$ray}){
       edgeResponseStatus securityAction securitySource webAssetsLabelsManaged
@@ -180,6 +219,8 @@ type AnalyticsData = {
   viewer?: {
     zones?: {
       fw?: { datetime: string; action: string; ruleId: string; description: string }[];
+      fwPrev?: { action: string }[];
+      httpPrev?: { firewallForAiPiiCategories: string[] | null }[];
       http?: {
         datetime: string;
         firewallForAiInjectionScore: number | null;
@@ -202,15 +243,25 @@ export async function queryAnalytics(
   const now = Date.now();
   const since = new Date(now - hours * 3_600_000).toISOString();
   const until = new Date(now + 60_000).toISOString();
-  const query = `query($z:String!,$s:Time!,$e:Time!,$limit:Int!){viewer{zones(filter:{zoneTag:$z}){
+  // Immediately-preceding window of the same length, for the trend deltas. Both
+  // windows ride on one round trip via aliased fields. Only the action tallies
+  // are needed from it, so it selects the minimum columns.
+  const prevSince = new Date(now - 2 * hours * 3_600_000).toISOString();
+  const query = `query($z:String!,$s:Time!,$e:Time!,$ps:Time!,$limit:Int!){viewer{zones(filter:{zoneTag:$z}){
     fw:firewallEventsAdaptive(limit:$limit,filter:{datetime_geq:$s,datetime_leq:$e},orderBy:[datetime_DESC]){
       datetime action ruleId description
+    }
+    fwPrev:firewallEventsAdaptive(limit:$limit,filter:{datetime_geq:$ps,datetime_leq:$s},orderBy:[datetime_DESC]){
+      action
     }
     http:httpRequestsAdaptive(limit:$limit,filter:{datetime_geq:$s,datetime_leq:$e,clientRequestPath:"/api/chat"},orderBy:[datetime_DESC]){
       datetime firewallForAiInjectionScore firewallForAiPiiCategories
       firewallForAiUnsafeTopicCategories
       firewallForAiCustomTopicCategories { topicLabel score }
       webAssetsLabelsManaged
+    }
+    httpPrev:httpRequestsAdaptive(limit:$limit,filter:{datetime_geq:$ps,datetime_leq:$s,clientRequestPath:"/api/chat"},orderBy:[datetime_DESC]){
+      firewallForAiPiiCategories
     }
   }}}`;
 
@@ -220,12 +271,23 @@ export async function queryAnalytics(
     unsafeTopics: [], piiCategories: [], customTopics: [], scannedRequests: 0, labeledRequests: 0,
   };
 
-  const j = await gqlFetch<AnalyticsData>(token, query, { z: zoneId, s: since, e: until, limit: EVENT_LIMIT });
+  const j = await gqlFetch<AnalyticsData>(token, query, {
+    z: zoneId, s: since, e: until, ps: prevSince, limit: EVENT_LIMIT,
+  });
   if (j.errors?.length) return { ...empty, error: j.errors[0].message };
 
   const zone = j.data?.viewer?.zones?.[0];
   const fw = zone?.fw ?? [];
   const http = zone?.http ?? [];
+  const fwPrev = zone?.fwPrev ?? [];
+  const httpPrev = zone?.httpPrev ?? [];
+
+  // Both datasets read the LATEST `limit` rows, so a window that returns
+  // exactly the cap is truncated — its real total is unknown. Comparing two
+  // possibly-truncated windows would produce a meaningless delta, so the flag
+  // travels to the client and suppresses the trend rather than guessing.
+  const truncated = fw.length >= EVENT_LIMIT || http.length >= EVENT_LIMIT;
+  const prevTruncated = fwPrev.length >= EVENT_LIMIT || httpPrev.length >= EVENT_LIMIT;
 
   // Action + rule tallies.
   const actions: Record<string, number> = {};
@@ -291,9 +353,21 @@ export async function queryAnalytics(
 
   const byCountDesc = <T extends { count: number }>(a: T, b: T) => b.count - a.count;
 
+  // Previous-window tallies for the trend deltas — same buckets the tiles show.
+  const isBlock = (a: string) => /block|drop/.test(a.toLowerCase());
+  const isLog = (a: string) => /log|link_maze/.test(a.toLowerCase()) && !isBlock(a);
+  const prev = {
+    totalEvents: fwPrev.length,
+    blocked: fwPrev.filter((e) => isBlock(e.action)).length,
+    logged: fwPrev.filter((e) => isLog(e.action)).length,
+    piiRequests: httpPrev.filter((r) => (r.firewallForAiPiiCategories ?? []).length > 0).length,
+  };
+
   return {
     ...empty,
     totalEvents: fw.length,
+    truncated,
+    prev: prevTruncated ? undefined : prev,
     actions,
     topRules,
     series: [...series.values()],

@@ -19,9 +19,12 @@ export interface Env {
   // Second gateway with Guardrails enabled in the dashboard. Optional — the
   // Guardrails toggle in the UI only appears when this is set.
   CF_AI_GATEWAY_GUARDED_ID?: string; // plain var in wrangler.jsonc
-  // Separate from CF_ANALYTICS_TOKEN (which is read-only): needs "AI Gateway
-  // Run" to call the OpenAI-compatible REST endpoint for Dynamic Routing.
-  // Kept apart deliberately — the two have different blast radii.
+  // Separate from CF_ANALYTICS_TOKEN (which is read-only): needs "AI Gateway -
+  // Read", "AI Gateway - Edit", and "Workers AI - Read" to call the
+  // OpenAI-compatible REST endpoint. Required for ANY AI Gateway request (not
+  // just Dynamic Routing) since the gateway route always calls this REST
+  // endpoint — a direct Workers AI call never needs it. Kept apart from
+  // CF_ANALYTICS_TOKEN deliberately — the two have different blast radii.
   CF_AIG_TOKEN?: string; // set as a secret
 }
 
@@ -50,9 +53,24 @@ export interface ChatRequestBody {
   // name and the binding rejects anything that isn't a real model id. Absent
   // → the binding path, i.e. today's behaviour, unchanged.
   dynamicRoute?: unknown;
-  // Arbitrary key/values the route's Conditional nodes can branch on
-  // (e.g. { plan: "paid" }). Values are coerced to strings.
+  // Custom metadata for ANY gateway request (not just dynamic routes): tags
+  // land in the AI Gateway logs and a dynamic route's Conditional nodes can
+  // branch on them (e.g. { plan: "paid" }). Max 5 entries; values coerced to
+  // strings, sent as the cf-aig-metadata header.
   routeMetadata?: unknown;
+  // Remaining per-request AI Gateway REST headers (gateway only — a direct
+  // Workers AI call never goes through the gateway, so these have no effect
+  // there). See https://developers.cloudflare.com/ai-gateway/usage/rest-api/
+  cacheTtl?: unknown; // seconds — cf-aig-cache-ttl
+  cacheKey?: unknown; // cf-aig-cache-key
+  collectLog?: unknown; // boolean — cf-aig-collect-log
+  requestTimeoutMs?: unknown; // cf-aig-request-timeout
+  maxAttempts?: unknown; // 1-5 — cf-aig-max-attempts
+  retryDelayMs?: unknown; // 0-5000 — cf-aig-retry-delay
+  backoff?: unknown; // "constant" | "linear" | "exponential" — cf-aig-backoff
+  // Skip writing this turn to the D1 prompt_log table. App-level, both routes —
+  // unrelated to AI Gateway's own request log (collectLog above).
+  excludeFromLog?: unknown;
 }
 
 export interface VerdictResult {
@@ -71,6 +89,11 @@ export interface VerdictResult {
   // Onboarding diagnostics so the UI can explain a "nothing happened" verdict:
   cfLlmLabeled: boolean; // endpoint carries the cf-llm managed label in Web Assets
   scored: boolean; // AI Security actually scored the prompt (injectionScore !== 100)
+  // Set when the request predates what the analytics datasets still hold, so
+  // the lookup was skipped. Distinct from "not ingested yet" — waiting longer
+  // cannot help here, the raw data is gone.
+  tooOld?: boolean;
+  retentionDays?: number;
   error?: string;
 }
 
@@ -104,6 +127,13 @@ export interface AnalyticsSummary {
   since: string;
   until: string;
   totalEvents: number;
+  // True when a dataset returned exactly the row cap, so totalEvents is a
+  // floor ("500+"), not an exact count. The UI must not present it as exact.
+  truncated?: boolean;
+  // Same-length window immediately before this one, for trend deltas. Absent
+  // when that window was itself truncated — a delta between two capped windows
+  // says nothing, so no number is better than a wrong one.
+  prev?: { totalEvents: number; blocked: number; logged: number; piiRequests: number };
   actions: Record<string, number>; // raw action → count (block, log, …)
   topRules: { name: string; action: string; count: number }[];
   // Time buckets: hourly for ranges ≤ 48h, daily beyond that.

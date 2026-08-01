@@ -3,6 +3,7 @@ import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { NeuronChip } from "../components/NeuronChip";
 import { SystemPromptPanel } from "../components/SystemPromptPanel";
+import { GatewaySettingsPanel, type GatewaySettingsValue } from "../components/GatewaySettingsPanel";
 import { AttackLibrary } from "../components/AttackLibrary";
 import { Chat } from "../components/Chat";
 import { DemoMode } from "../components/DemoMode";
@@ -10,6 +11,32 @@ import { useChat, type Route } from "../hooks/useChat";
 import { useNeurons } from "../hooks/useNeurons";
 import { getModels } from "../lib/api";
 import type { GatewayOption, Model } from "../lib/types";
+
+// Mirrors the Worker's own clamping (src/config.ts) — the panel already
+// clamps on blur, this is a second guard for values sent before that fires
+// (e.g. Enter-to-send while a field is still focused).
+const MAX_GATEWAY_ATTEMPTS = 5;
+const MAX_GATEWAY_RETRY_DELAY_MS = 5000;
+
+const numOrUndef = (s: string, min?: number, max?: number): number | undefined => {
+  if (s.trim() === "") return undefined;
+  const n = Number(s);
+  if (Number.isNaN(n)) return undefined;
+  const rounded = Math.round(n);
+  return Math.max(min ?? -Infinity, Math.min(max ?? Infinity, rounded));
+};
+
+const DEFAULT_GATEWAY_SETTINGS: GatewaySettingsValue = {
+  metadata: "",
+  skipCache: false,
+  cacheTtl: "",
+  cacheKey: "",
+  collectLog: "",
+  requestTimeoutMs: "",
+  maxAttempts: "",
+  retryDelayMs: "",
+  backoff: "",
+};
 
 export function FirewallPage() {
   const [models, setModels] = useState<Model[]>([]);
@@ -22,10 +49,14 @@ export function FirewallPage() {
   const [route, setRoute] = useState<Route>("direct");
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
-  const [skipCache, setSkipCache] = useState(false);
-  // Dynamic Routing (AI Gateway). Empty = today's binding path.
+  // Dynamic Routing: a route name configured in the gateway dashboard.
   const [dynamicRoute, setDynamicRoute] = useState("");
-  const [routeMetadata, setRouteMetadata] = useState("");
+  // Every other per-request AI Gateway REST setting, edited as one group in
+  // the sidebar panel (see GatewaySettingsPanel).
+  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettingsValue>(DEFAULT_GATEWAY_SETTINGS);
+  // Skip writing a turn to the D1 prompt_log table (redacted prompt/reply
+  // history) — independent of AI Gateway's own request log.
+  const [excludeFromLog, setExcludeFromLog] = useState(false);
   const [input, setInput] = useState("");
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
@@ -36,9 +67,19 @@ export function FirewallPage() {
     multiTurn,
     route,
     gatewayId,
-    skipCache,
+    skipCache: gatewaySettings.skipCache,
     dynamicRoute,
-    routeMetadata,
+    routeMetadata: gatewaySettings.metadata,
+    gatewaySettings: {
+      cacheTtl: numOrUndef(gatewaySettings.cacheTtl, 1),
+      cacheKey: gatewaySettings.cacheKey.trim().slice(0, 128) || undefined,
+      collectLog: gatewaySettings.collectLog === "" ? undefined : gatewaySettings.collectLog === "on",
+      requestTimeoutMs: numOrUndef(gatewaySettings.requestTimeoutMs, 1),
+      maxAttempts: numOrUndef(gatewaySettings.maxAttempts, 1, MAX_GATEWAY_ATTEMPTS),
+      retryDelayMs: numOrUndef(gatewaySettings.retryDelayMs, 0, MAX_GATEWAY_RETRY_DELAY_MS),
+      backoff: gatewaySettings.backoff || undefined,
+    },
+    excludeFromLog,
     onSent: refresh,
   });
 
@@ -75,8 +116,22 @@ export function FirewallPage() {
         }
       />
 
-      <main className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <SystemPromptPanel value={systemPrompt} onChange={setSystemPrompt} defaultPrompt={defaultPrompt} maxLen={maxLen} />
+      {/* Three fixed panes side by side only survive at lg, where each owns
+          its own scroll. Stacked below that they cannot all fit one viewport
+          — the sidebar and library are shrink-0 with far more content than
+          the screen — so the column scrolls as a whole instead. */}
+      <main className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
+        {/* Left column: session-level setup. The wrapper owns the width,
+            border and scrolling so the panels inside are plain sections. */}
+        <div className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-[300px] lg:border-b-0 lg:border-r">
+          <SystemPromptPanel
+            value={systemPrompt}
+            onChange={setSystemPrompt}
+            defaultPrompt={defaultPrompt}
+            maxLen={maxLen}
+          />
+          <GatewaySettingsPanel active={route === "gateway"} value={gatewaySettings} onChange={setGatewaySettings} />
+        </div>
         <Chat
           models={models}
           selectedModel={selectedModel}
@@ -85,17 +140,15 @@ export function FirewallPage() {
           onStreamChange={setStream}
           multiTurn={multiTurn}
           onMultiTurnChange={setMultiTurn}
+          excludeFromLog={excludeFromLog}
+          onExcludeFromLogChange={setExcludeFromLog}
           route={route}
           onRouteChange={setRoute}
           gateways={gateways}
           gatewayId={gatewayId}
           onGatewayIdChange={setGatewayId}
-          skipCache={skipCache}
-          onSkipCacheChange={setSkipCache}
           dynamicRoute={dynamicRoute}
           onDynamicRouteChange={setDynamicRoute}
-          routeMetadata={routeMetadata}
-          onRouteMetadataChange={setRouteMetadata}
           messages={chat.messages}
           busy={chat.busy}
           turnCount={chat.turnCount}

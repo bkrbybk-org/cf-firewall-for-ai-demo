@@ -6,15 +6,43 @@
 // lib/sessionStore.ts) rather than component state, so the conversation
 // survives navigating to another tab and back, and is cleared by a refresh.
 import { useCallback, useRef } from "react";
-import { postChat } from "../lib/api";
+import { postChat, type GatewayBackoff } from "../lib/api";
 import { fmtTime } from "../lib/format";
+import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
 import type { ChatTurn, GatewayMeta, Model, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
+// Every AI Gateway per-request REST setting, minus the request itself. All of
+// these are gateway-only — a direct Workers AI call never goes through a
+// gateway, so none of them have any effect on that route.
+export interface GatewaySettings {
+  cacheTtl?: number;
+  cacheKey?: string;
+  collectLog?: boolean;
+  requestTimeoutMs?: number;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  backoff?: GatewayBackoff;
+}
+
+// Snapshot of the send-time controls — attached to the user message so the
+// verdict trace can show exactly what was requested, even after the controls
+// have since changed for the next turn.
+export interface RequestConfig extends GatewaySettings {
+  stream: boolean;
+  multiTurn: boolean;
+  route: Route;
+  gatewayId?: string;
+  skipCache?: boolean;
+  dynamicRoute?: string;
+  routeMetadata?: Record<string, string>;
+  excludeFromLog?: boolean;
+}
+
 export type Msg =
-  | { id: number; kind: "user"; text: string; ts: string }
+  | { id: number; kind: "user"; text: string; ts: string; cfg?: RequestConfig }
   | {
       id: number;
       kind: "assistant";
@@ -81,20 +109,6 @@ function estimateUsage(systemPrompt: string, history: ChatTurn[], prompt: string
   return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens, estimated: true };
 }
 
-// "plan=paid, orgId=acme" → { plan: "paid", orgId: "acme" }. Feeds the
-// Conditional nodes of a dynamic route; malformed pairs are dropped.
-function parseMetadata(raw: string): Record<string, string> | undefined {
-  const out: Record<string, string> = {};
-  for (const pair of raw.split(",")) {
-    const i = pair.indexOf("=");
-    if (i < 1) continue;
-    const k = pair.slice(0, i).trim();
-    const v = pair.slice(i + 1).trim();
-    if (k && v) out[k] = v;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
-
 function estimateCost(models: Model[], modelId: string, usage: Usage): number | null {
   const m = models.find((x) => x.id === modelId);
   if (!m || m.priceIn == null || m.priceOut == null) return null;
@@ -122,6 +136,8 @@ export function useChat(cfg: {
   skipCache: boolean;
   dynamicRoute: string;
   routeMetadata: string; // "k=v,k=v" as typed in the UI; parsed before sending
+  gatewaySettings: GatewaySettings; // remaining per-request AI Gateway REST settings
+  excludeFromLog: boolean; // skip writing this turn to the D1 prompt_log table
   onSent?: () => void;
 }) {
   const messages = useStore(chatMessages);
@@ -138,12 +154,35 @@ export function useChat(cfg: {
   const sendPrompt = useCallback(async (text: string): Promise<TurnResult> => {
     const prompt = text.trim();
     if (!prompt || chatBusy.get()) return { kind: "error" };
-    const { models, model, systemPrompt, stream, multiTurn, route, gatewayId, skipCache, dynamicRoute, routeMetadata } =
-      cfgRef.current;
+    const {
+      models,
+      model,
+      systemPrompt,
+      stream,
+      multiTurn,
+      route,
+      gatewayId,
+      skipCache,
+      dynamicRoute,
+      routeMetadata,
+      gatewaySettings,
+      excludeFromLog,
+    } = cfgRef.current;
     const gateway = route === "gateway";
     chatBusy.set(true);
     const history = multiTurn ? buildHistory(chatMessages.get()) : [];
-    push({ id: nextId(), kind: "user", text: prompt, ts: fmtTime() });
+    const reqCfg: RequestConfig = {
+      stream,
+      multiTurn,
+      route,
+      gatewayId: gateway ? gatewayId || undefined : undefined,
+      skipCache: gateway ? skipCache : undefined,
+      dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined,
+      routeMetadata: gateway ? parseMetadata(routeMetadata) : undefined,
+      ...(gateway ? gatewaySettings : {}),
+      excludeFromLog: excludeFromLog || undefined,
+    };
+    push({ id: nextId(), kind: "user", text: prompt, ts: fmtTime(), cfg: reqCfg });
 
     let outcome: TurnResult = { kind: "error" };
     try {
@@ -160,12 +199,21 @@ export function useChat(cfg: {
           gatewayId: gateway ? gatewayId || undefined : undefined,
           skipCache: gateway ? skipCache : undefined,
           dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined,
-          routeMetadata: gateway && dynamicRoute ? parseMetadata(routeMetadata) : undefined,
+          routeMetadata: gateway ? parseMetadata(routeMetadata) : undefined,
+          ...(gateway ? gatewaySettings : {}),
+          excludeFromLog: excludeFromLog || undefined,
         },
         (tok) => {
           if (!streamStarted) {
             streamStarted = true;
-            push({ id: asstId, kind: "assistant", text: tok, ts: fmtTime(), streaming: true, meta: { model } });
+            push({
+              id: asstId,
+              kind: "assistant",
+              text: tok,
+              ts: fmtTime(),
+              streaming: true,
+              meta: { model, dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined },
+            });
           } else {
             patch(asstId, (m) => (m.kind === "assistant" ? { ...m, text: m.text + tok } : m));
           }
@@ -174,20 +222,24 @@ export function useChat(cfg: {
 
       if (result.mode === "stream") {
         const ray = result.ray?.split("-")[0] || undefined;
+        // A Dynamic Route's SSE chunks carry the real model in `model`; the
+        // plain binding stream doesn't, so fall back to what was requested.
+        const ranModel = result.model || model;
         const usage = result.usage ?? estimateUsage(systemPrompt, history, prompt, result.text);
         const gwMeta = result.gateway ?? undefined;
         // A cache HIT skips inference → free; otherwise estimate from pricing.
-        const cost = gwMeta?.cached === true ? 0 : estimateCost(models, model, usage);
+        const cost = gwMeta?.cached === true ? 0 : estimateCost(models, ranModel, usage);
+        const routeMeta = gateway && dynamicRoute ? dynamicRoute : undefined;
         if (!result.text) {
           push({ id: nextId(), kind: "error", text: "Empty streamed reply from the model.", ts: fmtTime() });
           outcome = { kind: "error", ray };
         } else {
           if (!streamStarted) {
-            push({ id: asstId, kind: "assistant", text: result.text, ts: fmtTime(), meta: { model } });
+            push({ id: asstId, kind: "assistant", text: result.text, ts: fmtTime(), meta: { model: ranModel, dynamicRoute: routeMeta } });
           }
           patch(asstId, (m) =>
             m.kind === "assistant"
-              ? { ...m, streaming: false, ray, meta: { model, ray, usage, cost, gateway: gwMeta } }
+              ? { ...m, streaming: false, ray, meta: { model: ranModel, ray, usage, cost, gateway: gwMeta, dynamicRoute: routeMeta } }
               : m,
           );
           outcome = { kind: "reply", ray };
@@ -203,7 +255,12 @@ export function useChat(cfg: {
             ray,
             raw,
             contentType,
-            detection: data?.blocked ? data.detection : "waf",
+            // Only attribute the block when the response actually says so (a
+            // WAF rule answering with our custom JSON). A bare 403 with an
+            // HTML body proves nothing about WHO refused it — Cloudflare
+            // Access returns exactly that — and blaming the WAF there made
+            // the demo credit AI Security for rejections it never made.
+            detection: data?.blocked ? data.detection : undefined,
             reason: data?.reason,
           });
           outcome = { kind: "blocked", ray };

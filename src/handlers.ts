@@ -5,6 +5,12 @@ import {
   DEFAULT_AI_GATEWAY_ID,
   DEFAULT_SYSTEM_PROMPT,
   DYNAMIC_ROUTE_PREFIX,
+  GATEWAY_BACKOFF_VALUES,
+  isBeyondRetention,
+  MAX_GATEWAY_ATTEMPTS,
+  MAX_GATEWAY_RETRY_DELAY_MS,
+  MAX_METADATA_ENTRIES,
+  normalizeDynamicRoute,
   OPENAI_CHAT_PATH,
   ROUTE_ID_RE,
   FREE_DAILY_NEURONS,
@@ -13,9 +19,17 @@ import {
   MAX_REPLY_TOKENS,
   MAX_SYSTEM_PROMPT_LEN,
   OVERAGE_USD_PER_1K_NEURONS,
+  type GatewayBackoff,
 } from "./config";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
-import { listAiGateways, queryAnalytics, queryGatewayLogs, queryNeuronUsage, queryVerdict } from "./cloudflare";
+import {
+  listAiGateways,
+  queryAnalytics,
+  queryGatewayLogs,
+  queryNeuronUsage,
+  queryVerdict,
+  queryVerdictRetention,
+} from "./cloudflare";
 import { redact } from "./redact";
 import type { ChatRequestBody, ChatTurn, Env, PromptAnalytics, PromptLogRow } from "./types";
 
@@ -111,11 +125,30 @@ export async function handleVerdict(url: URL, env: Env): Promise<Response> {
   if (!/^[0-9a-f]{16}$/i.test(ray)) {
     return Response.json({ error: "invalid ray" }, { status: 400 });
   }
+  // Optional epoch-ms timestamp of the request itself, so the lookup window
+  // can be anchored to when it happened rather than to now. Malformed values
+  // are ignored rather than rejected — the live (unanchored) window is a
+  // sane fallback, and a 400 here would break the card for no good reason.
+  const tsRaw = url.searchParams.get("ts") || "";
+  const tsNum = /^\d{10,16}$/.test(tsRaw) ? Number(tsRaw) : NaN;
+  const atMs = Number.isFinite(tsNum) && tsNum > 0 && tsNum <= Date.now() + 86_400_000 ? tsNum : undefined;
   if (!env.CF_ANALYTICS_TOKEN || !env.CF_ZONE_ID) {
     return Response.json({ configured: false, ray });
   }
   try {
-    const verdict = await queryVerdict(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, ray);
+    // Past retention the datasets hold nothing, so skip the round trip and
+    // say so — otherwise this is indistinguishable from an ingestion delay.
+    const retentionSeconds = await queryVerdictRetention(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN);
+    if (isBeyondRetention(atMs, retentionSeconds)) {
+      return Response.json({
+        configured: true,
+        ray,
+        found: false,
+        tooOld: true,
+        retentionDays: Math.floor(retentionSeconds / 86_400),
+      });
+    }
+    const verdict = await queryVerdict(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, ray, atMs);
     return Response.json({ configured: true, ray, ...verdict });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -212,106 +245,137 @@ function guardrailsResponse(
 // For a streaming gateway call the reply is passed through as SSE, so cache
 // status / log id can't ride in the JSON body. Append them as one trailing
 // `data: {"gateway": …}` event after the model's stream ends (read inside the
-// TransformStream flush, once the upstream stream is fully consumed).
-function appendGatewayEvent(
+// TransformStream flush). Unlike the old binding path, the REST call's cache
+// status is already known from the response headers before the body is even
+// read, so no async getLog() lookup is needed here.
+function appendRestGatewayEvent(
   source: ReadableStream,
-  env: Env,
-  gatewayId: string,
-  guarded: boolean,
+  meta: { gatewayId: string; cached: boolean | null; logId: string | null; guarded: boolean },
   started: number,
 ): ReadableStream {
   const enc = new TextEncoder();
   return source.pipeThrough(
     new TransformStream({
-      async flush(controller) {
-        const logId = env.AI.aiGatewayLogId ?? null;
-        let cached: boolean | null = null;
-        if (logId) {
-          try {
-            const log = (await env.AI.gateway(gatewayId).getLog(logId)) as { cached?: boolean };
-            if (typeof log?.cached === "boolean") cached = log.cached;
-          } catch {
-            /* log not yet available */
-          }
-        }
-        const meta = { gatewayId, cached, latencyMs: Date.now() - started, logId, guarded };
-        controller.enqueue(enc.encode(`data: ${JSON.stringify({ gateway: meta })}\n\n`));
+      flush(controller) {
+        const full = { ...meta, latencyMs: Date.now() - started };
+        controller.enqueue(enc.encode(`data: ${JSON.stringify({ gateway: full })}\n\n`));
       },
     }),
   );
 }
 
 // POST /api/chat — run the selected model with the (optional) system prompt
-// and prior conversation turns. With gateway:true the inference is routed
-// through AI Gateway (env.AI.run(..., { gateway })) so cache status / latency /
-// log id / Guardrails come back too — but the request still hits this same
-// cf-llm-labeled path, so the edge WAF scan (and the verdict) applies either
-// way. With stream:true the reply is passed through as SSE and the client
-// assembles the reply + metadata itself.
-// --- AI Gateway Dynamic Routing ----------------------------------------
-// A dynamic route is a policy graph (Conditional / Percentage / Rate Limit /
-// Budget Limit nodes in front of Model nodes) configured in the gateway
-// dashboard. It is addressed by putting the route name in the `model` field of
-// the OpenAI-compatible endpoint — the Workers AI binding only accepts real
-// model ids, so routes are unreachable via env.AI.run() and need this REST
-// call instead. Requires an Authenticated Gateway and a token with
-// "AI Gateway Run" (CF_AIG_TOKEN).
+// and prior conversation turns. The request always hits this same
+// cf-llm-labeled path, so the edge WAF scan (and the verdict) applies whether
+// or not gateway routing is on. With stream:true the reply is passed through
+// as SSE and the client assembles the reply + metadata itself.
 //
-// Because the ROUTE picks the model, the requested model is ignored here; the
-// model that actually ran is read back off the response so the UI reports what
-// happened rather than what was asked for.
-type DynamicResult =
-  | { kind: "json"; reply: string; model: string; promptTokens?: number; completionTokens?: number; logId: string | null }
-  | { kind: "stream"; body: ReadableStream }
+// --- AI Gateway routing (REST) ------------------------------------------
+// With gateway:true, inference goes through AI Gateway's OpenAI-compatible
+// REST endpoint rather than the env.AI.run() binding. This is what makes the
+// full set of per-request cf-aig-* headers available (cache TTL/key, retry
+// tuning, request timeout, log collection, …) — the binding's `gateway`
+// option only ever exposed a few of them. It also means Dynamic Routes work
+// uniformly here (a route name goes in the `model` field, which the binding
+// rejects since it only accepts real model ids) instead of needing a special
+// case. Requires an API token (CF_AIG_TOKEN) with "AI Gateway - Read",
+// "AI Gateway - Edit", and "Workers AI - Read" — not the "AI Gateway Run"
+// gateway-scoped token from Authenticated Gateway, which this endpoint rejects
+// with a generic {"code":10000,"message":"Authentication error"}.
+//
+// A direct (non-gateway) call still uses the plain env.AI.run() binding —
+// none of this applies since the request never goes through a gateway.
+type GatewayRestResult =
+  | {
+      kind: "json";
+      reply: string;
+      model: string;
+      promptTokens?: number;
+      completionTokens?: number;
+      logId: string | null;
+      cached: boolean | null;
+    }
+  | { kind: "stream"; body: ReadableStream; logId: string | null; cached: boolean | null }
   | { kind: "error"; status: number; message: string };
 
-async function runDynamicRoute(
+// "HIT"/"MISS" → boolean; anything else (DYNAMIC, BYPASS, absent, …) → unknown.
+function cacheStatusFromHeader(v: string | null): boolean | null {
+  if (v == null) return null;
+  const s = v.toUpperCase();
+  if (s === "HIT") return true;
+  if (s === "MISS") return false;
+  return null;
+}
+
+async function runGatewayRest(
   env: Env,
   opts: {
-    route: string;
+    model: string; // ignored when `route` is set — the route picks the model
+    route?: string; // Dynamic Routing route name
     gatewayId: string;
     messages: { role: string; content: string }[];
     stream: boolean;
     metadata?: Record<string, string>;
+    skipCache?: boolean;
+    cacheTtl?: number;
+    cacheKey?: string;
+    collectLog?: boolean;
+    requestTimeoutMs?: number;
+    maxAttempts?: number;
+    retryDelayMs?: number;
+    backoff?: GatewayBackoff;
   },
-): Promise<DynamicResult> {
+): Promise<GatewayRestResult> {
   if (!env.CF_AIG_TOKEN || !env.CF_ACCOUNT_ID) {
     return {
       kind: "error",
       status: 501,
       message:
-        'Dynamic routing needs CF_ACCOUNT_ID and the CF_AIG_TOKEN secret (an API token with "AI Gateway Run"). Set it with: wrangler secret put CF_AIG_TOKEN',
+        'AI Gateway needs CF_ACCOUNT_ID and the CF_AIG_TOKEN secret (an API token with "AI Gateway - Read", "AI Gateway - Edit", and "Workers AI - Read"). Set it with: wrangler secret put CF_AIG_TOKEN',
     };
   }
 
+  // Custom metadata (and every other per-request setting) travels as a
+  // HEADER, not a body field — a body `metadata` key is ignored by the
+  // gateway (and may be rejected as unknown by the OpenAI-compatible schema).
+  const headers: Record<string, string> = {
+    authorization: "Bearer " + env.CF_AIG_TOKEN,
+    "cf-aig-gateway-id": opts.gatewayId,
+    "content-type": "application/json",
+  };
+  if (opts.metadata && Object.keys(opts.metadata).length) headers["cf-aig-metadata"] = JSON.stringify(opts.metadata);
+  if (opts.skipCache) headers["cf-aig-skip-cache"] = "true";
+  if (opts.cacheTtl != null) headers["cf-aig-cache-ttl"] = String(opts.cacheTtl);
+  if (opts.cacheKey) headers["cf-aig-cache-key"] = opts.cacheKey;
+  if (opts.collectLog != null) headers["cf-aig-collect-log"] = String(opts.collectLog);
+  if (opts.requestTimeoutMs != null) headers["cf-aig-request-timeout"] = String(opts.requestTimeoutMs);
+  if (opts.maxAttempts != null) headers["cf-aig-max-attempts"] = String(opts.maxAttempts);
+  if (opts.retryDelayMs != null) headers["cf-aig-retry-delay"] = String(opts.retryDelayMs);
+  if (opts.backoff) headers["cf-aig-backoff"] = opts.backoff;
+
   const res = await fetch(`${CF_API_BASE}/accounts/${env.CF_ACCOUNT_ID}${OPENAI_CHAT_PATH}`, {
     method: "POST",
-    headers: {
-      authorization: "Bearer " + env.CF_AIG_TOKEN,
-      "cf-aig-gateway-id": opts.gatewayId,
-      "content-type": "application/json",
-    },
+    headers,
     body: JSON.stringify({
-      model: DYNAMIC_ROUTE_PREFIX + opts.route,
+      model: opts.route ? DYNAMIC_ROUTE_PREFIX + opts.route : opts.model,
       messages: opts.messages,
       max_tokens: MAX_REPLY_TOKENS,
       stream: opts.stream || undefined,
-      ...(opts.metadata ? { metadata: opts.metadata } : {}),
     }),
   });
 
   if (!res.ok) {
     // Read the body as text so a Guardrails 2016/2017 block can be matched by
-    // the same detector the binding path uses.
+    // the same detector the binding path used to use.
     const detail = await res.text();
     return { kind: "error", status: res.status, message: detail || `AI Gateway returned HTTP ${res.status}` };
   }
 
+  const logId = res.headers.get("cf-aig-log-id");
+  const cached = cacheStatusFromHeader(res.headers.get("cf-aig-cache-status"));
+
   if (opts.stream && res.body) {
-    // Passed through as-is. The trailing gateway-meta event the binding path
-    // appends isn't available here (env.AI.aiGatewayLogId is binding-only), and
-    // the client already tolerates absent gateway meta.
-    return { kind: "stream", body: res.body };
+    return { kind: "stream", body: res.body, logId, cached };
   }
 
   const obj = (await res.json()) as Record<string, unknown>;
@@ -323,7 +387,8 @@ async function runDynamicRoute(
     model: typeof obj.model === "string" ? obj.model : "",
     promptTokens: usage?.prompt_tokens,
     completionTokens: usage?.completion_tokens,
-    logId: res.headers.get("cf-aig-log-id"),
+    logId,
+    cached,
   };
 }
 
@@ -389,7 +454,22 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   let skipCache = false;
   let requestedGatewayId: string | undefined;
   let dynamicRoute = "";
+  let badRoute: string | null = null;
   let routeMetadata: Record<string, string> | undefined;
+  // Skip writing this turn to the D1 prompt_log table — independent of AI
+  // Gateway's own `collectLog`/`cf-aig-collect-log`, which is a different log
+  // (the gateway's request log) from a different route (only exists on the
+  // gateway path). This one is app-level and applies to both routes.
+  let excludeFromLog = false;
+  // Remaining per-request AI Gateway REST settings — all optional, all no-ops
+  // unless `gateway` is true. See runGatewayRest for how each becomes a header.
+  let cacheTtl: number | undefined;
+  let cacheKey: string | undefined;
+  let collectLog: boolean | undefined;
+  let requestTimeoutMs: number | undefined;
+  let maxAttempts: number | undefined;
+  let retryDelayMs: number | undefined;
+  let backoff: GatewayBackoff | undefined;
   try {
     const body = await request.json<ChatRequestBody>();
     if (typeof body.prompt !== "string" || body.prompt.trim() === "") {
@@ -405,24 +485,61 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     }
     history = sanitizeHistory(body.history);
     if (body.stream === true) stream = true;
+    if (body.excludeFromLog === true) excludeFromLog = true;
     if (body.gateway === true) gateway = true;
     if (typeof body.skipCache === "boolean") skipCache = body.skipCache;
     if (typeof body.gatewayId === "string") requestedGatewayId = body.gatewayId;
-    if (typeof body.dynamicRoute === "string" && ROUTE_ID_RE.test(body.dynamicRoute)) {
-      dynamicRoute = body.dynamicRoute;
+    if (typeof body.dynamicRoute === "string" && body.dynamicRoute.trim() !== "") {
+      // Note the rejection rather than throwing: this runs inside the
+      // malformed-JSON try/catch, which would report the wrong error.
+      const name = normalizeDynamicRoute(body.dynamicRoute);
+      if (name) dynamicRoute = name;
+      else badRoute = body.dynamicRoute;
     }
     if (body.routeMetadata && typeof body.routeMetadata === "object") {
+      // AI Gateway keeps only the first 5 entries and silently drops the rest,
+      // so cap here to make the truncation explicit and predictable.
       routeMetadata = Object.fromEntries(
         Object.entries(body.routeMetadata as Record<string, unknown>)
           .filter(([k]) => ROUTE_ID_RE.test(k))
+          .slice(0, MAX_METADATA_ENTRIES)
           .map(([k, v]) => [k, String(v).slice(0, 128)]),
       );
+    }
+    if (typeof body.cacheTtl === "number" && body.cacheTtl > 0) cacheTtl = Math.floor(body.cacheTtl);
+    if (typeof body.cacheKey === "string" && body.cacheKey.trim() !== "") cacheKey = body.cacheKey.trim().slice(0, 128);
+    if (typeof body.collectLog === "boolean") collectLog = body.collectLog;
+    if (typeof body.requestTimeoutMs === "number" && body.requestTimeoutMs > 0) {
+      requestTimeoutMs = Math.floor(body.requestTimeoutMs);
+    }
+    if (typeof body.maxAttempts === "number") {
+      maxAttempts = Math.max(1, Math.min(MAX_GATEWAY_ATTEMPTS, Math.floor(body.maxAttempts)));
+    }
+    if (typeof body.retryDelayMs === "number") {
+      retryDelayMs = Math.max(0, Math.min(MAX_GATEWAY_RETRY_DELAY_MS, Math.floor(body.retryDelayMs)));
+    }
+    if (typeof body.backoff === "string" && (GATEWAY_BACKOFF_VALUES as readonly string[]).includes(body.backoff)) {
+      backoff = body.backoff as GatewayBackoff;
     }
   } catch {
     return Response.json(
       {
         error:
           'Body must be JSON: {"prompt": "...", "model"?, "systemPrompt"?, "history"?, "stream"?, "gateway"?, "gatewayId"?, "skipCache"?}',
+      },
+      { status: 400 },
+    );
+  }
+
+  // A route that can't be used is an error, not a reason to quietly fall back
+  // to a different path — a silent downgrade makes the demo look like it
+  // worked while running an entirely different path.
+  if (badRoute !== null) {
+    return Response.json(
+      {
+        error:
+          `Invalid dynamicRoute ${JSON.stringify(badRoute)}. Use the route name (e.g. "demo-routes") ` +
+          `or the dashboard form ("dynamic/demo-routes"); letters, digits, "_" and "-" only.`,
       },
       { status: 400 },
     );
@@ -435,12 +552,10 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // configured guarded gateway.
   let gatewayId = "";
   let guarded = false;
-  let runOptions: { gateway: { id: string; skipCache: boolean } } | undefined;
   if (gateway) {
     const valid = typeof requestedGatewayId === "string" && /^[a-zA-Z0-9_-]{1,64}$/.test(requestedGatewayId);
     gatewayId = valid ? requestedGatewayId! : env.CF_AI_GATEWAY_ID || DEFAULT_AI_GATEWAY_ID;
     guarded = !!env.CF_AI_GATEWAY_GUARDED_ID && gatewayId === env.CF_AI_GATEWAY_GUARDED_ID;
-    runOptions = { gateway: { id: gatewayId, skipCache } };
   }
 
   const messages = [
@@ -455,18 +570,28 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   const log = (
     outcome: PromptLogRow["outcome"],
     extra: { reply: string | null; promptTokens?: number | null; completionTokens?: number | null },
-  ) => ctx?.waitUntil(logPrompt(env, { ...logBase, outcome, prompt, ...extra }));
+  ) => {
+    if (excludeFromLog) return;
+    ctx?.waitUntil(logPrompt(env, { ...logBase, outcome, prompt, ...extra }));
+  };
 
-  // Dynamic Routing path. Only taken when a route was explicitly requested on
-  // the gateway route — everything else falls through to the binding below, so
-  // the existing demo behaviour is untouched.
-  if (gateway && dynamicRoute) {
-    const r = await runDynamicRoute(env, {
-      route: dynamicRoute,
+  // AI Gateway path — always REST (see runGatewayRest doc comment for why).
+  if (gateway) {
+    const r = await runGatewayRest(env, {
+      model,
+      route: dynamicRoute || undefined,
       gatewayId,
       messages,
       stream,
       metadata: routeMetadata,
+      skipCache,
+      cacheTtl,
+      cacheKey,
+      collectLog,
+      requestTimeoutMs,
+      maxAttempts,
+      retryDelayMs,
+      backoff,
     });
 
     if (r.kind === "error") {
@@ -475,21 +600,27 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       const gr = guardrailsResponse(r.message, model, gatewayId, guarded);
       log(gr ? "guardrails" : "error", { reply: null });
       if (gr) return gr;
-      return Response.json({ error: r.message, model, dynamicRoute }, { status: r.status });
+      return Response.json(
+        { error: r.message, model, dynamicRoute: dynamicRoute || undefined },
+        { status: r.status },
+      );
     }
 
     if (r.kind === "stream") {
       log("reply", { reply: null });
-      return new Response(r.body, {
+      const body = appendRestGatewayEvent(r.body, { gatewayId, cached: r.cached, logId: r.logId, guarded }, started);
+      return new Response(body, {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
     }
 
-    // The route chose the model, so report what actually ran.
+    // A Dynamic Route picks its own model, so report what actually ran rather
+    // than the (ignored) requested one; a plain gateway call echoes it back.
     const ranModel = r.model || model;
     const price = MODEL_BY_ID.get(ranModel);
     const promptTokens = r.promptTokens ?? Math.ceil((systemPrompt.length + prompt.length) / 4);
     const completionTokens = r.completionTokens ?? Math.ceil(r.reply.length / 4);
+    const cost = r.cached === true ? 0 : price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
     log("reply", { reply: r.reply, promptTokens, completionTokens });
     return Response.json({
       reply: r.reply,
@@ -501,38 +632,30 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
         total_tokens: promptTokens + completionTokens,
         estimated: r.promptTokens == null,
       },
-      cost: price
-        ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut
-        : null,
-      gateway: { gatewayId, cached: null, latencyMs: Date.now() - started, logId: r.logId, guarded },
-      dynamicRoute,
+      cost,
+      gateway: { gatewayId, cached: r.cached, latencyMs: Date.now() - started, logId: r.logId, guarded },
+      dynamicRoute: dynamicRoute || undefined,
     });
   }
 
+  // Direct Workers AI path — plain binding call, no gateway involved at all.
   if (stream) {
     try {
-      const sse = (await env.AI.run(
-        model,
-        { messages, max_tokens: MAX_REPLY_TOKENS, stream: true } as never,
-        runOptions,
-      )) as unknown as ReadableStream;
+      const sse = (await env.AI.run(model, { messages, max_tokens: MAX_REPLY_TOKENS, stream: true } as never)) as unknown as ReadableStream;
       // Streamed reply text isn't captured server-side; log the prompt only.
       log("reply", { reply: null });
-      const body = gateway ? appendGatewayEvent(sse, env, gatewayId, guarded, started) : sse;
-      return new Response(body, {
+      return new Response(sse, {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
     } catch (err) {
-      const gr = gateway ? guardrailsResponse(err, model, gatewayId, guarded) : null;
-      log(gr ? "guardrails" : "error", { reply: null });
-      if (gr) return gr;
+      log("error", { reply: null });
       const message = err instanceof Error ? err.message : String(err);
       return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
     }
   }
 
   try {
-    const result = await env.AI.run(model, { messages, max_tokens: MAX_REPLY_TOKENS }, runOptions);
+    const result = await env.AI.run(model, { messages, max_tokens: MAX_REPLY_TOKENS });
     const obj =
       typeof result === "object" && result !== null
         ? (result as Record<string, unknown>)
@@ -555,33 +678,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     }
     const totalTokens = u?.total_tokens ?? promptTokens + completionTokens;
 
-    // Gateway metadata (cache status, latency, log id) when routed via gateway.
-    let gatewayMeta:
-      | { gatewayId: string; cached: boolean | null; latencyMs: number; logId: string | null; guarded: boolean }
-      | undefined;
-    if (gateway) {
-      const latencyMs = Date.now() - started;
-      const logId = env.AI.aiGatewayLogId ?? null;
-      let cached: boolean | null = null;
-      if (logId) {
-        try {
-          const log = (await env.AI.gateway(gatewayId).getLog(logId)) as { cached?: boolean };
-          if (typeof log?.cached === "boolean") cached = log.cached;
-        } catch {
-          /* log not yet available — leave cached = null */
-        }
-      }
-      gatewayMeta = { gatewayId, cached, latencyMs, logId, guarded };
-    }
-
-    // A cache hit skips inference (free); otherwise estimate from pricing.
     const price = MODEL_BY_ID.get(model);
-    const cost =
-      gatewayMeta?.cached === true
-        ? 0
-        : price
-          ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut
-          : null;
+    const cost = price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
 
     log("reply", { reply, promptTokens, completionTokens });
     return Response.json({
@@ -595,12 +693,10 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
         estimated,
       },
       cost, // USD, estimated from published unit pricing
-      gateway: gatewayMeta, // present only when routed via AI Gateway
+      gateway: undefined, // never set on the direct path
     });
   } catch (err) {
-    const gr = gateway ? guardrailsResponse(err, model, gatewayId, guarded) : null;
-    log(gr ? "guardrails" : "error", { reply: null });
-    if (gr) return gr;
+    log("error", { reply: null });
     const message = err instanceof Error ? err.message : String(err);
     return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
   }
@@ -662,7 +758,25 @@ export async function handleGatewayAnalytics(url: URL, env: Env): Promise<Respon
   }
 }
 
-// GET  /api/prompt-log?limit=&route=&outcome= — recent PII-redacted prompts.
+// Shared by /api/prompt-log and /api/prompt-analytics: an explicit
+// since/until (epoch ms) pair wins when present — that is the custom
+// date/time picker — otherwise `hours` (0/absent = all time) picks a rolling
+// window ending now, which is what the 1h/24h/7d/all preset buttons send.
+function parseTimeWindow(url: URL): { since: number | null; until: number | null } {
+  const sinceRaw = url.searchParams.get("since");
+  const untilRaw = url.searchParams.get("until");
+  const since = sinceRaw != null ? Number(sinceRaw) : NaN;
+  const until = untilRaw != null ? Number(untilRaw) : NaN;
+  if (Number.isFinite(since) || Number.isFinite(until)) {
+    return { since: Number.isFinite(since) ? since : null, until: Number.isFinite(until) ? until : null };
+  }
+  const rawHours = parseInt(url.searchParams.get("hours") || "0", 10) || 0;
+  const hours = Math.min(168, Math.max(0, rawHours));
+  return { since: hours > 0 ? Date.now() - hours * 3_600_000 : null, until: null };
+}
+
+// GET  /api/prompt-log?limit=&route=&outcome=&hours=|since=&until= — recent
+// PII-redacted prompts.
 // DELETE /api/prompt-log — clears the log (the "Clear log" button).
 // Rows join to the live edge verdict by ray in the UI; detections aren't stored
 // here (they ingest into GraphQL seconds later, after this row is written).
@@ -682,16 +796,30 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
 
   const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10) || 100));
   const route = url.searchParams.get("route"); // 'direct' | 'gateway' | null
-  const outcome = url.searchParams.get("outcome"); // 'reply' | 'guardrails' | 'error' | null
+  // Comma-separated so the UI can select any combination, e.g. "reply,error"
+  // to see everything except guardrails-blocked. Absent/empty = no filter.
+  const outcomes = (url.searchParams.get("outcome") || "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter((o): o is "reply" | "guardrails" | "error" => o === "reply" || o === "guardrails" || o === "error");
+  const { since, until } = parseTimeWindow(url);
   const where: string[] = [];
   const binds: unknown[] = [];
   if (route === "direct" || route === "gateway") {
     where.push("route = ?");
     binds.push(route);
   }
-  if (outcome === "reply" || outcome === "guardrails" || outcome === "error") {
-    where.push("outcome = ?");
-    binds.push(outcome);
+  if (outcomes.length) {
+    where.push(`outcome IN (${outcomes.map(() => "?").join(",")})`);
+    binds.push(...outcomes);
+  }
+  if (since != null) {
+    where.push("ts >= ?");
+    binds.push(since);
+  }
+  if (until != null) {
+    where.push("ts <= ?");
+    binds.push(until);
   }
   const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
@@ -714,22 +842,29 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
   }
 }
 
-// GET /api/prompt-analytics?hours= — aggregates over the whole prompt log.
-// Every rollup is a SQL GROUP BY executed inside D1 (not a Worker-side pass
-// over capped rows), so the numbers stay correct however large the table gets.
+// GET /api/prompt-analytics?hours=|since=&until= — aggregates over the whole
+// prompt log. Every rollup is a SQL GROUP BY executed inside D1 (not a
+// Worker-side pass over capped rows), so the numbers stay correct however
+// large the table gets.
 export async function handlePromptAnalytics(url: URL, env: Env): Promise<Response> {
   if (!env.DB) return Response.json({ configured: false });
 
-  // hours=0 (or absent) means "all time" — the log is deliberately small and
-  // presenters usually want the whole demo session, not a rolling window.
-  const rawHours = parseInt(url.searchParams.get("hours") || "0", 10) || 0;
-  const hours = Math.min(168, Math.max(0, rawHours));
-  const since = hours > 0 ? Date.now() - hours * 3_600_000 : 0;
-  const whereTs = "WHERE ts >= ?";
+  const { since, until } = parseTimeWindow(url);
+  const whereParts: string[] = [];
+  const binds: number[] = [];
+  if (since != null) {
+    whereParts.push("ts >= ?");
+    binds.push(since);
+  }
+  if (until != null) {
+    whereParts.push("ts <= ?");
+    binds.push(until);
+  }
+  const whereTs = whereParts.length ? `WHERE ${whereParts.join(" AND ")}` : "";
 
   try {
     const db = env.DB;
-    const q = <T>(sql: string) => db.prepare(sql).bind(since).all<T>();
+    const q = <T>(sql: string) => db.prepare(sql).bind(...binds).all<T>();
 
     const [totals, byOutcome, byRoute, byModel, repeated, rows] = await Promise.all([
       db
@@ -742,7 +877,7 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
                   MIN(ts) AS firstTs, MAX(ts) AS lastTs
            FROM prompt_log ${whereTs}`,
         )
-        .bind(since)
+        .bind(...binds)
         .first<{
           total: number; withPii: number; redactions: number;
           promptTokens: number; completionTokens: number;
@@ -772,10 +907,14 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       ),
     ]);
 
-    // Time series. With hours=0 the span is derived from the data itself, so a
-    // long-idle demo log still buckets sensibly.
-    const spanMs = Math.max(1, (totals?.lastTs ?? 0) - (totals?.firstTs ?? 0));
-    const spanHours = hours > 0 ? hours : Math.max(1, Math.ceil(spanMs / 3_600_000));
+    // Time series bucket width. With no lower bound the span is derived from
+    // the data itself, so a long-idle demo log still buckets sensibly; with a
+    // custom range the actual since/until width decides hour vs day buckets.
+    const spanMs =
+      since != null
+        ? Math.max(1, (until ?? Date.now()) - since)
+        : Math.max(1, (totals?.lastTs ?? 0) - (totals?.firstTs ?? 0));
+    const spanHours = Math.max(1, Math.ceil(spanMs / 3_600_000));
     const bucket: "hour" | "day" = spanHours <= 48 ? "hour" : "day";
     const stepMs = bucket === "hour" ? 3_600_000 : 86_400_000;
     const series = new Map<string, { t: string; reply: number; guardrails: number; error: number }>();

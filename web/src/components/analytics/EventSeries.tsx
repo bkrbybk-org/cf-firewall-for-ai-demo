@@ -73,7 +73,11 @@ export function EventSeries({
   const peak = Math.max(1, ...rows.flatMap((r) => defs.map((s) => num(r, s.key))));
   const max = niceMax(peak);
   const W = 720;
-  const H = 168;
+  // Wider aspect ratio than a typical chart on purpose: the page now runs up
+  // to 1600px wide, and at the old 720:168 ratio this chart rendered taller
+  // than every other card on the page since it's the only one that scales
+  // its height with container width instead of sizing to its content.
+  const H = 90;
   const padL = 34;
   const padR = 8;
   const padT = 10;

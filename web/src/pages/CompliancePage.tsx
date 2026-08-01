@@ -82,7 +82,7 @@ export function CompliancePage() {
       />
 
       <main className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="mx-auto flex max-w-5xl flex-col gap-4">
+        <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
           <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
             <Info size={16} className="mt-0.5 shrink-0 text-cf-blue" />
             <p className="text-[12.5px] leading-relaxed text-muted">

@@ -18,8 +18,14 @@ export async function getModels(): Promise<ModelsResponse> {
   return r.json();
 }
 
-export async function getVerdict(ray: string): Promise<Verdict> {
-  const r = await fetch("/api/verdict?ray=" + encodeURIComponent(ray));
+// `tsMs` is the request's own epoch-ms timestamp when known (prompt-log rows
+// carry it). It anchors the server's lookup window to when the request
+// actually happened — without it the search is a window around *now*, which
+// silently misses anything older than a few minutes.
+export async function getVerdict(ray: string, tsMs?: number): Promise<Verdict> {
+  const qs = new URLSearchParams({ ray });
+  if (tsMs != null && Number.isFinite(tsMs)) qs.set("ts", String(Math.floor(tsMs)));
+  const r = await fetch("/api/verdict?" + qs);
   return r.json();
 }
 
@@ -40,17 +46,43 @@ export async function getGatewayAnalytics(gatewayId: string, hours: number): Pro
   return r.json();
 }
 
-export async function getPromptLog(opts: { route?: string; outcome?: string; limit?: number } = {}): Promise<PromptLog> {
+// Either a rolling window (`hours`, 0/absent = all time — the preset
+// buttons) or an explicit range (`sinceMs`/`untilMs` — the custom date/time
+// picker). When both are given the explicit range wins, matching the
+// server's parseTimeWindow.
+export interface TimeWindow {
+  hours?: number;
+  sinceMs?: number;
+  untilMs?: number;
+}
+
+function timeWindowParams(w: TimeWindow): [string, string][] {
+  const params: [string, string][] = [];
+  if (w.sinceMs != null || w.untilMs != null) {
+    if (w.sinceMs != null) params.push(["since", String(Math.floor(w.sinceMs))]);
+    if (w.untilMs != null) params.push(["until", String(Math.floor(w.untilMs))]);
+  } else if (w.hours) {
+    params.push(["hours", String(w.hours)]); // 0/absent = all time
+  }
+  return params;
+}
+
+export async function getPromptLog(
+  opts: { route?: string; outcome?: string | string[]; limit?: number } & TimeWindow = {},
+): Promise<PromptLog> {
   const qs = new URLSearchParams();
   if (opts.route) qs.set("route", opts.route);
-  if (opts.outcome) qs.set("outcome", opts.outcome);
+  const outcome = Array.isArray(opts.outcome) ? opts.outcome.join(",") : opts.outcome;
+  if (outcome) qs.set("outcome", outcome);
   if (opts.limit) qs.set("limit", String(opts.limit));
+  for (const [k, v] of timeWindowParams(opts)) qs.set(k, v);
   const r = await fetch("/api/prompt-log?" + qs);
   return r.json();
 }
 
-export async function getPromptAnalytics(hours = 0): Promise<PromptAnalytics> {
-  const r = await fetch("/api/prompt-analytics?hours=" + hours);
+export async function getPromptAnalytics(window: TimeWindow = {}): Promise<PromptAnalytics> {
+  const qs = new URLSearchParams(timeWindowParams(window));
+  const r = await fetch("/api/prompt-analytics?" + qs);
   return r.json();
 }
 
@@ -58,6 +90,8 @@ export async function clearPromptLog(): Promise<{ cleared?: boolean; error?: str
   const r = await fetch("/api/prompt-log", { method: "DELETE" });
   return r.json();
 }
+
+export type GatewayBackoff = "constant" | "linear" | "exponential";
 
 export interface ChatRequest {
   prompt: string;
@@ -69,10 +103,22 @@ export interface ChatRequest {
   gatewayId?: string; // gateway only — which configured gateway to use
   skipCache?: boolean; // gateway only
   // Dynamic Routing: a route name configured in the gateway dashboard. Empty
-  // → the normal binding path. The route picks the model, so `model` is
-  // ignored when this is set.
+  // → a plain gateway call with `model`. The route picks the model, so
+  // `model` is ignored when this is set.
   dynamicRoute?: string;
   routeMetadata?: Record<string, string>;
+  // Remaining per-request AI Gateway REST settings — gateway only, all no-ops
+  // on a direct Workers AI call since it never goes through a gateway.
+  cacheTtl?: number; // seconds
+  cacheKey?: string;
+  collectLog?: boolean;
+  requestTimeoutMs?: number;
+  maxAttempts?: number; // 1-5
+  retryDelayMs?: number; // 0-5000
+  backoff?: GatewayBackoff;
+  // Skip writing this turn to the D1 prompt_log table. Both routes — unrelated
+  // to AI Gateway's own request log (collectLog above).
+  excludeFromLog?: boolean;
 }
 
 // Non-stream result: status + raw text + parsed JSON (block pages aren't JSON).
@@ -93,6 +139,10 @@ export interface ChatStreamResult {
   text: string;
   usage: Usage | null;
   gateway: GatewayMeta | null;
+  // The model that actually generated the reply, read off each SSE chunk's
+  // `model` field (OpenAI-shape chunks only — e.g. a Dynamic Route response).
+  // null for the plain Workers AI binding stream, whose chunks carry no model.
+  model: string | null;
 }
 
 export type ChatResult = ChatJsonResult | ChatStreamResult;
@@ -140,6 +190,7 @@ export async function postChat(
   let text = "";
   let usage: Usage | null = null;
   let gateway: GatewayMeta | null = null;
+  let model: string | null = null;
   const handleLine = (line: string) => {
     if (!line.startsWith("data:")) return;
     const payload = line.slice(5).trim();
@@ -147,11 +198,13 @@ export async function postChat(
     try {
       const j = JSON.parse(payload) as {
         response?: unknown;
+        model?: unknown;
         choices?: { delta?: { content?: unknown; reasoning?: unknown } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         gateway?: GatewayMeta; // trailing event appended by the Worker for gateway routes
       };
       if (j.gateway) gateway = j.gateway;
+      if (typeof j.model === "string" && j.model) model = j.model;
       const delta = j.choices?.[0]?.delta;
       const tok =
         typeof j.response === "string"
@@ -187,6 +240,6 @@ export async function postChat(
   }
   if (buffer) handleLine(buffer);
 
-  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway };
+  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway, model };
 }
 

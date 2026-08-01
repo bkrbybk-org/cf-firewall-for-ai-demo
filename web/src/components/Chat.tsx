@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
-import { Eraser, SendHorizontal, ShieldBan, ShieldX } from "lucide-react";
+import { CircleAlert, Eraser, SendHorizontal, ShieldBan, ShieldX } from "lucide-react";
 import { fmtCost } from "../lib/format";
 import type { GatewayOption, Model } from "../lib/types";
-import type { Msg, Route } from "../hooks/useChat";
+import type { Msg, Route, RequestConfig } from "../hooks/useChat";
 import { ExportButton } from "./ExportButton";
+import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 
 function CacheBadge({ cached }: { cached?: boolean | null }) {
@@ -70,18 +71,29 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
       /* leave raw */
     }
   }
-  const label = (m.detection && DETECTION_LABELS[m.detection]) || "Request blocked";
+  // Attribution only when the response identified itself. A bare 403 is
+  // evidence the edge refused the request, not evidence of who did it.
+  const attributed = !!(m.detection && DETECTION_LABELS[m.detection]);
+  const label = attributed ? DETECTION_LABELS[m.detection!] : null;
   return (
     <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-red/60 bg-cf-red/10 p-4 text-sm shadow-sm">
       <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-red">
         <ShieldX size={16} /> Blocked at the Cloudflare edge
       </div>
       <div className="leading-relaxed text-text">
-        {label} — {m.reason || "Blocked by Cloudflare AI Security for Apps"}
+        {attributed ? (
+          <>
+            {label} — {m.reason || "Blocked by Cloudflare AI Security for Apps"}
+          </>
+        ) : (
+          <>The edge returned 403 without a structured reason, so what refused it is not stated here.</>
+        )}
       </div>
       <div className="mt-2 text-xs text-muted">
-        The prompt never reached the LLM.{m.ray ? <> ray <span className="font-mono">{m.ray}</span>.</> : null} See the
-        edge verdict below.
+        The prompt never reached the LLM.{m.ray ? <> ray <span className="font-mono">{m.ray}</span>.</> : null}{" "}
+        {attributed
+          ? "See the edge verdict below."
+          : "The edge verdict below shows whether a WAF rule matched — if none did, the block came from another layer (Access, rate limiting)."}
       </div>
       {m.raw && (
         <details className="mt-2.5">
@@ -103,6 +115,38 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
   );
 }
 
+// Error text is sometimes a raw JSON body forwarded from an upstream API
+// (e.g. a Cloudflare API error for a bad Dynamic Route) — pretty-print it in
+// a collapsible block, open by default so the detail is visible immediately.
+function ErrorCard({ m }: { m: Extract<Msg, { kind: "error" }> }) {
+  let pretty: string | null = null;
+  try {
+    const parsed = JSON.parse(m.text);
+    if (parsed && typeof parsed === "object") pretty = JSON.stringify(parsed, null, 2);
+  } catch {
+    /* not JSON — show as plain text */
+  }
+  return (
+    <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-red/60 bg-cf-red/10 p-4 text-sm shadow-sm">
+      <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-red">
+        <CircleAlert size={16} /> Error
+      </div>
+      {pretty ? (
+        <details open>
+          <summary className="cursor-pointer list-none text-[11.5px] text-muted hover:text-text">
+            ▸ View error (JSON)
+          </summary>
+          <pre className="mt-1.5 max-h-64 overflow-auto rounded-lg border border-line bg-bg p-2.5 font-mono text-[11px] whitespace-pre-wrap break-words text-cf-red">
+            {pretty}
+          </pre>
+        </details>
+      ) : (
+        <div className="leading-relaxed text-cf-red">{m.text}</div>
+      )}
+    </div>
+  );
+}
+
 export function Chat({
   models,
   selectedModel,
@@ -111,17 +155,15 @@ export function Chat({
   onStreamChange,
   multiTurn,
   onMultiTurnChange,
+  excludeFromLog,
+  onExcludeFromLogChange,
   route,
   onRouteChange,
   gateways,
   gatewayId,
   onGatewayIdChange,
-  skipCache,
-  onSkipCacheChange,
   dynamicRoute,
   onDynamicRouteChange,
-  routeMetadata,
-  onRouteMetadataChange,
   messages,
   busy,
   turnCount,
@@ -138,17 +180,15 @@ export function Chat({
   onStreamChange: (v: boolean) => void;
   multiTurn: boolean;
   onMultiTurnChange: (v: boolean) => void;
+  excludeFromLog: boolean;
+  onExcludeFromLogChange: (v: boolean) => void;
   route: Route;
   onRouteChange: (r: Route) => void;
   gateways: GatewayOption[];
   gatewayId: string;
   onGatewayIdChange: (id: string) => void;
-  skipCache: boolean;
-  onSkipCacheChange: (v: boolean) => void;
   dynamicRoute: string;
   onDynamicRouteChange: (v: string) => void;
-  routeMetadata: string;
-  onRouteMetadataChange: (v: string) => void;
   messages: Msg[];
   busy: boolean;
   turnCount: number;
@@ -160,7 +200,13 @@ export function Chat({
 }) {
   const gateway = route === "gateway";
   const endRef = useRef<HTMLDivElement>(null);
+  const userMsgRefs = useRef(new Map<number, HTMLDivElement>());
   const modelLabels = useMemo(() => Object.fromEntries(models.map((m) => [m.id, m.label])), [models]);
+  const userMessages = useMemo(() => messages.filter((m): m is Extract<Msg, { kind: "user" }> => m.kind === "user"), [messages]);
+
+  function jumpTo(id: number) {
+    userMsgRefs.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
 
   // Keep the view pinned to the bottom, including while tokens stream in.
   const streamingChars = messages.reduce((n, m) => n + (m.kind === "assistant" && m.streaming ? m.text.length : 0), 0);
@@ -185,9 +231,29 @@ export function Chat({
     return undefined;
   };
 
+  // The send-time controls (stream, multi-turn, route, cache, metadata) for
+  // the user message that produced the message at `idx`.
+  const cfgBefore = (idx: number): RequestConfig | undefined => {
+    for (let i = idx - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m.kind === "user") return m.cfg;
+    }
+    return undefined;
+  };
+
+  // shrink-0 below lg: stacked in a scrolling column this pane takes its
+  // natural height. At lg it becomes the flexible middle pane instead.
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-3.5 p-4">
-      <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-1.5">
+    <div className="flex min-w-0 shrink-0 flex-col gap-3.5 p-4 lg:min-h-0 lg:flex-1">
+      {/* Full pane width so the navigator below can sit at the pane's true
+          right edge — the message column inside stays centered/narrow.
+          The message list always scrolls internally rather than growing the
+          page: at lg via min-h-0 + flex-1 (without min-h-0 a flex column item
+          takes a content-based min-height and the page chases the
+          scroll-to-bottom), and below lg via an explicit viewport height,
+          since there flex-1 would resolve to zero against shrink-0 siblings. */}
+      <div className="relative flex h-[55vh] flex-col overflow-hidden lg:h-auto lg:min-h-0 lg:flex-1">
+      <div className="mx-auto flex min-h-0 w-full max-w-3xl min-w-0 flex-1 flex-col gap-2 overflow-y-auto p-1.5">
         {messages.length === 0 && (
           <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-3 text-sm shadow-sm">
             Hi! I'm an LLM behind Cloudflare. Pick an attack from the library on the right — Cloudflare inspects each
@@ -202,7 +268,13 @@ export function Chat({
           if (m.kind === "user")
             return (
               <div key={m.id} className="contents">
-                <div className="animate-rise max-w-[min(80%,720px)] self-end rounded-2xl rounded-br-md bg-gradient-to-br from-accent to-accent-hover px-4 py-2.5 text-sm font-medium whitespace-pre-wrap text-[#1a1206] shadow-sm">
+                <div
+                  ref={(el) => {
+                    if (el) userMsgRefs.current.set(m.id, el);
+                    else userMsgRefs.current.delete(m.id);
+                  }}
+                  className="animate-rise max-w-[min(80%,720px)] self-end rounded-2xl rounded-br-md bg-gradient-to-br from-accent to-accent-hover px-4 py-2.5 text-sm font-medium whitespace-pre-wrap text-[#1a1206] shadow-sm"
+                >
                   {m.text}
                 </div>
                 <Stamp side="user" ts={m.ts} />
@@ -262,7 +334,7 @@ export function Chat({
                         </span>
                       )}
                     </div>
-                    {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} />}
+                    {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
                   </>
                 )}
               </div>
@@ -272,7 +344,7 @@ export function Chat({
               <div key={m.id} className="contents">
                 <BlockedCard m={m} />
                 <Stamp side="assistant" ts={m.ts} />
-                {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} />}
+                {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
               </div>
             );
           if (m.kind === "guardrails")
@@ -286,16 +358,15 @@ export function Chat({
                     prompt={promptBefore(idx)}
                     gateway={m.gateway}
                     guardrails={{ direction: m.direction, detail: m.detail }}
+                    requestCfg={cfgBefore(idx)}
                   />
                 )}
               </div>
             );
           return (
-            <div
-              key={m.id}
-              className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-red/60 bg-cf-red/10 px-4 py-2.5 text-sm text-cf-red"
-            >
-              {m.text}
+            <div key={m.id} className="contents">
+              <ErrorCard m={m} />
+              <Stamp side="assistant" ts={m.ts} />
             </div>
           );
         })}
@@ -303,22 +374,35 @@ export function Chat({
         <div ref={endRef} />
       </div>
 
-      <div className="flex flex-wrap items-center gap-3.5 text-[13px] text-muted">
-        <label htmlFor="model" className="flex items-center gap-1.5">
-          Model
-          <select
-            id="model"
-            value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            className="max-w-80 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
-          >
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
+      {userMessages.length > 1 && (
+        // Anchored to the pane's true right edge (this wrapper spans the full
+        // pane width), not the centered message column — matches ChatGPT's
+        // own minimap rail sitting in the outer gutter, not against the text.
+        <div className="group pointer-events-none absolute top-1.5 right-1.5 bottom-1.5 z-10 flex flex-col items-end">
+          <div className="pointer-events-auto flex flex-1 flex-col items-end justify-center gap-[3px] py-1 pr-0.5">
+            {userMessages.map((m) => (
+              <span key={m.id} className="h-[3px] w-3.5 rounded-full bg-line transition group-hover:bg-transparent" />
             ))}
-          </select>
-        </label>
+          </div>
+          <div className="pointer-events-none absolute top-1/2 right-1 flex max-h-[85%] w-64 -translate-y-1/2 flex-col gap-0.5 overflow-y-auto rounded-xl border border-line bg-surface p-1.5 opacity-0 shadow-lg transition group-hover:pointer-events-auto group-hover:opacity-100">
+            {userMessages.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => jumpTo(m.id)}
+                title={m.text}
+                className="truncate rounded-lg px-2.5 py-1.5 text-left text-[12px] text-muted transition hover:bg-surface-2 hover:text-text"
+              >
+                {m.text}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      </div>
+
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-3.5">
+      <div className="flex flex-wrap items-center gap-3.5 text-[13px] text-muted">
         {/* Route toggle: Workers AI (direct) ↔ AI Gateway */}
         <div className="inline-flex overflow-hidden rounded-full border border-line">
           {(["direct", "gateway"] as Route[]).map((r) => (
@@ -334,27 +418,36 @@ export function Chat({
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-1.5">
-          <input
-            type="checkbox"
-            checked={stream}
-            onChange={(e) => onStreamChange(e.target.checked)}
-            className="h-4 w-4 accent-accent"
-          />
-          stream replies
-        </label>
-        <label
-          className="flex items-center gap-1.5"
+        {!gateway && (
+          <label htmlFor="model" className="flex items-center gap-1.5">
+            Model
+            <select
+              id="model"
+              value={selectedModel}
+              onChange={(e) => onModelChange(e.target.value)}
+              className="max-w-80 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
+            >
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <Switch checked={stream} onChange={onStreamChange} label="stream replies" />
+        <Switch
+          checked={multiTurn}
+          onChange={onMultiTurnChange}
+          label="multi-turn"
           title="When off, each prompt is sent standalone — no history[], so the model can't recall earlier turns (multi-turn attacks like Crescendo won't build across messages)"
-        >
-          <input
-            type="checkbox"
-            checked={multiTurn}
-            onChange={(e) => onMultiTurnChange(e.target.checked)}
-            className="h-4 w-4 accent-accent"
-          />
-          multi-turn
-        </label>
+        />
+        <Switch
+          checked={!excludeFromLog}
+          onChange={(v) => onExcludeFromLogChange(!v)}
+          label="log prompt"
+          title="When off, this turn is not written to the D1 prompt_log table (redacted prompt/reply history) — separate from AI Gateway's own request log"
+        />
         {gateway && (
           <>
             {gateways.length > 0 && (
@@ -374,43 +467,19 @@ export function Chat({
                 </select>
               </label>
             )}
-            <label className="flex items-center gap-1.5" title="Bypass the gateway cache for this request">
-              <input
-                type="checkbox"
-                checked={skipCache}
-                onChange={(e) => onSkipCacheChange(e.target.checked)}
-                className="h-4 w-4 accent-accent"
-              />
-              skip cache
-            </label>
             <label
               className="flex items-center gap-1.5"
-              title="Dynamic Routing: a route name configured in the gateway dashboard. The route picks the model, so the Model control above is ignored. Empty = normal routing."
+              title={`Dynamic Routing: a route configured in the gateway dashboard. Either form works — "demo-routes" or the dashboard's "dynamic/demo-routes". The route picks the model, so the Model control above is ignored. Empty = normal routing.`}
             >
               Route
               <input
                 type="text"
                 value={dynamicRoute}
                 onChange={(e) => onDynamicRouteChange(e.target.value)}
-                placeholder="dynamic route"
+                placeholder="demo-routes"
                 className="w-36 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
               />
             </label>
-            {dynamicRoute && (
-              <label
-                className="flex items-center gap-1.5"
-                title="Metadata the route's Conditional nodes branch on, as k=v pairs (e.g. plan=paid)"
-              >
-                Metadata
-                <input
-                  type="text"
-                  value={routeMetadata}
-                  onChange={(e) => onRouteMetadataChange(e.target.value)}
-                  placeholder="plan=paid"
-                  className="w-36 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
-                />
-              </label>
-            )}
           </>
         )}
         {turnCount > 0 && (
@@ -433,13 +502,6 @@ export function Chat({
         )}
       </div>
 
-      {gateway && (
-        <div className="-mt-1.5 text-[11.5px] text-subtle">
-          Routed through AI Gateway. Cache HIT needs an identical request body, so streaming and prior turns weaken it —
-          for a clean HIT, clear the conversation and send the same prompt twice. The edge WAF still scans this route, so
-          the verdict shows below each reply.
-        </div>
-      )}
 
       <form onSubmit={submit} className="flex gap-2.5">
         <input
@@ -457,6 +519,7 @@ export function Chat({
           <SendHorizontal size={16} /> Send
         </button>
       </form>
+    </div>
     </div>
   );
 }

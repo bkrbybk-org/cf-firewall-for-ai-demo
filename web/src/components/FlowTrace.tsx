@@ -22,6 +22,7 @@ import { ZONE_RULES } from "../lib/data";
 import { topicLabel } from "../lib/format";
 import { verdictOutcome } from "../lib/verdict";
 import type { GatewayMeta, Verdict as VerdictData, VerdictRule } from "../lib/types";
+import type { RequestConfig } from "../hooks/useChat";
 
 type NodeTone = "ok" | "warn" | "flag" | "dead" | "guard";
 
@@ -151,6 +152,46 @@ function RuleRow({
   );
 }
 
+// What was actually requested — stream/multi-turn toggles, route, cache, and
+// any AI Gateway metadata tags — snapshotted at send time so it stays correct
+// even after the controls above have since changed.
+function RequestChips({ cfg }: { cfg: RequestConfig }) {
+  const metaEntries = cfg.routeMetadata ? Object.entries(cfg.routeMetadata) : [];
+  return (
+    <div className="mt-1.5 flex flex-col gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        <MiniChip tone="mute">{cfg.route === "gateway" ? "AI Gateway" : "Workers AI"}</MiniChip>
+        <MiniChip tone={cfg.stream ? "ok" : "mute"}>{cfg.stream ? "stream" : "no stream"}</MiniChip>
+        <MiniChip tone={cfg.multiTurn ? "ok" : "mute"}>{cfg.multiTurn ? "multi-turn" : "single-turn"}</MiniChip>
+        {cfg.excludeFromLog && <MiniChip tone="warn">prompt log off</MiniChip>}
+        {cfg.route === "gateway" && (
+          <>
+            {cfg.gatewayId && <MiniChip tone="mute">gw {cfg.gatewayId}</MiniChip>}
+            <MiniChip tone={cfg.skipCache ? "warn" : "mute"}>{cfg.skipCache ? "skip cache" : "cache on"}</MiniChip>
+            {cfg.cacheTtl != null && <MiniChip tone="mute">ttl {cfg.cacheTtl}s</MiniChip>}
+            {cfg.cacheKey && <MiniChip tone="mute">key {cfg.cacheKey}</MiniChip>}
+            {cfg.collectLog === false && <MiniChip tone="warn">gw log off</MiniChip>}
+            {cfg.requestTimeoutMs != null && <MiniChip tone="mute">timeout {cfg.requestTimeoutMs}ms</MiniChip>}
+            {cfg.maxAttempts != null && <MiniChip tone="mute">attempts {cfg.maxAttempts}</MiniChip>}
+            {cfg.retryDelayMs != null && <MiniChip tone="mute">retry {cfg.retryDelayMs}ms</MiniChip>}
+            {cfg.backoff && <MiniChip tone="mute">backoff {cfg.backoff}</MiniChip>}
+            {cfg.dynamicRoute && <MiniChip tone="ok">route {cfg.dynamicRoute}</MiniChip>}
+          </>
+        )}
+      </div>
+      {metaEntries.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {metaEntries.map(([k, v]) => (
+            <MiniChip key={k} tone="mute">
+              {k}={v}
+            </MiniChip>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export type GuardrailsBlock = { direction?: "prompt" | "response"; detail?: string };
 
 export function FlowTrace({
@@ -158,11 +199,13 @@ export function FlowTrace({
   prompt,
   gateway,
   guardrails,
+  requestCfg,
 }: {
   d: VerdictData;
   prompt?: string;
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock; // set when AI Gateway Guardrails blocked (2016/2017)
+  requestCfg?: RequestConfig; // send-time controls (stream, multi-turn, cache, metadata)
 }) {
   const [showMisses, setShowMisses] = useState(false);
 
@@ -178,6 +221,12 @@ export function FlowTrace({
 
   const outcome = verdictOutcome(d);
   const blocked = outcome === "block";
+  // Stopped at the edge without a rule doing it — the Worker still never ran,
+  // so the flow is severed here exactly as for a block, but the reason is not
+  // ours to claim.
+  const denied = outcome === "denied";
+  const stopped = blocked || denied;
+  const dynamicRoute = requestCfg?.dynamicRoute;
   const ai = d.ai;
   const scored = ai && d.scored;
   const score = ai?.injectionScore ?? null;
@@ -200,10 +249,11 @@ export function FlowTrace({
             </>
           )}
         </Sub>
+        {requestCfg && <RequestChips cfg={requestCfg} />}
       </Step>
 
       <Step tone={scanTone} icon={ScanLine}>
-        <Title>AI Security scan</Title>
+        <Title>AI Security for Apps</Title>
         {scored ? (
           <>
             <div className="mt-1 flex flex-wrap gap-1.5">
@@ -229,7 +279,7 @@ export function FlowTrace({
         )}
       </Step>
 
-      <Step tone={hitCount ? "flag" : "ok"} icon={ShieldHalf} cut={blocked}>
+      <Step tone={hitCount ? "flag" : "ok"} icon={ShieldHalf} cut={stopped}>
         <Title>
           WAF custom rules{" "}
           <span className="font-normal text-subtle">
@@ -261,12 +311,23 @@ export function FlowTrace({
         </div>
       </Step>
 
-      {blocked ? (
+      {stopped ? (
         <Step tone="flag" icon={Hand} last>
           <Title>
-            <span className="text-cf-red">Blocked at the edge — 403</span>
+            <span className="text-cf-red">
+              {blocked ? "Blocked at the edge — 403" : `Stopped at the edge — ${d.httpStatus ?? "error"}`}
+            </span>
           </Title>
-          <Sub>Worker never executed · the prompt never reached Workers AI.</Sub>
+          <Sub>
+            Worker never executed · the prompt never reached Workers AI.
+            {denied && (
+              <>
+                {" "}
+                No WAF rule blocked this — the rules above only logged. Something ahead of the Worker (Cloudflare
+                Access, rate limiting) refused it; the raw response body above identifies which.
+              </>
+            )}
+          </Sub>
         </Step>
       ) : guardrails ? (
         // Edge WAF allowed/logged the request, but AI Gateway Guardrails (a
@@ -279,7 +340,7 @@ export function FlowTrace({
             <Sub>
               edge allowed{outcome === "log" ? " (log-only rules flagged it — visible in analytics)" : ""} ·
               routed via AI Gateway ·{" "}
-              <span className="font-mono">env.AI.run(model, inputs, {"{ gateway }"})</span>
+              <span className="font-mono">POST /ai/v1/chat/completions</span>
             </Sub>
           </Step>
           {guardrails.direction === "response" ? (
@@ -330,9 +391,14 @@ export function FlowTrace({
             <Title>Worker</Title>
             <Sub>
               request allowed{outcome === "log" ? " (flagged by log-only rules — visible in analytics)" : ""} ·{" "}
-              <span className="font-mono">
-                env.AI.run(model, inputs{gateway ? ", { gateway }" : ""})
-              </span>
+              {gateway ? (
+                <>
+                  routed via AI Gateway{dynamicRoute ? " Dynamic Routing" : ""} ·{" "}
+                  <span className="font-mono">POST /ai/v1/chat/completions</span>
+                </>
+              ) : (
+                <span className="font-mono">env.AI.run(model, inputs)</span>
+              )}
             </Sub>
           </Step>
           {gateway && (
@@ -342,6 +408,14 @@ export function FlowTrace({
                 {gateway.guarded && (
                   <span className="ml-1.5 inline-flex items-center gap-1 rounded-full border border-cf-purple/60 bg-cf-purple/10 px-1.5 py-px align-middle text-[9.5px] font-bold text-cf-purple">
                     <ShieldCheck size={9} /> GUARDRAILS
+                  </span>
+                )}
+                {dynamicRoute && (
+                  <span
+                    className="ml-1.5 inline-flex items-center rounded-full border border-cf-blue/60 bg-cf-blue/10 px-1.5 py-px align-middle text-[9.5px] font-bold text-cf-blue"
+                    title="Model chosen by an AI Gateway dynamic route"
+                  >
+                    ROUTE {dynamicRoute}
                   </span>
                 )}
               </Title>
@@ -364,8 +438,12 @@ export function FlowTrace({
             </Step>
           )}
           <Step tone="ok" icon={Sparkles} last>
-            <Title>Workers AI</Title>
-            <Sub>model generated the reply above.</Sub>
+            <Title>{dynamicRoute ? "Workers AI / Third-party AI" : "Workers AI"}</Title>
+            <Sub>
+              {dynamicRoute
+                ? "the route's model config picked the model that generated the reply above."
+                : "model generated the reply above."}
+            </Sub>
           </Step>
         </>
       )}

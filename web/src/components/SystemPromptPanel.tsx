@@ -6,15 +6,11 @@ export function SystemPromptPanel({
   onChange,
   defaultPrompt,
   maxLen,
-  side = "left",
 }: {
   value: string;
   onChange: (v: string) => void;
   defaultPrompt: string;
   maxLen: number;
-  /** Which edge of the panel sits against the chat column. Default "left"
-   *  (panel is the leftmost column, so its own right edge gets the border). */
-  side?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
 
@@ -28,10 +24,10 @@ export function SystemPromptPanel({
   const selectValue = match ? match.id : "custom";
   const preview = value.trim() ? (value.length > 140 ? value.slice(0, 140) + "…" : value) : "(empty — server default used)";
 
-  const borderSide = side === "left" ? "lg:border-r" : "lg:border-l";
+
 
   return (
-    <aside className={`w-full shrink-0 overflow-y-auto border-b border-line bg-surface p-4 lg:w-[300px] lg:border-b-0 ${borderSide}`}>
+    <section className="p-4">
       <div className="mb-1 text-[11.5px] font-bold uppercase tracking-wider text-subtle">System Prompt</div>
       <div className="mb-3 text-xs leading-relaxed text-muted">
         Choose a preset persona or write your own. Applies to every new message.
@@ -91,6 +87,6 @@ export function SystemPromptPanel({
           </div>
         </div>
       </details>
-    </aside>
+    </section>
   );
 }
