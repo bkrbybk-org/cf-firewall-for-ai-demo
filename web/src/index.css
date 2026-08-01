@@ -65,8 +65,15 @@
   --accent: #ea6a05;
   --accent-hover: #f6821f;
   --green: #12a670;
-  --red: #e23b3b;
-  --amber: #b9790a;
+  /* Red and amber are moved together on purpose. On white they were only
+     ΔE 3.0 apart under deuteranopia (~8% of men) and 14.9 under normal vision
+     — below the legibility floor — which made "blocked" and "logged" the same
+     colour on the security chart, the two series that carry its whole story.
+     Amber alone cannot fix it: any amber bright enough to separate from the
+     old red fails contrast on white. Verified 16.2 / 18.7 with the validator;
+     re-run it before changing either value. */
+  --red: #b91c1c;
+  --amber: #d97706;
   --blue: #2b7fff;
   --purple: #7c5cff;
 }

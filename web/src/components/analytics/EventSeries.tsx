@@ -1,6 +1,6 @@
 // Time-series chart shared by all three Analytics tabs, plus the series
 // definitions that configure it.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // `cls` fills the area wash, `stroke` draws the 2px line, `dot` keys the legend
 // and tooltip. Colors are the app's existing status palette (block/error = red,
@@ -65,6 +65,7 @@ export function EventSeries({
   ariaLabel: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
+  const [showTable, setShowTable] = useState(false);
   const num = (r: Record<string, number | string>, k: string) => Number(r[k] ?? 0);
   const total = (r: Record<string, number | string>) => defs.reduce((n, s) => n + num(r, s.key), 0);
 
@@ -72,16 +73,39 @@ export function EventSeries({
   // Unstacked, so the axis tops out at the largest single series value.
   const peak = Math.max(1, ...rows.flatMap((r) => defs.map((s) => num(r, s.key))));
   const max = niceMax(peak);
-  const W = 720;
-  // Wider aspect ratio than a typical chart on purpose: the page now runs up
-  // to 1600px wide, and at the old 720:168 ratio this chart rendered taller
-  // than every other card on the page since it's the only one that scales
-  // its height with container width instead of sizing to its content.
-  const H = 90;
-  const padL = 34;
-  const padR = 8;
+
+  // The chart is sized in REAL PIXELS, not a fixed aspect ratio. It used to be
+  // viewBox="0 0 720 90" on a w-full svg, which scales *everything* with the
+  // container — including text. That put the axis labels at ~19px on a 1600px
+  // page (larger than the card's own title) and ~4px on mobile, where the whole
+  // plot collapsed to ~24px tall. Measuring the box and driving the viewBox from
+  // it keeps 1 unit = 1 CSS px, so type stays the size it says it is at every
+  // width. (vector-effect is not a substitute — it fixes strokes, not text.)
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = boxRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      const { width, height } = entry.contentRect;
+      // Round to whole px so sub-pixel jitter doesn't rerender on every frame.
+      setSize((prev) => {
+        const w = Math.round(width);
+        const h = Math.round(height);
+        return prev.w === w && prev.h === h ? prev : { w, h };
+      });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const W = size.w;
+  const H = size.h;
+  const padL = 38;
+  // Right gutter holds the endpoint labels (see below), not just slack.
+  const padR = 42;
   const padT = 10;
-  const padB = 24;
+  const padB = 26;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const baseY = padT + plotH;
@@ -112,17 +136,69 @@ export function EventSeries({
     setHover(Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1)))));
   }
 
+  // Keyboard parity with hover: a tooltip must never be the only way to read a
+  // value. Arrows walk the buckets and drive the same `hover` state, so the
+  // crosshair and tooltip follow for free; the live region below announces it.
+  function onKeyDown(e: React.KeyboardEvent<SVGSVGElement>) {
+    if (n === 0) return;
+    const cur = hover ?? n - 1;
+    let next: number | null = null;
+    if (e.key === "ArrowRight") next = Math.min(n - 1, cur + 1);
+    else if (e.key === "ArrowLeft") next = Math.max(0, cur - 1);
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = n - 1;
+    else if (e.key === "Escape") {
+      setHover(null);
+      return;
+    }
+    if (next != null) {
+      e.preventDefault(); // don't scroll the page while stepping buckets
+      setHover(next);
+    }
+  }
+
   const hoveredRow = hover != null ? rows[hover] : null;
+
+  // Direct labels on the LAST point of each series — never a number on every
+  // point. Drawn in the right gutter so they can't sit on top of the plot.
+  // Two series whose endpoints nearly coincide would collide, so the lower-value
+  // one is dropped; its value is still in the tooltip and the data table.
+  const endLabels =
+    n > 0 && W > 0
+      ? defs
+          .map((s) => ({ s, v: num(rows[n - 1], s.key), y: yAt(num(rows[n - 1], s.key)) }))
+          .sort((a, b) => a.y - b.y)
+          // Compare against the last label actually KEPT, not the previous
+          // element — otherwise a dropped label still reserves its slot and
+          // suppresses the next one that would have fit.
+          .reduce<{ s: SeriesDef; v: number; y: number }[]>((keep, cur) => {
+            const last = keep[keep.length - 1];
+            if (!last || cur.y - last.y >= 11) keep.push(cur);
+            return keep;
+          }, [])
+      : [];
 
   return (
     <div className="relative">
+      {/* Fixed CSS height — the svg fills it and the viewBox is measured from
+          it, so nothing about the type scales with container width. */}
+      <div ref={boxRef} className="h-40 w-full md:h-44">
+        {W > 0 && H > 0 && (
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="h-auto w-full touch-none"
+        // Deliberately NO width/height attributes: an explicit width makes the
+        // svg force its own parent wide, so the ResizeObserver can never see the
+        // box shrink and the chart stays stuck at its widest — a feedback loop.
+        // Sized purely by CSS instead, with the viewBox tracking the measured
+        // box so 1 unit stays 1 CSS px.
+        className="block h-full w-full touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
         role="img"
-        aria-label={ariaLabel}
+        tabIndex={0}
+        aria-label={`${ariaLabel}. Use arrow keys to step through time buckets.`}
         onPointerMove={onMove}
         onPointerLeave={() => setHover(null)}
+        onKeyDown={onKeyDown}
+        onBlur={() => setHover(null)}
       >
         {/* Gridlines — hairline, solid, recessive. */}
         {ticks.map((v) => (
@@ -135,7 +211,7 @@ export function EventSeries({
               className={v === 0 ? "stroke-line-strong" : "stroke-line"}
               strokeWidth="1"
             />
-            <text x={padL - 6} y={yAt(v) + 3} textAnchor="end" className="fill-subtle text-[9px] tabular-nums">
+            <text x={padL - 6} y={yAt(v) + 3.5} textAnchor="end" className="fill-subtle text-[10px] tabular-nums">
               {v.toLocaleString()}
             </text>
           </g>
@@ -199,21 +275,37 @@ export function EventSeries({
           />
         )}
 
+        {/* Endpoint labels — selective by design: the last value of each
+            series, in the right gutter. Collision-filtered above. */}
+        {endLabels.map(({ s, v, y }) => (
+          <text
+            key={`end-${s.key}`}
+            x={xAt(n - 1) + 6}
+            y={y + 3.5}
+            textAnchor="start"
+            className={`${s.cls} text-[10px] font-semibold tabular-nums`}
+          >
+            {v.toLocaleString()}
+          </text>
+        ))}
+
         {/* X labels. */}
         {rows.map((r, i) =>
           i % labelEvery === 0 || i === n - 1 ? (
             <text
               key={String(r.t)}
               x={xAt(i)}
-              y={H - 6}
+              y={H - 8}
               textAnchor={i === 0 ? "start" : i === n - 1 ? "end" : "middle"}
-              className="fill-subtle text-[9px]"
+              className="fill-subtle text-[10px]"
             >
               {fmtBucket(String(r.t))}
             </text>
           ) : null,
         )}
       </svg>
+        )}
+      </div>
 
       {/* One tooltip, every series. Value leads, label follows. */}
       {hoveredRow && (
@@ -238,13 +330,77 @@ export function EventSeries({
         </div>
       )}
 
+      {/* Announces the focused bucket so a keyboard/screen-reader user gets the
+          same values the tooltip shows sighted users. */}
+      <div className="sr-only" aria-live="polite">
+        {hoveredRow
+          ? `${fmtBucket(String(hoveredRow.t))}: ` +
+            defs.map((s) => `${num(hoveredRow, s.key)} ${s.label}`).join(", ") +
+            `, ${total(hoveredRow)} total`
+          : ""}
+      </div>
+
       <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted">
         {defs.map((s) => (
           <span key={s.key} className="flex items-center gap-1.5">
             <span className={`h-2 w-2 rounded-full ${s.dot}`} /> {s.label}
           </span>
         ))}
+        {n > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowTable((v) => !v)}
+            aria-expanded={showTable}
+            className="ml-auto rounded-full border border-line px-2 py-0.5 text-[11px] transition hover:border-line-strong hover:text-text"
+          >
+            {showTable ? "Hide data" : "Show data"}
+          </button>
+        )}
       </div>
+
+      {/* The table view — the WCAG-clean twin. Every value in the chart is
+          reachable here without colour, hover, or a pointer. */}
+      {showTable && n > 0 && (
+        <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-line">
+          <table className="w-full text-left text-[11.5px]">
+            <thead className="sticky top-0 bg-surface-2 text-[10px] uppercase tracking-wider text-subtle">
+              <tr>
+                <th scope="col" className="px-2.5 py-1.5 font-semibold">
+                  {bucket === "day" ? "Day" : "Time"}
+                </th>
+                {defs.map((s) => (
+                  <th key={s.key} scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                    {s.label}
+                  </th>
+                ))}
+                <th scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                  Total
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr
+                  key={String(r.t)}
+                  className={`border-t border-line ${hover === i ? "bg-surface-hover" : ""}`}
+                >
+                  <th scope="row" className="px-2.5 py-1 font-mono text-[11px] font-normal whitespace-nowrap text-muted">
+                    {fmtBucket(String(r.t))}
+                  </th>
+                  {defs.map((s) => (
+                    <td key={s.key} className="px-2.5 py-1 text-right font-mono tabular-nums text-text">
+                      {num(r, s.key).toLocaleString()}
+                    </td>
+                  ))}
+                  <td className="px-2.5 py-1 text-right font-mono font-semibold tabular-nums text-text">
+                    {total(r).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
