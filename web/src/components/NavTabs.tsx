@@ -6,12 +6,14 @@ import {
   BarChart3,
   ClipboardCheck,
   ShieldCheck,
+  Swords,
   type LucideIcon,
 } from 'lucide-react';
 
 const TABS: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: '/', label: 'AI Guardrails Demo', icon: ShieldCheck, end: true },
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { to: '/redteam', label: 'Red Team', icon: Swords },
   { to: '/compliance', label: 'Compliance', icon: ClipboardCheck },
 ];
 

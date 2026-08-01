@@ -342,7 +342,7 @@ export const FRAMEWORKS: Framework[] = [
         coverage: "full",
         product: "ai-security",
         refs: ["MEASURE 2.7", "AML.T0051"],
-        demo: { label: "Try an injection", to: "/" },
+        demo: { label: "Run the red-team corpus", to: "/redteam" },
       },
       {
         id: "LLM02",
@@ -435,7 +435,7 @@ export const FRAMEWORKS: Framework[] = [
         coverage: "partial",
         product: "ai-security",
         refs: ["LLM01", "MEASURE 2.7"],
-        demo: { label: "Try an injection", to: "/" },
+        demo: { label: "Run the red-team corpus", to: "/redteam" },
       },
       {
         id: "AML.T0054",
