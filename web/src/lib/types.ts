@@ -11,6 +11,14 @@ export interface GatewayOption {
   guarded: boolean;
 }
 
+// Server-side caps for the AI Gateway numeric settings. Served rather than
+// re-declared client-side: the Worker clamps to these values regardless, so
+// duplicating them by hand only creates a chance for the two to disagree.
+export interface GatewayLimits {
+  maxAttempts: number;
+  retryDelayMs: number;
+}
+
 export interface ModelsResponse {
   default: string;
   models: Model[];
@@ -18,6 +26,26 @@ export interface ModelsResponse {
   maxSystemPromptLen: number;
   gateways?: GatewayOption[]; // configured AI Gateways for the dropdown
   defaultGateway?: string; // id of the first configured gateway
+  limits?: GatewayLimits;
+}
+
+// GET /api/zone-rules — the zone's WAF custom rules, read live from the
+// Rulesets API. `source: "fallback"` means the lookup was unavailable and the
+// client should keep using its static ZONE_RULES mirror.
+export interface ZoneRuleLive {
+  id: string;
+  name: string; // the rule description, as firewallEventsAdaptive reports it
+  action: string;
+  expression: string;
+  enabled: boolean;
+  llm: boolean; // expression references cf.llm.* — an AI Security rule
+}
+
+export interface ZoneRules {
+  configured?: boolean;
+  source: "live" | "fallback";
+  rules: ZoneRuleLive[];
+  error?: string;
 }
 
 export interface ChatTurn {
@@ -152,8 +180,11 @@ export interface PromptLogRow {
 }
 export interface PromptLog {
   configured: boolean;
-  rows?: PromptLogRow[];
-  total?: number;
+  rows?: PromptLogRow[]; // one page, already filtered/sorted by SQL
+  filtered?: number; // rows matching the filters — drives the page count
+  total?: number; // rows in the whole table, regardless of filters
+  limit?: number;
+  offset?: number;
   error?: string;
 }
 

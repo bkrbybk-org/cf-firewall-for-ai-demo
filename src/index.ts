@@ -9,6 +9,7 @@ import {
   handlePromptAnalytics,
   handlePromptLog,
   handleVerdict,
+  handleZoneRules,
 } from "./handlers";
 import type { Env } from "./types";
 
@@ -21,6 +22,8 @@ export default {
         return handleModels(env);
       case "/api/verdict":
         return handleVerdict(url, env);
+      case "/api/zone-rules":
+        return handleZoneRules(env);
       case "/api/neurons":
         return handleNeurons(env);
       case "/api/analytics":

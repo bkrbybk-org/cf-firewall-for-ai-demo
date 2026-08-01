@@ -115,6 +115,32 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   had fired them — the same misattribution class as the `denied` fix. `isLlmRule()` in `data.ts`
   matches `ZONE_RULES` by name with a `\bLLM\b` fallback (so a renamed rule degrades to "probably
   LLM" rather than silently dropping into "other"), and `EdgeTab` renders two labelled groups.
+- **WAF rules are read live from the zone, and classified by expression, not by name.**
+  `/api/zone-rules` reads the `http_request_firewall_custom` entrypoint ruleset (Rulesets API,
+  isolate-cached) and marks each rule `llm` when its **expression** references `cf.llm.*`. The old
+  path matched a hand-maintained mirror **by name**, so renaming a rule in the dashboard silently
+  moved it into "not AI Security" in the analytics split and out of the flow trace's matched list —
+  the same misattribution class as the `denied`/STOPPED fix, arriving by a different door. The
+  mirror survives as a **fallback** (no token scope → static list) and the flow trace states which
+  source it used; swapping one silent source for another would not have been an improvement.
+  Disabled rules are excluded from the "N evaluated" count and marked, rather than counted as
+  coverage. Needs **Zone → WAF → Read** on `CF_ANALYTICS_TOKEN` — see Open bugs, currently missing.
+- **The prompt log pages, sorts and searches in SQL.** Previously the newest 200 rows were fetched
+  and the browser sliced them, so with 2,700+ rows stored nothing older was reachable however you
+  filtered. `buildPromptLogQuery` (`src/promptlog.ts`, unit-tested) now owns `WHERE`/`ORDER BY`/
+  `LIMIT`/`OFFSET` and the response carries `filtered` (rows matching the filters) alongside
+  `total`. Sort and text search moved server-side **with** paging, deliberately: they were correct
+  client-side only while every row was in hand — once the table is genuinely paged, sorting one
+  page while appearing to sort the table is exactly the kind of quiet lie the rest of this app
+  works to avoid. `sort` is the only user input that reaches `ORDER BY`, where a bind parameter is
+  impossible, so it is resolved through a whitelist map and anything else falls back to `ts`.
+- **Streamed replies now reach the prompt log.** The reply text of a streamed turn never exists
+  server-side, so the row was written with `reply = NULL` — and streaming is the DEFAULT, so the
+  log's reply column was empty for most real traffic while the UI described it as the evidence
+  trail. `teeReplyToLog` passes the SSE through untouched (no buffering, no added latency),
+  assembles the text with a shared reader (`src/sse.ts`), and `UPDATE`s the row on flush. The
+  update is **chained onto the insert's promise**: both run under `waitUntil`, which guarantees no
+  ordering, and an UPDATE that lands first silently matches no row.
 - **Chart bucket width is chosen in one place and follows the window the caller asked for.**
   `bucketFor()` in `config.ts`: **5-minute buckets at 1h**, hourly to 48h, daily beyond. The 1h
   range used to bucket hourly, i.e. one or two points — a number, not a chart. Three call sites
@@ -238,6 +264,9 @@ web/src/
                     drill-through banner), RedTeamPage, CompliancePage
 ```
 
+New since the layout above was written: `src/promptlog.ts` (prompt-log query builder), `src/sse.ts`
+(Worker-side SSE reader), `web/src/hooks/useZoneRules.ts` (live zone rules + fallback).
+
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
 dev:worker` / `npm run dev:web`. `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
@@ -268,8 +297,19 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **64 across 6 files** (49 before this session, 32 before the one prior).
+**Tests** — `npm test`, **102 across 10 files** (64 before the hygiene pass, 49 before that).
 Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
+- `src/promptlog.test.ts` (17) — the prompt-log query builder. Offset reaching past the old 200-row
+  ceiling, LIKE-wildcard escaping (searching `100%` used to match everything), and an `ORDER BY`
+  whitelist that discards anything not on it — `sort` is the only user input in the app that reaches
+  SQL where a bind parameter is impossible. Mutation-verified: replacing the whitelist with
+  `p.sort || "ts"` turns the fallback test red.
+- `src/sse.test.ts` (11) — the Worker-side SSE reader behind streamed-reply logging, including a
+  `data:` line split across two network chunks. Mutation-verified: dropping the re-buffer turns that
+  case red, which is exactly the bug that would silently truncate logged replies.
+- `src/zone-rules.test.ts` (4) + `web/src/lib/zonerules.test.ts` (6) — classification by expression
+  rather than name: a rule renamed away from "LLM" stays classified, a rule merely *mentioning* LLM
+  does not, and account-level rules (never in a zone ruleset) still fall back to the heuristic.
 - `src/redact.test.ts` (18) — PII redaction against the real Attack Library prompts. Asserts the
   identifier is **absent** rather than matching an exact replacement (the shipped bug was a
   *partial* mask leaking part of an IBAN). No-false-positives + idempotency.
@@ -587,19 +627,19 @@ uncommitted.
 
 **Known gaps introduced/left by this session's fixes**
 
-7. **`export.ts` has the same unanchored-window bug `queryVerdict` used to have, unfixed.** Exporting
-   a session left open more than ~15 minutes will mark every turn's verdict "not yet ingested" even
-   though the data is sitting right there — same root cause as the prompt-log bug, different call
-   site. Needs an epoch timestamp on `Msg` (today only a display string from `fmtTime`) before it
-   can pass `ts` through the same way the prompt log now does.
-8. **`GatewaySettingsPanel`'s client-side validation duplicates the Worker's clamping logic by
-   hand** (`MAX_GATEWAY_ATTEMPTS`, `MAX_GATEWAY_RETRY_DELAY_MS` redefined in `FirewallPage.tsx`
-   rather than imported) — the two will silently drift if the caps ever change server-side.
-9. **Prompt-log pagination only pages *within the fetched 200 rows*, not the whole table.**
-   `/api/prompt-log` hard-caps at 200 per request (`limit = min(200, …)`), so with 2,700+ rows
-   stored the UI can only ever reach the newest 200 matching the current filters. The page selector
-   slices that page client-side; it does **not** re-query D1 with an `OFFSET`. Fine for a demo,
-   wrong if anyone tries to audit the full history.
+7. ~~**`export.ts` has the same unanchored-window bug**~~ **FIXED 2026-08-01.** Every `Msg` now
+   carries `tsMs` alongside its display `ts` (stamped together by one helper so they cannot describe
+   different instants), and `buildSessionExport` passes it to `getVerdict`. Verified in the browser:
+   the export now issues `/api/verdict?ray=…&ts=…`.
+8. ~~**`GatewaySettingsPanel`'s validation duplicates the Worker's clamping by hand**~~
+   **FIXED 2026-08-01.** `/api/models` serves `limits: {maxAttempts, retryDelayMs}`; `FirewallPage`
+   and the panel read them and the three hand-copied constants are gone (there were three, not two —
+   `GatewaySettingsPanel` had its own pair as well). Until the fetch lands the fields simply carry no
+   client-side max; the Worker clamps regardless.
+9. ~~**Prompt-log pagination only pages within the fetched 200 rows**~~ **FIXED 2026-08-01.**
+   Paging, sorting and search are SQL now (`OFFSET` + whitelisted `ORDER BY` + `LIKE`), and the
+   response reports `filtered` so the page count is real. Verified against 260 seeded rows: the last
+   page reads "251–260 of 260" and a search reaches row 259 — 59 rows past the old ceiling.
 10. **Dark-mode chart palette still fails the house lightness band** (`--red` L .691, `--amber`
     L .804 vs a .48–.67 band). Left alone deliberately: CVD separation — the check that actually
     governs distinguishability — already passes at 12.5, so this is a style-band mismatch, not a
@@ -611,10 +651,13 @@ uncommitted.
     waits 60s before its first check, then every 5s up to ~190s total. This is now *only* paid on
     live sends — historical lookups (prompt log) are one-shot, and the red-team runner pays it once
     for a whole batch rather than per attack. See Implemented.
-12. **`ZONE_RULES` is a hand-maintained mirror** of the dashboard rules — rename/add a WAF rule and
-    both the flow-trace matching and `isLlmRule()`'s exact-name match drift until
-    `web/src/lib/data.ts` is updated. `isLlmRule()` degrades to a `\bLLM\b` heuristic rather than
-    silently misclassifying, but a renamed rule with no "LLM" in it would land in "other".
+12. ~~**`ZONE_RULES` is a hand-maintained mirror**~~ **FIXED 2026-08-01**, with one caveat below.
+    Rules are read live from the Rulesets API and classified by expression (see Architecture).
+    **Caveat: the live path is not yet exercised in this environment** — `CF_ANALYTICS_TOKEN` lacks
+    **Zone → WAF → Read**, so `/api/zone-rules` currently returns
+    `source:"fallback"` with `Ruleset list failed (HTTP 403)` and the UI runs on the mirror,
+    labelled as such. Add the scope to the token to turn it on; the mapping itself is unit-tested,
+    but the two API calls have never returned real data here.
 13. **Row caps**: zone analytics reads the latest 500 rows/dataset; gateway logs page to 500 (API
     caps `per_page` at 50) and set `truncated`. Prompt log rows cap at 200 per fetch (see #9).
 14. **AI Gateway logs are account-scoped** and still store the **raw** prompt+response payload —
@@ -654,17 +697,17 @@ uncommitted.
 
 **Improvements**
 
-- [ ] Port the anchored-verdict-window fix to `export.ts` (Open bug #7) — needs an epoch timestamp
-      on `Msg`.
-- [ ] De-duplicate the gateway-setting caps between `FirewallPage.tsx` and the Worker (Open bug #8)
-      — export the constants from one place both sides import, or have the client ask the server.
+- [x] ~~Port the anchored-verdict-window fix to `export.ts`~~ — done (bug #7).
+- [x] ~~De-duplicate the gateway-setting caps~~ — done via `/api/models` `limits` (bug #8).
+- [x] ~~Add server-side `OFFSET` paging to `/api/prompt-log`~~ — done, with sort and search (bug #9).
+- [ ] **Add `Zone → WAF → Read` to `CF_ANALYTICS_TOKEN`** so the live rule list actually engages —
+      the code ships and falls back cleanly, but `/api/zone-rules` returns 403 here today, so the
+      flow trace still runs on the static mirror (Open bug #12).
 - [ ] Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message
       instead of dumping the raw Cloudflare error JSON into the chat bubble — directly relevant now
       that bug #1 can surface on every gateway send, not just Dynamic Routes.
-- [ ] Extend tests to remaining pure functions (extractReply/stripThink, sanitizeHistory,
-      buildHistory, cost calc, SSE line parser).
-- [ ] Add server-side `OFFSET` paging to `/api/prompt-log` so the UI can reach past the newest 200
-      rows (Open bug #9) — today pagination only slices the fetched page.
+- [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
+      buildHistory, cost calc). The SSE line parser is now covered (`src/sse.test.ts`).
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
       (53 successful attacks) has no rule covering it at all.
 - [ ] Compliance page: GRC reviewer to sanity-check subcategory titles + section descriptions before

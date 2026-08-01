@@ -10,13 +10,7 @@ import { DemoMode } from "../components/DemoMode";
 import { useChat, type Route } from "../hooks/useChat";
 import { useNeurons } from "../hooks/useNeurons";
 import { getModels } from "../lib/api";
-import type { GatewayOption, Model } from "../lib/types";
-
-// Mirrors the Worker's own clamping (src/config.ts) — the panel already
-// clamps on blur, this is a second guard for values sent before that fires
-// (e.g. Enter-to-send while a field is still focused).
-const MAX_GATEWAY_ATTEMPTS = 5;
-const MAX_GATEWAY_RETRY_DELAY_MS = 5000;
+import type { GatewayLimits, GatewayOption, Model } from "../lib/types";
 
 const numOrUndef = (s: string, min?: number, max?: number): number | undefined => {
   if (s.trim() === "") return undefined;
@@ -54,6 +48,10 @@ export function FirewallPage() {
   // Every other per-request AI Gateway REST setting, edited as one group in
   // the sidebar panel (see GatewaySettingsPanel).
   const [gatewaySettings, setGatewaySettings] = useState<GatewaySettingsValue>(DEFAULT_GATEWAY_SETTINGS);
+  // Numeric caps for those settings, served by /api/models so the Worker stays
+  // the only place they are defined. Undefined until it loads — the Worker
+  // clamps every value server-side regardless, so nothing can slip through.
+  const [limits, setLimits] = useState<GatewayLimits | undefined>();
   // Skip writing a turn to the D1 prompt_log table (redacted prompt/reply
   // history) — independent of AI Gateway's own request log.
   const [excludeFromLog, setExcludeFromLog] = useState(false);
@@ -75,8 +73,8 @@ export function FirewallPage() {
       cacheKey: gatewaySettings.cacheKey.trim().slice(0, 128) || undefined,
       collectLog: gatewaySettings.collectLog === "" ? undefined : gatewaySettings.collectLog === "on",
       requestTimeoutMs: numOrUndef(gatewaySettings.requestTimeoutMs, 1),
-      maxAttempts: numOrUndef(gatewaySettings.maxAttempts, 1, MAX_GATEWAY_ATTEMPTS),
-      retryDelayMs: numOrUndef(gatewaySettings.retryDelayMs, 0, MAX_GATEWAY_RETRY_DELAY_MS),
+      maxAttempts: numOrUndef(gatewaySettings.maxAttempts, 1, limits?.maxAttempts),
+      retryDelayMs: numOrUndef(gatewaySettings.retryDelayMs, 0, limits?.retryDelayMs),
       backoff: gatewaySettings.backoff || undefined,
     },
     excludeFromLog,
@@ -93,6 +91,7 @@ export function FirewallPage() {
         setMaxLen(data.maxSystemPromptLen);
         setGateways(data.gateways ?? []);
         setGatewayId(data.defaultGateway ?? data.gateways?.[0]?.id ?? "");
+        setLimits(data.limits);
       })
       .catch(() => {});
   }, []);
@@ -130,7 +129,12 @@ export function FirewallPage() {
             defaultPrompt={defaultPrompt}
             maxLen={maxLen}
           />
-          <GatewaySettingsPanel active={route === "gateway"} value={gatewaySettings} onChange={setGatewaySettings} />
+          <GatewaySettingsPanel
+            active={route === "gateway"}
+            value={gatewaySettings}
+            onChange={setGatewaySettings}
+            limits={limits}
+          />
         </div>
         <Chat
           models={models}

@@ -14,6 +14,14 @@ import type { ChatTurn, GatewayMeta, Model, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
+// Every message carries both a display time and the epoch ms behind it. The
+// epoch value is what anchors a later verdict lookup to when the request
+// actually happened — without it, exporting a session left open for more than
+// ~15 minutes searches a window around *now* and reports every turn as "not
+// yet ingested" while the data sits there. Stamped together so the two can
+// never describe different instants.
+const stamp = () => ({ ts: fmtTime(), tsMs: Date.now() });
+
 // Every AI Gateway per-request REST setting, minus the request itself. All of
 // these are gateway-only — a direct Workers AI call never goes through a
 // gateway, so none of them have any effect on that route.
@@ -41,13 +49,16 @@ export interface RequestConfig extends GatewaySettings {
   excludeFromLog?: boolean;
 }
 
+// `ts` is the display string (HH:MM:SS); `tsMs` is the same instant as epoch
+// ms, used to anchor verdict lookups. See stamp() above.
 export type Msg =
-  | { id: number; kind: "user"; text: string; ts: string; cfg?: RequestConfig }
+  | { id: number; kind: "user"; text: string; ts: string; tsMs: number; cfg?: RequestConfig }
   | {
       id: number;
       kind: "assistant";
       text: string;
       ts: string;
+      tsMs: number;
       streaming?: boolean;
       meta: {
         model?: string;
@@ -63,6 +74,7 @@ export type Msg =
       id: number;
       kind: "blocked";
       ts: string;
+      tsMs: number;
       ray?: string;
       raw: string;
       contentType: string;
@@ -73,13 +85,14 @@ export type Msg =
       id: number;
       kind: "guardrails"; // AI Gateway Guardrails block (error 2016/2017)
       ts: string;
+      tsMs: number;
       ray?: string;
       direction?: "prompt" | "response";
       detail?: string;
       guarded?: boolean;
       gateway?: GatewayMeta; // which gateway blocked (for the flow trace)
     }
-  | { id: number; kind: "error"; text: string; ts: string }
+  | { id: number; kind: "error"; text: string; ts: string; tsMs: number }
 
 export interface TurnResult {
   kind: "reply" | "blocked" | "error";
@@ -182,7 +195,7 @@ export function useChat(cfg: {
       ...(gateway ? gatewaySettings : {}),
       excludeFromLog: excludeFromLog || undefined,
     };
-    push({ id: nextId(), kind: "user", text: prompt, ts: fmtTime(), cfg: reqCfg });
+    push({ id: nextId(), kind: "user", text: prompt, ...stamp(), cfg: reqCfg });
 
     let outcome: TurnResult = { kind: "error" };
     try {
@@ -210,7 +223,7 @@ export function useChat(cfg: {
               id: asstId,
               kind: "assistant",
               text: tok,
-              ts: fmtTime(),
+              ...stamp(),
               streaming: true,
               meta: { model, dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined },
             });
@@ -231,11 +244,11 @@ export function useChat(cfg: {
         const cost = gwMeta?.cached === true ? 0 : estimateCost(models, ranModel, usage);
         const routeMeta = gateway && dynamicRoute ? dynamicRoute : undefined;
         if (!result.text) {
-          push({ id: nextId(), kind: "error", text: "Empty streamed reply from the model.", ts: fmtTime() });
+          push({ id: nextId(), kind: "error", text: "Empty streamed reply from the model.", ...stamp() });
           outcome = { kind: "error", ray };
         } else {
           if (!streamStarted) {
-            push({ id: asstId, kind: "assistant", text: result.text, ts: fmtTime(), meta: { model: ranModel, dynamicRoute: routeMeta } });
+            push({ id: asstId, kind: "assistant", text: result.text, ...stamp(), meta: { model: ranModel, dynamicRoute: routeMeta } });
           }
           patch(asstId, (m) =>
             m.kind === "assistant"
@@ -251,7 +264,7 @@ export function useChat(cfg: {
           push({
             id: nextId(),
             kind: "blocked",
-            ts: fmtTime(),
+            ...stamp(),
             ray,
             raw,
             contentType,
@@ -268,7 +281,7 @@ export function useChat(cfg: {
           push({
             id: nextId(),
             kind: "guardrails",
-            ts: fmtTime(),
+            ...stamp(),
             ray,
             direction: data.direction,
             detail: data.detail,
@@ -283,18 +296,18 @@ export function useChat(cfg: {
             id: asstId,
             kind: "assistant",
             text: data.reply,
-            ts: fmtTime(),
+            ...stamp(),
             meta: { model: data.model, ray, usage: data.usage, cost, gateway: gwMeta, dynamicRoute: data.dynamicRoute },
             ray,
           });
           outcome = { kind: "reply", ray };
         } else {
-          push({ id: nextId(), kind: "error", text: data?.error || `HTTP ${status}`, ts: fmtTime() });
+          push({ id: nextId(), kind: "error", text: data?.error || `HTTP ${status}`, ...stamp() });
           outcome = { kind: "error", ray };
         }
       }
     } catch (err) {
-      push({ id: nextId(), kind: "error", text: "Network error: " + err, ts: fmtTime() });
+      push({ id: nextId(), kind: "error", text: "Network error: " + err, ...stamp() });
     } finally {
       chatBusy.set(false);
       cfgRef.current.onSent?.();

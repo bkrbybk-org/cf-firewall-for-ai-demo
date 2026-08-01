@@ -3,11 +3,12 @@
 // reply plus the live edge verdict (joined by cf-ray via <Verdict>), so a
 // prompt sits next to exactly what the edge detected on it.
 //
-// Route/outcome filtering happens server-side (see AnalyticsPage) because it
-// changes which rows are fetched. Sorting and the text search are client-side:
-// they only reorder or narrow the page already in hand, so round-tripping to
-// D1 for them would add latency for no benefit.
-import { useEffect, useMemo, useState } from "react";
+// Filtering, sorting, searching AND paging all happen server-side (see
+// AnalyticsPage → getPromptLog). Sorting and search used to run in the browser
+// over the fetched rows, which was correct only while every row was in hand.
+// Now that the table is genuinely paged, a client-side sort would order one
+// page while appearing to order the table — so all of it is SQL.
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowDown,
@@ -38,27 +39,23 @@ const OUTCOME_TONE: Record<string, string> = {
 type SortKey = "ts" | "outcome" | "route" | "model" | "tokens" | "redactions";
 type SortDir = "asc" | "desc";
 
+// What the table is currently showing. Owned by AnalyticsPage because every
+// field is a query parameter — see PROMPT_LOG_SORTS in src/promptlog.ts for
+// the server-side whitelist these keys must stay inside.
+export interface PromptLogView {
+  page: number;
+  pageSize: number;
+  sort: SortKey;
+  dir: SortDir;
+  q: string;
+}
+
 const PAGE_SIZES = [10, 25, 50, 100] as const;
-const DEFAULT_PAGE_SIZE = 25;
+
+// Typing sends a query; without this every keystroke would hit D1.
+const SEARCH_DEBOUNCE_MS = 300;
 
 const totalTokens = (r: PromptLogRowData) => (r.promptTokens ?? 0) + (r.completionTokens ?? 0);
-
-function sortValue(r: PromptLogRowData, key: SortKey): string | number {
-  switch (key) {
-    case "ts":
-      return r.ts;
-    case "outcome":
-      return r.outcome;
-    case "route":
-      return r.route;
-    case "model":
-      return r.model;
-    case "tokens":
-      return totalTokens(r);
-    case "redactions":
-      return r.redactions;
-  }
-}
 
 // Numeric columns are most useful largest-first; text columns A→Z.
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
@@ -292,58 +289,47 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
   );
 }
 
-export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: PromptAnalytics | null; onClear: () => void }) {
+export function PromptLogTab({
+  d,
+  a,
+  view,
+  onView,
+  onClear,
+}: {
+  d: PromptLog | null;
+  a: PromptAnalytics | null;
+  view: PromptLogView;
+  onView: (next: PromptLogView) => void;
+  onClear: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
-  // Newest first by default — the log is read as "what just happened".
-  const [sortKey, setSortKey] = useState<SortKey>("ts");
-  const [sortDir, setSortDir] = useState<SortDir>("desc");
-  const [query, setQuery] = useState("");
-  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
-  const [page, setPage] = useState(0);
+  // The search box stays responsive locally and pushes to the query (which
+  // triggers a fetch) only after a pause. Seeded from `view` so an external
+  // reset — e.g. drilling in from the edge tab — still lands in the input.
+  const [search, setSearch] = useState(view.q);
+  useEffect(() => setSearch(view.q), [view.q]);
+  useEffect(() => {
+    if (search === view.q) return;
+    const t = window.setTimeout(() => onView({ ...view, q: search, page: 0 }), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [search, view, onView]);
 
-  // Depends on the props array itself, not a `?? []` copy, so the memo is not
-  // invalidated on every render. All hooks stay above the early returns.
-  const visible = useMemo(() => {
-    const src = d?.rows ?? [];
-    const q = query.trim().toLowerCase();
-    const matched = q
-      ? src.filter(
-          (r) =>
-            r.prompt.toLowerCase().includes(q) ||
-            (r.reply ?? "").toLowerCase().includes(q) ||
-            r.model.toLowerCase().includes(q) ||
-            r.ray.toLowerCase().includes(q),
-        )
-      : src;
-    const dir = sortDir === "asc" ? 1 : -1;
-    return [...matched].sort((a2, b2) => {
-      const av = sortValue(a2, sortKey);
-      const bv = sortValue(b2, sortKey);
-      // Ties fall back to newest first so equal outcomes/routes stay readable.
-      if (av === bv) return b2.ts - a2.ts;
-      return (av > bv ? 1 : -1) * dir;
-    });
-  }, [d?.rows, query, sortKey, sortDir]);
-
-  const pageCount = Math.max(1, Math.ceil(visible.length / pageSize));
-  // Filtering/sorting/page-size changes can all strand `page` past the new
-  // last page (e.g. narrowing a text filter while on page 5) — clamp back
+  const { sort: sortKey, dir: sortDir, page, pageSize } = view;
+  // Rows arrive already filtered, sorted and paged; `filtered` is how many
+  // match across the whole table, which is what the page count must be built
+  // from — the fetched array is only ever one page long.
+  const rows = d?.rows ?? [];
+  const filtered = d?.filtered ?? rows.length;
+  const pageCount = Math.max(1, Math.ceil(filtered / pageSize));
+  // A narrower filter can strand `page` past the new last page; clamp back
   // rather than showing an empty page.
   useEffect(() => {
-    if (page > pageCount - 1) setPage(0);
-  }, [pageCount, page]);
-  const paged = useMemo(
-    () => visible.slice(page * pageSize, page * pageSize + pageSize),
-    [visible, page, pageSize],
-  );
+    if (page > pageCount - 1) onView({ ...view, page: 0 });
+  }, [pageCount, page, view, onView]);
 
   function onSort(k: SortKey) {
-    if (k === sortKey) setSortDir((cur) => (cur === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(k);
-      setSortDir(DEFAULT_DIR[k]);
-    }
-    setPage(0);
+    const dir: SortDir = k === sortKey ? (sortDir === "asc" ? "desc" : "asc") : DEFAULT_DIR[k];
+    onView({ ...view, sort: k, dir, page: 0 });
   }
 
   if (d?.configured === false)
@@ -370,7 +356,6 @@ export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: Prompt
       </Card>
     );
 
-  const rows = d.rows ?? [];
   return (
     <>
       {a && !a.error && <PromptStats a={a} />}
@@ -423,7 +408,10 @@ export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: Prompt
         </div>
       </Card>
 
-      {rows.length === 0 ? (
+      {/* An empty result with an active search still renders the table, so the
+          search box stays reachable to clear or edit — only a genuinely empty
+          window falls back to the explainer card. */}
+      {filtered === 0 && !view.q.trim() ? (
         <Card title={(d.total ?? 0) > 0 ? "No prompts in this time frame" : "No prompts logged yet"}>
           <div className="flex items-start gap-3 text-sm text-muted">
             <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green" />
@@ -451,29 +439,23 @@ export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: Prompt
               <Search size={13} className="pointer-events-none absolute left-2.5 text-subtle" />
               <input
                 type="search"
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setPage(0);
-                }}
-                placeholder="Filter prompt, reply, model or ray…"
-                aria-label="Filter rows"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search prompt, reply, model or ray…"
+                aria-label="Search rows"
                 className="w-full rounded-lg border border-line bg-surface-2 py-1.5 pr-2.5 pl-7 text-[12px] text-text outline-none transition focus:border-accent"
               />
             </label>
             <span className="text-[11.5px] text-subtle">
-              {visible.length === rows.length
-                ? `${rows.length} row${rows.length === 1 ? "" : "s"}`
-                : `${visible.length} of ${rows.length} rows`}
+              {view.q.trim()
+                ? `${filtered} matching row${filtered === 1 ? "" : "s"}`
+                : `${filtered} row${filtered === 1 ? "" : "s"}`}
             </span>
             <label className="flex items-center gap-1.5 text-[11.5px] text-subtle">
               rows
               <select
                 value={pageSize}
-                onChange={(e) => {
-                  setPageSize(Number(e.target.value));
-                  setPage(0);
-                }}
+                onChange={(e) => onView({ ...view, pageSize: Number(e.target.value), page: 0 })}
                 aria-label="Rows per page"
                 className="rounded-lg border border-line bg-surface-2 px-1.5 py-1 text-[11.5px] text-text outline-none focus:border-accent"
               >
@@ -520,28 +502,28 @@ export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: Prompt
                 </tr>
               </thead>
               <tbody>
-                {visible.length === 0 ? (
+                {rows.length === 0 ? (
                   <tr className="border-t border-line">
                     <td colSpan={8} className="px-3 py-4 text-center text-[12px] text-subtle">
-                      No rows match “{query}”.
+                      No rows match “{view.q}”.
                     </td>
                   </tr>
                 ) : (
-                  paged.map((r) => <PromptLogRowView key={r.ray} r={r} />)
+                  rows.map((r) => <PromptLogRowView key={r.ray} r={r} />)
                 )}
               </tbody>
             </table>
           </div>
 
-          {visible.length > 0 && (
+          {filtered > 0 && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line px-3 py-2 text-[11.5px] text-subtle">
               <span>
-                {page * pageSize + 1}–{Math.min(visible.length, page * pageSize + pageSize)} of {visible.length}
+                {page * pageSize + 1}–{Math.min(filtered, page * pageSize + rows.length)} of {filtered}
               </span>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  onClick={() => onView({ ...view, page: Math.max(0, page - 1) })}
                   disabled={page === 0}
                   aria-label="Previous page"
                   className="rounded-lg border border-line p-1 transition hover:border-line-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
@@ -553,7 +535,7 @@ export function PromptLogTab({ d, a, onClear }: { d: PromptLog | null; a: Prompt
                 </span>
                 <button
                   type="button"
-                  onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                  onClick={() => onView({ ...view, page: Math.min(pageCount - 1, page + 1) })}
                   disabled={page >= pageCount - 1}
                   aria-label="Next page"
                   className="rounded-lg border border-line p-1 transition hover:border-line-strong hover:text-text disabled:cursor-not-allowed disabled:opacity-40"

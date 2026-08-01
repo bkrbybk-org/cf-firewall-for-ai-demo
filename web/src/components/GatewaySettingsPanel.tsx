@@ -5,10 +5,13 @@
 // on that route rather than just dimmed, since there is nothing to preview.
 import type { GatewayBackoff } from "../lib/api";
 import { MAX_METADATA_ENTRIES, parseMetadata } from "../lib/metadata";
+import type { GatewayLimits } from "../lib/types";
 import { Switch } from "./Switch";
 
-const MAX_ATTEMPTS_CAP = 5;
-const MAX_RETRY_DELAY_MS = 5000;
+// The attempt/retry caps are NOT declared here — they arrive from the Worker
+// via /api/models (`limits`), because the Worker is what actually enforces
+// them. A hand-copied client constant can only ever drift away from the
+// clamping it claims to mirror.
 const MAX_CACHE_KEY_LEN = 128;
 
 // Out-of-range while typing shows a live error but doesn't fight the
@@ -85,11 +88,14 @@ export function GatewaySettingsPanel({
   active,
   value,
   onChange,
+  limits,
 }: {
   /** true when the route toggle is on AI Gateway — panel renders nothing otherwise */
   active: boolean;
   value: GatewaySettingsValue;
   onChange: (next: GatewaySettingsValue) => void;
+  /** server-enforced caps from /api/models; undefined until that call lands */
+  limits?: GatewayLimits;
 }) {
   if (!active) return null;
   const set = <K extends keyof GatewaySettingsValue>(k: K, v: GatewaySettingsValue[K]) => onChange({ ...value, [k]: v });
@@ -198,13 +204,13 @@ export function GatewaySettingsPanel({
         />
 
         <NumberField
-          label={`Max attempts (≤${MAX_ATTEMPTS_CAP})`}
+          label={limits ? `Max attempts (≤${limits.maxAttempts})` : "Max attempts"}
           value={value.maxAttempts}
           onChange={(v) => set("maxAttempts", v)}
           placeholder="1"
           min={1}
-          max={MAX_ATTEMPTS_CAP}
-          title={`cf-aig-max-attempts — retry attempts on failure, max ${MAX_ATTEMPTS_CAP}`}
+          max={limits?.maxAttempts}
+          title={`cf-aig-max-attempts — retry attempts on failure${limits ? `, max ${limits.maxAttempts}` : ""}`}
         />
         <NumberField
           label="Retry delay (ms)"
@@ -212,8 +218,8 @@ export function GatewaySettingsPanel({
           onChange={(v) => set("retryDelayMs", v)}
           placeholder="0"
           min={0}
-          max={MAX_RETRY_DELAY_MS}
-          title={`cf-aig-retry-delay — delay between retries, max ${MAX_RETRY_DELAY_MS}ms`}
+          max={limits?.retryDelayMs}
+          title={`cf-aig-retry-delay — delay between retries${limits ? `, max ${limits.retryDelayMs}ms` : ""}`}
         />
       </div>
 

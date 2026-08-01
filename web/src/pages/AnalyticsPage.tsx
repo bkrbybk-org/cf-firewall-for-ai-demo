@@ -7,7 +7,7 @@ import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";
 import { GatewayTab } from "../components/analytics/GatewayTab";
-import { PromptLogTab } from "../components/analytics/PromptLogTab";
+import { PromptLogTab, type PromptLogView } from "../components/analytics/PromptLogTab";
 import {
   clearPromptLog,
   getAnalytics,
@@ -82,6 +82,16 @@ export function AnalyticsPage() {
   // Custom date/time range: a fifth option alongside the presets, not a
   // separate control — only one of {preset, custom} is ever in effect.
   const [plogCustom, setPlogCustom] = useState(false);
+  // Paging, sorting and text search for the prompt log. These live here, next
+  // to the fetch, because all three are now resolved in SQL — the table shows
+  // one page of the whole log rather than a slice of the newest 200 rows.
+  const [plogView, setPlogView] = useState<PromptLogView>({
+    page: 0,
+    pageSize: 25,
+    sort: "ts",
+    dir: "desc", // newest first — the log is read as "what just happened"
+    q: "",
+  });
   // Context banner set when the user drilled in from the edge tab, so the
   // prompt log says which slice they clicked — and, when that slice was
   // blocked at the edge, that those prompts cannot appear here at all.
@@ -105,6 +115,14 @@ export function AnalyticsPage() {
   const plogWindow: TimeWindow = plogCustom
     ? { sinceMs: toLocalMs(plogSince), untilMs: toLocalMs(plogUntil) }
     : { hours: plogHours };
+
+  // Changing WHICH rows are selected has to restart paging — page 5 of a
+  // narrower result set is either empty or a different slice than the user
+  // thinks they are looking at. No-ops when already on page 1, so this cannot
+  // feed back into the fetch effect.
+  useEffect(() => {
+    setPlogView((v) => (v.page === 0 ? v : { ...v, page: 0 }));
+  }, [plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil]);
 
   const load = useCallback(async (h: number) => {
     setLoading(true);
@@ -141,12 +159,22 @@ export function AnalyticsPage() {
   }, []);
 
   // Rollups share the same time frame as the rows so both describe the same
-  // window (see TimeWindow — hours preset, or an explicit custom range).
-  const loadPlog = useCallback(async (route: string, outcome: string[], window: TimeWindow) => {
+  // window (see TimeWindow — hours preset, or an explicit custom range). The
+  // rollups always cover the whole window; only the row query is paged.
+  const loadPlog = useCallback(async (route: string, outcome: string[], window: TimeWindow, view: PromptLogView) => {
     setLoading(true);
     try {
       const [log, stats] = await Promise.all([
-        getPromptLog({ route, outcome, limit: 200, ...window }),
+        getPromptLog({
+          route,
+          outcome,
+          q: view.q.trim() || undefined,
+          sort: view.sort,
+          dir: view.dir,
+          limit: view.pageSize,
+          offset: view.page * view.pageSize,
+          ...window,
+        }),
         getPromptAnalytics(window),
       ]);
       setPlog(log);
@@ -162,12 +190,13 @@ export function AnalyticsPage() {
   const refresh = useCallback(() => {
     if (tab === "edge") load(hours);
     else if (tab === "gateway") loadGw(gatewayId, hours);
-    else loadPlog(plogRoute, plogOutcomes, plogWindow);
+    else loadPlog(plogRoute, plogOutcomes, plogWindow, plogView);
     // plogWindow is a fresh object every render, so its own primitive inputs
     // — not the object itself — are the real dependencies here. plogOutcomes
     // is an array too, but it only ever changes via setPlogOutcomes (a new
-    // array each time), so referential comparison here is fine.
-  }, [tab, hours, gatewayId, plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil, load, loadGw, loadPlog]);
+    // array each time), so referential comparison here is fine. plogView is
+    // likewise only replaced wholesale, so it can be depended on directly.
+  }, [tab, hours, gatewayId, plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil, plogView, load, loadGw, loadPlog]);
 
   useEffect(() => {
     refresh();
@@ -422,7 +451,11 @@ export function AnalyticsPage() {
             <PromptLogTab
               d={plog}
               a={pstats}
-              onClear={() => clearPromptLog().then(() => loadPlog(plogRoute, plogOutcomes, plogWindow))}
+              view={plogView}
+              onView={setPlogView}
+              onClear={() =>
+                clearPromptLog().then(() => loadPlog(plogRoute, plogOutcomes, plogWindow, plogView))
+              }
             />
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />

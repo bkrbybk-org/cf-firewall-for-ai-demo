@@ -11,6 +11,7 @@ import type {
   PromptLog,
   Usage,
   Verdict,
+  ZoneRules,
 } from "./types";
 
 export async function getModels(): Promise<ModelsResponse> {
@@ -26,6 +27,14 @@ export async function getVerdict(ray: string, tsMs?: number): Promise<Verdict> {
   const qs = new URLSearchParams({ ray });
   if (tsMs != null && Number.isFinite(tsMs)) qs.set("ts", String(Math.floor(tsMs)));
   const r = await fetch("/api/verdict?" + qs);
+  return r.json();
+}
+
+// The zone's real WAF custom rules. `source` says whether these came from the
+// zone ("live") or whether the caller should keep its static mirror
+// ("fallback" — no token, missing "Zone → WAF → Read", or an API error).
+export async function getZoneRules(): Promise<ZoneRules> {
+  const r = await fetch("/api/zone-rules");
   return r.json();
 }
 
@@ -67,14 +76,29 @@ function timeWindowParams(w: TimeWindow): [string, string][] {
   return params;
 }
 
-export async function getPromptLog(
-  opts: { route?: string; outcome?: string | string[]; limit?: number } & TimeWindow = {},
-): Promise<PromptLog> {
+// Everything here narrows or orders rows in SQL — including sort and the text
+// search, which the server owns so a page is a true window onto the whole
+// table rather than a reordering of whichever rows happened to be fetched.
+export interface PromptLogQuery extends TimeWindow {
+  route?: string;
+  outcome?: string | string[];
+  q?: string;
+  sort?: string;
+  dir?: "asc" | "desc";
+  limit?: number;
+  offset?: number;
+}
+
+export async function getPromptLog(opts: PromptLogQuery = {}): Promise<PromptLog> {
   const qs = new URLSearchParams();
   if (opts.route) qs.set("route", opts.route);
   const outcome = Array.isArray(opts.outcome) ? opts.outcome.join(",") : opts.outcome;
   if (outcome) qs.set("outcome", outcome);
+  if (opts.q) qs.set("q", opts.q);
+  if (opts.sort) qs.set("sort", opts.sort);
+  if (opts.dir) qs.set("dir", opts.dir);
   if (opts.limit) qs.set("limit", String(opts.limit));
+  if (opts.offset) qs.set("offset", String(opts.offset));
   for (const [k, v] of timeWindowParams(opts)) qs.set(k, v);
   const r = await fetch("/api/prompt-log?" + qs);
   return r.json();

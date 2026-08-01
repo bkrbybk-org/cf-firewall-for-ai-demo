@@ -5,7 +5,7 @@ import { BarChart3, ShieldAlert, ShieldCheck, ShieldX, UserSearch } from "lucide
 import { BarList, bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, SERIES } from "./EventSeries";
 import { topicLabel } from "../../lib/format";
-import { isLlmRule } from "../../lib/data";
+import { classifyRule, useZoneRules } from "../../hooks/useZoneRules";
 import type { Analytics } from "../../lib/types";
 
 const SCORE_BUCKET_CLS = ["bg-cf-red", "bg-cf-amber", "bg-subtle", "bg-cf-green"];
@@ -83,6 +83,7 @@ export function EdgeTab({
   // — see AnalyticsSummary.truncated. A percentage of a truncated total, or a
   // delta between two capped windows, would read as precise while being wrong.
   const total = data?.totalEvents ?? 0;
+  const zoneRules = useZoneRules();
   const capped = data?.truncated === true;
   const prev = data?.prev;
   const pctOf = (n: number) => (capped || total === 0 ? undefined : `${Math.round((n / total) * 100)}% of events`);
@@ -91,10 +92,13 @@ export function EdgeTab({
   // AI Security's own rules vs unrelated zone rules that fire on the same
   // traffic. Kept apart so the demo never credits AI Security for a Geography
   // or scanner-signature rule — on this zone those actually outrank the LLM
-  // rules by count.
+  // rules by count. Classification prefers the zone's live rules (matched by
+  // expression, so a renamed rule stays correct) and only falls back to the
+  // name heuristic for rules the zone list doesn't contain, e.g. account-level
+  // rules that never appear in a zone ruleset.
   const allRules = data?.topRules ?? [];
-  const llmRules = allRules.filter((r) => isLlmRule(r.name));
-  const otherRules = allRules.filter((r) => !isLlmRule(r.name));
+  const llmRules = allRules.filter((r) => classifyRule(r.name, zoneRules));
+  const otherRules = allRules.filter((r) => !classifyRule(r.name, zoneRules));
   const ruleBarCls = (action: string) =>
     classifyAction(action) === "block" ? "bg-cf-red" : classifyAction(action) === "log" ? "bg-cf-amber" : "bg-subtle";
   // One scale across both lists so the relative sizes stay honest when split.

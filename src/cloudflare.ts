@@ -2,6 +2,7 @@
 
 import {
   bucketFor,
+  CF_API_BASE,
   GRAPHQL_ENDPOINT,
   VERDICT_RETENTION_FALLBACK_S,
   verdictWindow,
@@ -61,6 +62,88 @@ export async function listAiGateways(accountId: string, token: string): Promise<
     throw new Error(j.errors?.[0]?.message || `AI Gateway list failed (HTTP ${res.status})`);
   }
   return j.result.map((g) => String(g.id ?? "")).filter(Boolean);
+}
+
+// --- Zone WAF custom rules ------------------------------------------------
+// The zone's real custom rules, read from the Rulesets API. This replaces a
+// hand-maintained mirror in the frontend (ZONE_RULES in web/src/lib/data.ts),
+// which drifted whenever a rule was renamed or retuned in the dashboard — and
+// a drifted mirror makes the flow trace quietly misreport which control fired.
+//
+// Needs an API token with "Zone → WAF → Read". The caller falls back to the
+// static mirror when that scope is missing, so the demo still runs without it.
+
+// A rule is an AI Security rule when its EXPRESSION references cf.llm.*, not
+// when its name happens to contain "LLM". Expression matching is ground truth:
+// renaming a rule in the dashboard can no longer misfile it.
+export function isLlmExpression(expression: string): boolean {
+  return /\bcf\.llm\./.test(expression);
+}
+
+export interface ZoneRuleLive {
+  id: string;
+  name: string; // the rule's dashboard description — what firewallEventsAdaptive returns
+  action: string; // block / log / managed_challenge / skip / …
+  expression: string;
+  enabled: boolean;
+  llm: boolean; // derived from the expression, see isLlmExpression
+}
+
+type RulesetsListData = { result?: { id?: string; phase?: string; kind?: string }[]; success?: boolean };
+type RulesetData = {
+  success?: boolean;
+  errors?: { message: string }[];
+  result?: {
+    rules?: { id?: string; description?: string; action?: string; expression?: string; enabled?: boolean }[];
+  };
+};
+
+// The phase whose entrypoint ruleset holds a zone's WAF custom rules.
+const CUSTOM_RULES_PHASE = "http_request_firewall_custom";
+
+// Cached for the isolate's lifetime — WAF rules change at human speed, and a
+// per-request pair of API calls would add latency to every verdict card.
+let zoneRulesCache: ZoneRuleLive[] | null = null;
+
+export async function queryZoneRules(zoneId: string, token: string): Promise<ZoneRuleLive[]> {
+  if (zoneRulesCache) return zoneRulesCache;
+  const headers = { authorization: "Bearer " + token };
+
+  // 1. Find the custom-rules entrypoint ruleset for the zone.
+  const listRes = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets`, { headers });
+  const list = (await listRes.json()) as RulesetsListData;
+  if (!list.success || !Array.isArray(list.result)) {
+    throw new Error(`Ruleset list failed (HTTP ${listRes.status})`);
+  }
+  const entry = list.result.find((r) => r.phase === CUSTOM_RULES_PHASE && r.kind === "zone");
+  if (!entry?.id) {
+    // No custom rules configured at all is a legitimate state, not an error.
+    zoneRulesCache = [];
+    return zoneRulesCache;
+  }
+
+  // 2. Fetch it — the list response carries no rules, only ruleset metadata.
+  const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets/${entry.id}`, { headers });
+  const j = (await res.json()) as RulesetData;
+  if (!j.success || !j.result) {
+    throw new Error(j.errors?.[0]?.message || `Ruleset fetch failed (HTTP ${res.status})`);
+  }
+
+  zoneRulesCache = (j.result.rules ?? []).map((r) => {
+    const expression = String(r.expression ?? "");
+    return {
+      id: String(r.id ?? ""),
+      // Matching against firewallEventsAdaptive is by description, so an
+      // unnamed rule falls back to its id rather than to an empty string.
+      name: String(r.description || r.id || ""),
+      action: String(r.action ?? ""),
+      expression,
+      // The API omits `enabled` when a rule is enabled; only false is explicit.
+      enabled: r.enabled !== false,
+      llm: isLlmExpression(expression),
+    };
+  });
+  return zoneRulesCache;
 }
 
 // --- Live edge verdict ---------------------------------------------------

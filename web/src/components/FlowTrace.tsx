@@ -18,7 +18,7 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import { ZONE_RULES } from "../lib/data";
+import { useZoneRules } from "../hooks/useZoneRules";
 import { topicLabel } from "../lib/format";
 import { verdictOutcome } from "../lib/verdict";
 import type { GatewayMeta, Verdict as VerdictData, VerdictRule } from "../lib/types";
@@ -122,17 +122,21 @@ const Sub = ({ children }: { children: React.ReactNode }) => (
   <div className="mt-0.5 text-[11px] leading-relaxed text-muted">{children}</div>
 );
 
-// One row in the WAF rule checklist.
+// One row in the WAF rule checklist. `summary` is the rule's real expression
+// when the rules were read live, and the static mirror's hint otherwise — it
+// rides in the title attribute either way.
 function RuleRow({
   name,
   action,
   matched,
   summary,
+  disabled,
 }: {
   name: string;
   action: string;
   matched: boolean;
   summary?: string;
+  disabled?: boolean;
 }) {
   const block = /block|drop/i.test(action);
   const cls = !matched
@@ -146,7 +150,7 @@ function RuleRow({
       <Icon size={12} className="shrink-0" />
       <span className="min-w-0 flex-1 truncate">{name}</span>
       <span className="shrink-0 font-mono text-[10px]">
-        {matched ? (block ? "BLOCK ✕" : "LOG") : "no match"}
+        {disabled ? "disabled" : matched ? (block ? "BLOCK ✕" : "LOG") : "no match"}
       </span>
     </div>
   );
@@ -209,14 +213,23 @@ export function FlowTrace({
 }) {
   const [showMisses, setShowMisses] = useState(false);
 
+  // The zone's rules, live when the token allows it and the static mirror
+  // otherwise — `source` decides what the footer claims below.
+  const { rules: zoneRules, source: rulesSource } = useZoneRules();
+
   const matched: VerdictRule[] = d.rules ?? [];
   const matchedNames = matched.map((r) => (r.description || r.ruleId).toLowerCase());
   const isMatched = (name: string) => matchedNames.some((m) => m === name.toLowerCase());
-  // Matched rules not in our static list (account-level rules etc.) still show.
+  // Matched rules not in the zone list (account-level rules etc.) still show.
   const extraMatched = matched.filter(
-    (r) => !ZONE_RULES.some((z) => z.name.toLowerCase() === (r.description || r.ruleId).toLowerCase()),
+    (r) => !zoneRules.some((z) => z.name.toLowerCase() === (r.description || r.ruleId).toLowerCase()),
   );
-  const misses = ZONE_RULES.filter((z) => !isMatched(z.name));
+  // A disabled rule is not evaluated by the edge, so counting it would
+  // overstate coverage. It is still listed (in the expanded misses) and marked,
+  // because "this rule exists but is off" is worth seeing.
+  const activeRules = zoneRules.filter((z) => z.enabled);
+  const disabledRules = zoneRules.filter((z) => !z.enabled);
+  const misses = activeRules.filter((z) => !isMatched(z.name));
   const hitCount = matched.length;
 
   const outcome = verdictOutcome(d);
@@ -283,22 +296,31 @@ export function FlowTrace({
         <Title>
           WAF custom rules{" "}
           <span className="font-normal text-subtle">
-            · {ZONE_RULES.length + extraMatched.length} evaluated · {hitCount} matched
+            · {activeRules.length + extraMatched.length} evaluated · {hitCount} matched
           </span>
         </Title>
         <div className="mt-1.5 overflow-hidden rounded-lg border border-line">
-          {ZONE_RULES.filter((z) => isMatched(z.name)).map((z) => (
-            <RuleRow key={z.name} name={z.name} action={z.action} matched summary={z.summary} />
-          ))}
+          {activeRules
+            .filter((z) => isMatched(z.name))
+            .map((z) => (
+              <RuleRow key={z.name} name={z.name} action={z.action} matched summary={z.detail} />
+            ))}
           {extraMatched.map((r) => (
             <RuleRow key={r.ruleId} name={r.description || r.ruleId} action={r.action} matched />
           ))}
           {hitCount === 0 && (
             <div className="px-2.5 py-1 text-[11px] text-cf-green">no rule matched — request allowed</div>
           )}
-          {misses.length > 0 &&
+          {misses.length + disabledRules.length > 0 &&
             (showMisses ? (
-              misses.map((z) => <RuleRow key={z.name} name={z.name} action={z.action} matched={false} summary={z.summary} />)
+              <>
+                {misses.map((z) => (
+                  <RuleRow key={z.name} name={z.name} action={z.action} matched={false} summary={z.detail} />
+                ))}
+                {disabledRules.map((z) => (
+                  <RuleRow key={z.name} name={z.name} action={z.action} matched={false} summary={z.detail} disabled />
+                ))}
+              </>
             ) : (
               <button
                 type="button"
@@ -306,9 +328,15 @@ export function FlowTrace({
                 className="flex w-full items-center gap-2 px-2.5 py-1 text-left text-[11px] text-subtle transition hover:text-text"
               >
                 <ChevronDown size={12} /> {misses.length} more rule{misses.length === 1 ? "" : "s"} — no match
+                {disabledRules.length > 0 && ` · ${disabledRules.length} disabled`}
               </button>
             ))}
         </div>
+        <Sub>
+          {rulesSource === "live"
+            ? "rules read live from the zone"
+            : "static mirror — may be stale (needs a token with Zone → WAF → Read)"}
+        </Sub>
       </Step>
 
       {stopped ? (

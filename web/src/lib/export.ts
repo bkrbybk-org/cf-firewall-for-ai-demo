@@ -21,6 +21,7 @@ type VerdictSummary =
 
 export interface ExportTurn {
   ts: string;
+  tsMs: number; // epoch ms — anchors this turn's verdict lookup
   prompt: string;
   outcome: "reply" | "blocked" | "error";
   model?: string;
@@ -45,10 +46,7 @@ export interface SessionExport {
 // Pair up [user, response] messages into export turns. Every user push in
 // useChat is followed by exactly one assistant/blocked/error message before
 // the next user push, so simple adjacent pairing is enough — see
-// buildHistory() in hooks/useChat.ts for the same assumption. "extraction"
-// messages (file→text conversions) are not turns and are skipped here; they
-// never sit directly after a user push in normal use (extraction always
-// precedes typing/sending a prompt), so they don't break the pairing.
+// buildHistory() in hooks/useChat.ts for the same assumption.
 function pairTurns(messages: Msg[]): ExportTurn[] {
   const turns: ExportTurn[] = [];
   for (let i = 0; i < messages.length; i++) {
@@ -59,6 +57,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
     if (next.kind === "assistant") {
       turns.push({
         ts: next.ts,
+        tsMs: next.tsMs,
         prompt: m.text,
         outcome: "reply",
         model: next.meta.model,
@@ -70,6 +69,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
     } else if (next.kind === "blocked") {
       turns.push({
         ts: next.ts,
+        tsMs: next.tsMs,
         prompt: m.text,
         outcome: "blocked",
         ray: next.ray,
@@ -79,6 +79,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
     } else if (next.kind === "guardrails") {
       turns.push({
         ts: next.ts,
+        tsMs: next.tsMs,
         prompt: m.text,
         outcome: "blocked",
         ray: next.ray,
@@ -89,7 +90,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
             : "prompt blocked by AI Gateway Guardrails (2016)",
       });
     } else if (next.kind === "error") {
-      turns.push({ ts: next.ts, prompt: m.text, outcome: "error", errorText: next.text });
+      turns.push({ ts: next.ts, tsMs: next.tsMs, prompt: m.text, outcome: "error", errorText: next.text });
     }
   }
   return turns;
@@ -112,13 +113,18 @@ function summarizeVerdict(d: VerdictData): VerdictSummary {
 // best-effort lookup (not the multi-minute poll the live UI uses — if
 // analytics haven't ingested yet the turn is marked unavailable rather than
 // blocking the export for up to two minutes per turn).
+//
+// Each lookup is anchored to the turn's own timestamp. Without the anchor the
+// server searches a window around *now*, so exporting a session that has been
+// open for more than ~15 minutes reported every turn as "not yet ingested"
+// while the rows were sitting in the dataset the whole time.
 export async function buildSessionExport(messages: Msg[], systemPrompt: string): Promise<SessionExport> {
   const turns = pairTurns(messages);
   await Promise.all(
     turns.map(async (t) => {
       if (!t.ray) return;
       try {
-        const d = await getVerdict(t.ray);
+        const d = await getVerdict(t.ray, t.tsMs);
         if (d.configured === false) {
           t.verdict = { available: false, reason: "live edge log disabled (CF_ANALYTICS_TOKEN not set)" };
         } else if (d.error) {

@@ -30,8 +30,11 @@ import {
   queryNeuronUsage,
   queryVerdict,
   queryVerdictRetention,
+  queryZoneRules,
 } from "./cloudflare";
+import { buildPromptLogQuery } from "./promptlog";
 import { redact } from "./redact";
+import { createSseAccumulator } from "./sse";
 import type { ChatRequestBody, ChatTurn, Env, PromptAnalytics, PromptLogRow } from "./types";
 
 // The `guarded` flag drives the purple "Guardrails" badge. The AI Gateway
@@ -91,6 +94,13 @@ export async function handleModels(env: Env): Promise<Response> {
     maxSystemPromptLen: MAX_SYSTEM_PROMPT_LEN,
     gateways, // [{ id, label, guarded }] — populates the gateway dropdown
     defaultGateway,
+    // Caps for the numeric AI Gateway settings. Served rather than re-declared
+    // in the client: handleChat clamps to these values anyway, so a hand-copied
+    // second set could only ever drift out of agreement with the enforcement.
+    limits: {
+      maxAttempts: MAX_GATEWAY_ATTEMPTS,
+      retryDelayMs: MAX_GATEWAY_RETRY_DELAY_MS,
+    },
   });
 }
 
@@ -154,6 +164,27 @@ export async function handleVerdict(url: URL, env: Env): Promise<Response> {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return Response.json({ configured: true, ray, found: false, error: message }, { status: 502 });
+  }
+}
+
+// GET /api/zone-rules — the zone's real WAF custom rules, so the flow trace and
+// the analytics rule split stop relying on a hand-maintained mirror.
+//
+// Degrades the same way the gateway list does: any failure (missing token, no
+// "Zone → WAF → Read" scope, API error) returns source:"fallback" with no rules
+// rather than an error, and the client then renders its static mirror. A demo
+// must not lose its rule display because one token scope is missing — but it
+// must also never present the mirror AS live data, hence the explicit source.
+export async function handleZoneRules(env: Env): Promise<Response> {
+  if (!env.CF_ANALYTICS_TOKEN || !env.CF_ZONE_ID) {
+    return Response.json({ configured: false, source: "fallback", rules: [] });
+  }
+  try {
+    const rules = await queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN);
+    return Response.json({ configured: true, source: "live", rules });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return Response.json({ configured: true, source: "fallback", rules: [], error: message });
   }
 }
 
@@ -441,6 +472,64 @@ async function logPrompt(
   }
 }
 
+// Fill in a streamed turn's reply after the fact.
+//
+// The row is inserted when the request is handled, at which point a streamed
+// reply does not exist yet — so it went in as NULL and stayed that way, which
+// is the DEFAULT path in this app (streaming is on by default). This updates
+// the row once the stream has finished passing through, so the log's evidence
+// trail covers streamed turns too. UPDATE rather than a deferred INSERT: the
+// row must exist immediately, even if the client disconnects mid-stream.
+async function updateLoggedReply(env: Env, ray: string, reply: string): Promise<void> {
+  if (!env.DB || !reply) return;
+  const r = redact(reply);
+  try {
+    await env.DB.prepare(
+      `UPDATE prompt_log
+       SET reply = ?, redactions = redactions + ?, completion_tokens = COALESCE(completion_tokens, ?)
+       WHERE ray = ?`,
+    )
+      // Same ~4 chars/token estimate the non-streaming path falls back to.
+      .bind(r.text, r.count, Math.ceil(reply.length / 4), ray)
+      .run();
+  } catch {
+    /* logging must never break chat */
+  }
+}
+
+// Pass an SSE body through untouched while assembling the reply text from it,
+// then write that text to the prompt log. Nothing is buffered — chunks are
+// forwarded as they arrive and only a copy of the decoded text accumulates.
+function teeReplyToLog(
+  source: ReadableStream,
+  env: Env,
+  ray: string | null,
+  excluded: boolean,
+  inserted: Promise<void>,
+  ctx?: ExecutionContext,
+): ReadableStream {
+  if (!ray || excluded || !env.DB) return source;
+  const acc = createSseAccumulator();
+  const decoder = new TextDecoder();
+  return source.pipeThrough(
+    new TransformStream({
+      transform(chunk, controller) {
+        controller.enqueue(chunk);
+        try {
+          acc.push(decoder.decode(chunk, { stream: true }));
+        } catch {
+          /* never let bookkeeping break the stream the user is reading */
+        }
+      },
+      flush() {
+        const text = acc.done();
+        // Chained onto the insert so the row is guaranteed to exist first.
+        if (text) ctx?.waitUntil(inserted.then(() => updateLoggedReply(env, ray, text)));
+      },
+    }),
+  );
+}
+
 export async function handleChat(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   if (request.method !== "POST") {
     return Response.json({ error: "Use POST" }, { status: 405 });
@@ -568,12 +657,18 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   const ray = request.headers.get("cf-ray");
   const route: "direct" | "gateway" = gateway ? "gateway" : "direct";
   const logBase = { ray, route, model, gatewayId: gateway ? gatewayId : null, guarded };
+  // Returns the scheduled write so a later update (the streamed reply, which
+  // only exists once the stream ends) can chain onto it. Both run under
+  // waitUntil, which gives no ordering guarantee of its own — and an UPDATE
+  // that lands before its INSERT silently matches no row.
   const log = (
     outcome: PromptLogRow["outcome"],
     extra: { reply: string | null; promptTokens?: number | null; completionTokens?: number | null },
-  ) => {
-    if (excludeFromLog) return;
-    ctx?.waitUntil(logPrompt(env, { ...logBase, outcome, prompt, ...extra }));
+  ): Promise<void> => {
+    if (excludeFromLog) return Promise.resolve();
+    const done = logPrompt(env, { ...logBase, outcome, prompt, ...extra });
+    ctx?.waitUntil(done);
+    return done;
   };
 
   // AI Gateway path — always REST (see runGatewayRest doc comment for why).
@@ -608,8 +703,17 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     }
 
     if (r.kind === "stream") {
-      log("reply", { reply: null });
-      const body = appendRestGatewayEvent(r.body, { gatewayId, cached: r.cached, logId: r.logId, guarded }, started);
+      // Logged with a null reply first, then filled in by teeReplyToLog once
+      // the stream ends — the row has to exist even if the client disconnects.
+      const inserted = log("reply", { reply: null });
+      const withMeta = appendRestGatewayEvent(
+        r.body,
+        { gatewayId, cached: r.cached, logId: r.logId, guarded },
+        started,
+      );
+      // Tee AFTER the trailing gateway event is appended; that event carries no
+      // token, so the accumulator ignores it either way.
+      const body = teeReplyToLog(withMeta, env, ray, excludeFromLog, inserted, ctx);
       return new Response(body, {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
@@ -643,9 +747,10 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   if (stream) {
     try {
       const sse = (await env.AI.run(model, { messages, max_tokens: MAX_REPLY_TOKENS, stream: true } as never)) as unknown as ReadableStream;
-      // Streamed reply text isn't captured server-side; log the prompt only.
-      log("reply", { reply: null });
-      return new Response(sse, {
+      // Row goes in now with a null reply; teeReplyToLog fills it in as the
+      // stream drains, so a streamed turn is no longer a blank in the log.
+      const inserted = log("reply", { reply: null });
+      return new Response(teeReplyToLog(sse, env, ray, excludeFromLog, inserted, ctx), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
     } catch (err) {
@@ -794,8 +899,11 @@ function parseTimeWindow(url: URL): {
   };
 }
 
-// GET  /api/prompt-log?limit=&route=&outcome=&hours=|since=&until= — recent
-// PII-redacted prompts.
+// GET  /api/prompt-log?limit=&offset=&route=&outcome=&q=&sort=&dir=&hours=|since=&until=
+// — one page of PII-redacted prompts. Filtering, sorting and paging all happen
+// in SQL so the page is a true window onto the whole table; the previous
+// version fetched the newest 200 rows and sliced them client-side, which made
+// everything older than that unreachable however you filtered.
 // DELETE /api/prompt-log — clears the log (the "Clear log" button).
 // Rows join to the live edge verdict by ray in the UI; detections aren't stored
 // here (they ingest into GraphQL seconds later, after this row is written).
@@ -813,46 +921,51 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
   }
   if (request.method !== "GET") return Response.json({ error: "Use GET or DELETE" }, { status: 405 });
 
-  const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get("limit") || "100", 10) || 100));
-  const route = url.searchParams.get("route"); // 'direct' | 'gateway' | null
-  // Comma-separated so the UI can select any combination, e.g. "reply,error"
-  // to see everything except guardrails-blocked. Absent/empty = no filter.
-  const outcomes = (url.searchParams.get("outcome") || "")
-    .split(",")
-    .map((o) => o.trim())
-    .filter((o): o is "reply" | "guardrails" | "error" => o === "reply" || o === "guardrails" || o === "error");
   const { since, until } = parseTimeWindow(url);
-  const where: string[] = [];
-  const binds: unknown[] = [];
-  if (route === "direct" || route === "gateway") {
-    where.push("route = ?");
-    binds.push(route);
-  }
-  if (outcomes.length) {
-    where.push(`outcome IN (${outcomes.map(() => "?").join(",")})`);
-    binds.push(...outcomes);
-  }
-  if (since != null) {
-    where.push("ts >= ?");
-    binds.push(since);
-  }
-  if (until != null) {
-    where.push("ts <= ?");
-    binds.push(until);
-  }
-  const clause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const num = (name: string): number | null => {
+    const raw = url.searchParams.get(name);
+    if (raw == null) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const { clause, binds, orderBy, limit, offset } = buildPromptLogQuery({
+    route: url.searchParams.get("route"), // 'direct' | 'gateway' | null
+    // Comma-separated so the UI can select any combination, e.g. "reply,error"
+    // to see everything except guardrails-blocked. Absent/empty = no filter.
+    outcomes: (url.searchParams.get("outcome") || "").split(",").map((o) => o.trim()),
+    since,
+    until,
+    q: url.searchParams.get("q"),
+    sort: url.searchParams.get("sort"),
+    dir: url.searchParams.get("dir"),
+    limit: num("limit"),
+    offset: num("offset"),
+  });
 
   try {
     const { results } = await env.DB.prepare(
       `SELECT ray, ts, route, model, gateway_id AS gatewayId, guarded, outcome,
               prompt, reply, redactions, prompt_tokens AS promptTokens,
               completion_tokens AS completionTokens
-       FROM prompt_log ${clause} ORDER BY ts DESC LIMIT ?`,
+       FROM prompt_log ${clause} ${orderBy} LIMIT ? OFFSET ?`,
     )
-      .bind(...binds, limit)
+      .bind(...binds, limit, offset)
       .all<PromptLogRow>();
+    // `filtered` counts every row the filters match, not just this page — the
+    // client needs it to know how many pages exist. `total` stays the whole
+    // table, so the UI can still say "N stored, just not in this window".
+    const filtered = await env.DB.prepare(`SELECT COUNT(*) AS n FROM prompt_log ${clause}`)
+      .bind(...binds)
+      .first<{ n: number }>();
     const total = await env.DB.prepare("SELECT COUNT(*) AS n FROM prompt_log").first<{ n: number }>();
-    return Response.json({ configured: true, rows: results ?? [], total: total?.n ?? 0 });
+    return Response.json({
+      configured: true,
+      rows: results ?? [],
+      filtered: filtered?.n ?? 0,
+      total: total?.n ?? 0,
+      limit,
+      offset,
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // A missing table reads as "not configured" so the UI shows the setup hint.

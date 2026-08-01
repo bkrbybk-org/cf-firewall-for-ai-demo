@@ -101,6 +101,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default |
 | `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE |
 | `GET /api/verdict?ray=&ts=` | What the edge did to one request (GraphQL). `ts` anchors the lookup window |
+| `GET /api/zone-rules` | The zone's real WAF custom rules (Rulesets API), for the flow trace and the rule split |
 | `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
 | `GET /api/analytics?hours=` | Aggregated zone security events + AI scores (edge tab) |
 | `GET /api/gateway-analytics?gatewayId=&hours=` | Aggregated AI Gateway logs (gateway tab) |
@@ -148,6 +149,7 @@ The REST gateway list carries **no** guardrails field, so which gateway is guard
 - **PII-redacted at write time** by `src/redact.ts` — an independent regex pass (Thai national ID, IBAN, card, crypto wallet, email, IPv4, phone), deliberately over-masking. Firewall for AI reports PII *categories*, not offsets, so its output can't drive precise masking.
 - **Per-turn opt-out**: the "log prompt" switch sends `excludeFromLog: true` and the write is skipped. This is app-level and unrelated to AI Gateway's own `collect-log`.
 - ⚠️ **AI Gateway logs still store the raw prompt + response payload** (account-scoped, unredacted). The UI says so — it's a deliberate talking point.
+- **Streamed replies are captured too.** A streamed reply never exists server-side as a whole, so the row is written immediately with `reply = NULL` and filled in once the stream finishes passing through (`teeReplyToLog`, chained after the insert). Streaming is the default path, so without this the log's reply column was empty for most real traffic. Nothing is buffered — chunks are forwarded as they arrive.
 - Rows join to the live edge verdict by ray in the UI; detections are not stored (they ingest into GraphQL seconds *after* the row is written).
 - `DB` is optional — unbinding it degrades the tab to a setup hint.
 
@@ -179,7 +181,7 @@ npx wrangler secret put CF_ANALYTICS_TOKEN
 
 Without it `/api/verdict` returns `{ "configured": false }` and the UI shows a hint — everything else keeps working.
 
-> **`CF_ANALYTICS_TOKEN` scopes** — one token backs four features: **Zone Analytics: Read** (`/api/verdict`, `/api/analytics`), **Account Analytics: Read** (`/api/neurons`), and **AI Gateway Read** (the gateway dropdown *and* the analytics gateway tab). A missing scope degrades only its own feature.
+> **`CF_ANALYTICS_TOKEN` scopes** — one token backs four features: **Zone Analytics: Read** (`/api/verdict`, `/api/analytics`), **Account Analytics: Read** (`/api/neurons`), **AI Gateway Read** (the gateway dropdown *and* the analytics gateway tab), and **Zone → WAF → Read** (`/api/zone-rules`, the live rule list — see below). A missing scope degrades only its own feature.
 
 > **`CF_AIG_TOKEN` is separate and required for the whole AI Gateway route.** It needs **AI Gateway - Read**, **AI Gateway - Edit** and **Workers AI - Read** on a normal API token — *not* the gateway-scoped "Run" token from Authenticated Gateway, which this REST endpoint rejects with a bare `{"code":10000,"message":"Authentication error"}`. Without it, any gateway request returns 501 naming the missing secret; the direct route is unaffected. Kept apart from the read-only analytics token on purpose.
 
@@ -216,7 +218,7 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 
 **Gateway tab** — `GET /api/gateway-analytics`. AI Gateway has no GraphQL dataset, so this pages the logs REST API (50/page, up to 500 rows) and sums Worker-side: requests, cache hits, cost, tokens, avg/p50/p95 latency, status codes, per-model rows, hit/miss/error series. These logs are **account-scoped** — they include any other app using the same gateway, which the UI states.
 
-**Prompt log tab** — sortable, paginated table (10/25/50/100 rows, default 25) over D1, with a client-side text filter and a multi-select outcome filter. It has its **own** time range (1h/24h/7d/all/custom picker, default 1h) since it's reviewed differently from the edge tabs. Route/outcome/time filters are server-side; sorting and text search are client-side over the fetched page.
+**Prompt log tab** — sortable, paginated table (10/25/50/100 rows, default 25) over D1, with a text search and a multi-select outcome filter. It has its **own** time range (1h/24h/7d/all/custom picker, default 1h) since it's reviewed differently from the edge tabs. Filtering, search, sorting and paging **all resolve in SQL**, so a page is a true window onto the whole table — an earlier version fetched the newest 200 rows and sliced them in the browser, which made everything older unreachable no matter how you filtered.
 
 **Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the prompt log with the window matched and a context banner. For a *blocking* rule the banner says outright that those prompts never reached the Worker and cannot appear in the log.
 
@@ -290,7 +292,7 @@ Token counts come from the model's own `usage`; if a model omits it the Worker e
 
 **Demo autopilot (▶ Run demo)** — runs `DEMO_SCRIPT` (`web/src/lib/data.ts`): baseline → injection → PII → unsafe topic (block) → unsafe topic (log-only) → custom topic. Each step goes through the real pipeline; the autopilot clears the conversation first, waits for the edge verdict per step, compares against the step's `expect`, and ends with a scorecard. On localhost there are no verdicts, so steps show "verdict pending".
 
-**Session export** — the Export button (next to Clear conversation) downloads the session as **JSON** (full structured data incl. verdicts) or **Markdown** (readable report). Verdicts are re-fetched fresh at export time via a single lookup per turn, not the multi-minute poll. ⚠️ Known bug: `export.ts` still uses the *unanchored* window, so a session left open >15 min marks every turn "not yet ingested" — see PROGRESS.md.
+**Session export** — the Export button (next to Clear conversation) downloads the session as **JSON** (full structured data incl. verdicts) or **Markdown** (readable report). Verdicts are re-fetched fresh at export time via a single lookup per turn, not the multi-minute poll — each one **anchored** to that turn's own timestamp (`tsMs` on every message), so a session left open for hours still resolves its verdicts instead of reporting them all as "not yet ingested".
 
 **Workers AI Neuron monitor** — the header chip shows Neurons consumed by the account today (resets 00:00 UTC) against the free daily allocation, from `GET /api/neurons`. Amber at ≥80%, red at ≥100%. Free allocation 10,000 Neurons/day; beyond that $0.011 / 1,000 on Workers Paid.
 
@@ -302,7 +304,7 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
 2. **Label the endpoint** — Security → Web Assets: ensure `POST <host>/api/chat` exists and carries the managed label **`cf-llm`**. Detection only runs on labeled endpoints with `application/json` bodies.
 3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}`.
 
-   The deployed zone currently runs these 10 rules. **`ZONE_RULES` in `web/src/lib/data.ts` is a hand-maintained mirror of this list, matched by name** — rename or add a rule in the dashboard and update that file, or the flow trace and the AI-Security rule split will drift.
+   The deployed zone currently runs these 10 rules. **The app reads them live** from the Rulesets API (`GET /api/zone-rules`) when `CF_ANALYTICS_TOKEN` carries **Zone → WAF → Read**, and classifies each as AI Security or not by whether its *expression* references `cf.llm.*` — so renaming a rule in the dashboard can no longer misfile it. Without that scope it falls back to the `ZONE_RULES` mirror in `web/src/lib/data.ts`, and the flow trace says so explicitly ("static mirror — may be stale") rather than passing hand-maintained data off as live. Keep the mirror updated as the fallback.
 
    | Rule | Action | Checks |
    |---|---|---|
@@ -368,7 +370,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **64 tests across 6 files**. Each exists because a real bug shipped, and each was mutation-verified.
+`npm test` — **102 tests across 10 files**. Each exists because a real bug shipped, and each was mutation-verified.
 
 | File | Covers |
 |---|---|
@@ -378,6 +380,9 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 | `web/src/lib/verdict.test.ts` (8) | Built from a real incident's payload: a 403 with only log-only rules classifies as `denied`, not `log` |
 | `web/src/lib/redteam.test.ts` (15) | The red-team scoring contract, corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns |
 | `web/src/lib/metadata.test.ts` (6) | The 5-entry metadata cap and malformed-pair handling |
+| `src/promptlog.test.ts` (17) | The prompt-log query builder — offset clamping past the old 200-row ceiling, LIKE-wildcard escaping, and an ORDER BY whitelist that discards anything not on it (the one place a column name reaches SQL) |
+| `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
+| `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 
 ## Requirements recap
 
