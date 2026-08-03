@@ -10,6 +10,8 @@
 // punish it for ingestion lag.
 import { describe, expect, it } from "vitest";
 import {
+  estimateRunSeconds,
+  formatDuration,
   RT_CORPUS,
   scoreRun,
   byCategory,
@@ -157,5 +159,50 @@ describe("corpus integrity", () => {
     const political = RT_CORPUS.filter((a) => a.category.startsWith("Political")).length;
     expect(brand).toBeGreaterThanOrEqual(4);
     expect(political).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("estimateRunSeconds", () => {
+  it("is zero for an empty corpus", () => {
+    expect(estimateRunSeconds(0)).toBe(0);
+    expect(estimateRunSeconds(0, 5000)).toBe(0);
+  });
+
+  it("counts sends, the single settle, and the resolve pass", () => {
+    // 1 send: 4s send + 90s settle + 1.5s resolve.
+    expect(estimateRunSeconds(1)).toBeCloseTo(95.5, 5);
+  });
+
+  it("applies the pacing delay n-1 times, not n", () => {
+    // The runner skips the gap after the LAST send, so 3 prompts have 2 gaps.
+    // Getting this wrong would overstate every estimate by one full delay —
+    // 30s at the slowest preset.
+    expect(estimateRunSeconds(3, 1000) - estimateRunSeconds(3, 0)).toBeCloseTo(2, 5);
+    expect(estimateRunSeconds(1, 30_000)).toBe(estimateRunSeconds(1, 0));
+  });
+
+  it("grows with the delay", () => {
+    expect(estimateRunSeconds(100, 5000)).toBeGreaterThan(estimateRunSeconds(100, 0));
+  });
+
+  it("ignores a negative delay rather than subtracting time", () => {
+    expect(estimateRunSeconds(10, -5000)).toBe(estimateRunSeconds(10, 0));
+  });
+});
+
+describe("formatDuration", () => {
+  it("uses seconds under a minute", () => {
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(0.2)).toBe("1s"); // never "0s" for work that happens
+  });
+
+  it("uses whole minutes below an hour", () => {
+    expect(formatDuration(540)).toBe("9 min");
+    expect(formatDuration(59 * 60)).toBe("59 min");
+  });
+
+  it("splits into hours past 60 minutes", () => {
+    expect(formatDuration(3600)).toBe("1 h");
+    expect(formatDuration(4320)).toBe("1 h 12 min");
   });
 });

@@ -36,6 +36,8 @@ import {
   RT_CORPUS,
   SEVERITY_RANK,
   byCategory,
+  estimateRunSeconds,
+  formatDuration,
   bySeverity,
   scoreRun,
   type RedTeamAttack,
@@ -62,9 +64,13 @@ const SEV_PILL: Record<RtSeverity, string> = {
   low: "border-cf-blue/50 text-cf-blue",
 };
 
-function StateCell({ s }: { s?: RtAttackState }) {
+function StateCell({ s, stopped }: { s?: RtAttackState; stopped?: boolean }) {
   if (!s || s === "queued") return <span className="text-subtle">—</span>;
   if (s === "sending" || s === "sent" || s === "resolving") {
+    // Once the run is stopped nothing is in flight, so a spinner labelled
+    // "sending…" would be claiming work that is not happening. These rows were
+    // sent but never scored, which is exactly what "unscored" means here.
+    if (stopped) return <span className="text-subtle">unscored</span>;
     const label = s === "resolving" ? "resolving…" : "sending…";
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-accent">
@@ -151,6 +157,20 @@ function SortHeader({
   );
 }
 
+// Pacing presets. "None" stays the default so existing behaviour is unchanged;
+// the slower steps exist for rate limits (WAF rate-limiting rules, AI Gateway
+// rate limiting) and for spreading a run across analytics buckets instead of
+// dumping it into one.
+const DELAY_OPTIONS: { ms: number; label: string }[] = [
+  { ms: 0, label: "none" },
+  { ms: 500, label: "0.5s" },
+  { ms: 1000, label: "1s" },
+  { ms: 2000, label: "2s" },
+  { ms: 5000, label: "5s" },
+  { ms: 10000, label: "10s" },
+  { ms: 30000, label: "30s" },
+];
+
 const CONTROLS: { finding: string; count: string; control: string }[] = [
   {
     finding: "Brand Tarnishing / Self-Criticism",
@@ -172,7 +192,7 @@ const CONTROLS: { finding: string; count: string; control: string }[] = [
 ];
 
 export function RedTeamPage() {
-  const { phase, attackStates, results, settleLeftMs, run, stop, reset } = useRedTeam();
+  const { phase, attackStates, results, settleLeftMs, pacingLeftMs, run, stop, reset } = useRedTeam();
   const [sortKey, setSortKey] = useState<SortKey>("severity");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
@@ -233,6 +253,7 @@ export function RedTeamPage() {
   // edge WAF verdict is the same on both, but the gateway route adds Guardrails,
   // so the guarded gateway can surface 2016/2017 blocks the WAF alone misses.
   const [route, setRoute] = useState<"direct" | "gateway">("direct");
+  const [delayMs, setDelayMs] = useState(0);
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
   useEffect(() => {
@@ -277,17 +298,18 @@ export function RedTeamPage() {
 
   const sentCount = Object.values(attackStates).filter((s) => s !== "queued").length;
   let phaseText = "";
-  if (phase === "sending") phaseText = `sending ${sentCount}/${corpus.length}…`;
+  if (phase === "sending")
+    phaseText =
+      pacingLeftMs > 0
+        ? `sent ${sentCount}/${corpus.length} · next in ${(pacingLeftMs / 1000).toFixed(1)}s`
+        : `sending ${sentCount}/${corpus.length}…`;
   else if (phase === "settling") phaseText = `waiting for edge ingestion — ${Math.ceil(settleLeftMs / 1000)}s`;
   else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${corpus.length}…`;
   else if (phase === "done") phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})`;
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
-  // Sends are sequential (~4s each on this account) plus one 90s settle and the
-  // capped-concurrency resolve. Derived rather than hardcoded now that the
-  // corpus size is the operator's choice.
-  const runMinutes = Math.max(1, Math.round((corpus.length * 4 + 90 + corpus.length * 1.5) / 60));
+  const runEstimate = formatDuration(estimateRunSeconds(corpus.length, delayMs));
 
   return (
     <div className="flex h-full flex-col">
@@ -332,7 +354,7 @@ export function RedTeamPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined }, corpus)}
+                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined, delayMs }, corpus)}
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20"
               >
                 <Play size={13} /> {hasResults ? "Re-run" : "Run"} {corpus.length} attack{corpus.length === 1 ? "" : "s"}
@@ -379,8 +401,27 @@ export function RedTeamPage() {
                 {phaseText}
               </span>
             )}
+            {/* Pacing. Locked mid-run like the route selector, so a batch is
+                never half-paced. */}
+            <label className="flex items-center gap-1.5 text-[12px] text-muted">
+              Delay
+              <select
+                value={delayMs}
+                disabled={running}
+                onChange={(e) => setDelayMs(Number(e.target.value))}
+                aria-label="Delay between prompts"
+                className="rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[12px] text-text outline-none focus:border-accent disabled:opacity-50"
+              >
+                {DELAY_OPTIONS.map((d) => (
+                  <option key={d.ms} value={d.ms}>
+                    {d.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
             <span className="ml-auto text-[11.5px] text-subtle">
-              ≈ {runMinutes} min (send · 90s edge settle · resolve)
+              ≈ {runEstimate} (send · 90s edge settle · resolve)
             </span>
           </div>
 
@@ -575,7 +616,7 @@ export function RedTeamPage() {
                         </td>
                       )}
                       <td className="px-2.5 py-1.5 whitespace-nowrap">
-                        <StateCell s={attackStates[a.id]} />
+                        <StateCell s={attackStates[a.id]} stopped={phase === "stopped"} />
                       </td>
                     </tr>
                   ))}

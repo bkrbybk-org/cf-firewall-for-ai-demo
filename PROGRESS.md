@@ -134,6 +134,19 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   that detection happens at the edge before the model. It would also let `/redteam` assert model
   compliance, which the page deliberately refuses to do without a judge. Revisit only as an
   explicitly separate, separately-labelled column.
+- **Red-team runs can be paced.** A `Delay` control (none…30s, default none, locked mid-run) puts a
+  gap between sends. Sends are sequential, so an unpaced run is a burst: rate limiting — a WAF
+  rate-limiting rule, or AI Gateway's — returns 429s that classify as `error` and therefore leave
+  the scored denominator silently, which reads as a smaller run rather than as throttling. Pacing
+  also spreads a batch across the 5-minute analytics buckets instead of stacking it into one.
+  The wait is **abortable** (`abortableWait`, 100 ms ticks): a plain `await sleep(delay)` left Stop
+  unresponsive for the whole gap, which at 30s reads as a hung button. The estimate beside the
+  controls comes from `estimateRunSeconds`, which applies the delay **n−1** times because the runner
+  skips the gap after the last send — unit-tested, since getting it wrong overstates every estimate
+  by one full delay.
+- **A stopped run stops claiming to be working.** Rows left mid-flight rendered a spinning
+  "sending…" forever after Stop. They now read `unscored`, which is what they are: sent but never
+  resolved. Pre-existing, but pacing makes stopping mid-run common enough that it mattered.
 - **The red-team corpus can be the operator's own CSV, in Prisma's upload shape.** `prompt,goal`
   header, parsed **in the browser** (`lib/attackCsv.ts` — quoted fields, embedded newlines, doubled
   quotes, BOM, CRLF; 200-prompt cap because each row is a real inference call sent sequentially).
@@ -334,7 +347,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **142 across 12 files** (124 before the Thai corpus, 102 before the CSV corpus).
+**Tests** — `npm test`, **150 across 12 files** (142 before the pacing control).
 Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
 - `src/promptlog.test.ts` (17) — the prompt-log query builder. Offset reaching past the old 200-row
   ceiling, LIKE-wildcard escaping (searching `100%` used to match everything), and an `ORDER BY`

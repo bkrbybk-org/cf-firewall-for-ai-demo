@@ -31,6 +31,12 @@ const RESOLVE_CONCURRENCY = 6;
 export interface RtRouteConfig {
   route: "direct" | "gateway";
   gatewayId?: string; // gateway route only
+  // Pause between sends, in ms. 0 = fire as fast as each request returns.
+  // Reasons to slow down, all real on this demo: a WAF rate-limiting rule or
+  // AI Gateway rate limit will start returning 429s that score as `error` and
+  // silently shrink the denominator; and a burst lands in one analytics bucket,
+  // so spacing sends is what makes a run legible on the 5-minute chart.
+  delayMs?: number;
 }
 
 // One send through /api/chat, classified the same way useChat classifies a
@@ -95,6 +101,29 @@ async function resolveState(
   return outcome === "log" || outcome === "allow" ? "denied" : outcome;
 }
 
+// Wait `ms`, but give up early when the run is stopped, and report the time
+// left so the UI can count down. A plain `await sleep(ms)` would leave Stop
+// unresponsive for the whole gap — with a 10s pacing delay that reads as a
+// frozen button.
+function abortableWait(
+  ms: number,
+  stopRef: { current: boolean },
+  onTick: (leftMs: number) => void,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const end = Date.now() + ms;
+    const timer = window.setInterval(() => {
+      const left = end - Date.now();
+      if (stopRef.current || left <= 0) {
+        window.clearInterval(timer);
+        resolve();
+      } else {
+        onTick(left);
+      }
+    }, 100);
+  });
+}
+
 // Bounded-concurrency map, preserving input order in the callback.
 async function mapPool<T>(items: T[], limit: number, fn: (item: T, i: number) => Promise<void>): Promise<void> {
   let next = 0;
@@ -113,6 +142,7 @@ export interface RedTeamRun {
   attackStates: Record<string, RtAttackState>;
   results: Map<string, RtRunResult>;
   settleLeftMs: number; // countdown shown during the settle phase
+  pacingLeftMs: number; // countdown for the gap between two sends (0 when not pacing)
   /** The corpus is passed in per run — the built-in scan set or an uploaded CSV. */
   run: (cfg: RtRouteConfig, corpus: RedTeamAttack[]) => void;
   stop: () => void;
@@ -127,6 +157,7 @@ export function useRedTeam(): RedTeamRun {
   const [attackStates, setAttackStates] = useState<Record<string, RtAttackState>>({});
   const [results, setResults] = useState<Map<string, RtRunResult>>(new Map());
   const [settleLeftMs, setSettleLeftMs] = useState(0);
+  const [pacingLeftMs, setPacingLeftMs] = useState(0);
   const stopRef = useRef(false);
   const settleTimer = useRef<number | null>(null);
 
@@ -145,12 +176,15 @@ export function useRedTeam(): RedTeamRun {
     stopRef.current = false;
     setResults(new Map());
     setSettleLeftMs(0);
+    setPacingLeftMs(0);
     setAttackStates(Object.fromEntries(corpus.map((a) => [a.id, "queued" as RtAttackState])));
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
     const sent: { id: string; ray?: string; ts: number; kind: "reply" | "blocked" | "guardrails" | "error" }[] = [];
-    for (const a of corpus) {
+    const delayMs = Math.max(0, cfg.delayMs ?? 0);
+    for (let i = 0; i < corpus.length; i++) {
+      const a = corpus[i];
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
@@ -158,6 +192,14 @@ export function useRedTeam(): RedTeamRun {
       if (stopRef.current) return;
       sent.push({ id: a.id, ray, ts, kind });
       setOne(a.id, "sent");
+      // Pace the next send. Skipped after the last one — trailing dead time
+      // before the settle phase would be pure waiting for nothing.
+      if (delayMs > 0 && i < corpus.length - 1) {
+        setPacingLeftMs(delayMs);
+        await abortableWait(delayMs, stopRef, setPacingLeftMs);
+        setPacingLeftMs(0);
+        if (stopRef.current) return;
+      }
     }
 
     // ── Phase 2: settle (one wait for the whole batch) ───────────────────
@@ -201,8 +243,9 @@ export function useRedTeam(): RedTeamRun {
     setResults(new Map());
     setAttackStates({});
     setSettleLeftMs(0);
+    setPacingLeftMs(0);
     setPhase("idle");
   }, []);
 
-  return { phase, attackStates, results, settleLeftMs, run, stop, reset };
+  return { phase, attackStates, results, settleLeftMs, pacingLeftMs, run, stop, reset };
 }

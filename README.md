@@ -239,6 +239,7 @@ Replays a curated **36 of the 116** enumerated attacks from a Prisma AIRS scan (
 - **Scoring contract** (pinned by tests): `log` counts as *reached the model* — a detection is not a defense; `block`/`challenge` do not; `denied`/`guardrails`/`pending`/`error` are shown but **excluded from the denominator**, so the percentage never credits the WAF for an Access refusal nor punishes it for ingestion lag.
 - **Runner is 3-phase**, not one poll per attack (which would cost ~36 min): send all prompts → wait once ~90 s for ingestion → batch-resolve every ray through `fetchVerdictOnce` under a concurrency cap. ≈4 min for 36 attacks. It calls the API directly, so a run never enters the chat transcript, and leaves `excludeFromLog` false so rows land in D1 as the evidence trail.
 - Route selector (Workers AI ↔ any account gateway), locked mid-run so a batch never mixes routes.
+- **Delay between prompts** (none / 0.5s / 1s / 2s / 5s / 10s / 30s, default none), also locked mid-run. Sends are sequential, so an unpaced run is a burst: rate limiting (a WAF rate-limiting rule, or AI Gateway's) starts returning 429s that score as `error` and quietly shrink the denominator, and the whole batch lands in a single analytics bucket. Pacing spreads it across the 5-minute buckets so the run is legible on the chart. The estimate next to the controls updates with the delay (`estimateRunSeconds`, applied n−1 times since there's no gap after the last send), and the phase line counts down — `sent 12/100 · next in 4.6s`. Stop stays responsive during a gap rather than blocking for its full length.
 - Corpus caveat, stated in the UI: it is a curated subset, and several prompts are the report's truncated preview text.
 
 ### Bring your own attacks (CSV)
@@ -410,7 +411,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **142 tests across 12 files**. Each exists because a real bug shipped, and each was mutation-verified.
+`npm test` — **150 tests across 12 files**. Each exists because a real bug shipped, and each was mutation-verified.
 
 | File | Covers |
 |---|---|

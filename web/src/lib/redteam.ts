@@ -512,6 +512,32 @@ export function scoreRun(results: RtRunResult[]): RtScore {
   };
 }
 
+// ── Run-time estimate ───────────────────────────────────────────────────────
+// Shown before a run so the operator knows what they are committing to. Rough
+// by nature, but the shape matters: sends are SEQUENTIAL, so cost grows with
+// corpus size, and the pacing delay multiplies by (n − 1) because the runner
+// skips the gap after the last send.
+export const SECONDS_PER_SEND = 4; // measured on this account, direct route
+export const SETTLE_SECONDS = 90; // the one ingestion wait, regardless of size
+export const SECONDS_PER_RESOLVE = 1.5; // verdict lookups, concurrency-capped
+
+export function estimateRunSeconds(count: number, delayMs = 0): number {
+  if (count <= 0) return 0;
+  const gaps = Math.max(0, count - 1) * (Math.max(0, delayMs) / 1000);
+  return count * SECONDS_PER_SEND + gaps + SETTLE_SECONDS + count * SECONDS_PER_RESOLVE;
+}
+
+// "45s" / "9 min" / "1 h 12 min" — kept coarse on purpose; a false-precision
+// "8.4 min" would imply the estimate is better than it is.
+export function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))}s`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? `${h} h` : `${h} h ${m} min`;
+}
+
 export interface RtBreakdownRow {
   key: string;
   reached: number;
