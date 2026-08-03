@@ -623,10 +623,18 @@ uncommitted.
 
 **Blocking / high severity**
 
-1. **`CF_AIG_TOKEN` is mis-scoped — CONFIRMED 2026-08-03, and it is now the one thing blocking the
-   deploy.** No longer a suspicion: a plain (non-Dynamic-Route) gateway send against the current
-   secret returns `{"code":10000,"message":"Authentication error"}`, reproduced on `wrangler dev`
-   with the same secret prod uses.
+1. **The LOCAL `CF_AIG_TOKEN` is invalid — confirmed 2026-08-03. The PROD one is unverified.**
+   Keep these apart; an earlier note in this file conflated them.
+   - **Local (`.env`, what `wrangler dev` uses — it logs "Using secrets defined in .env")**: a plain
+     gateway send returns `{"code":10000,"message":"Authentication error"}`, and
+     `GET /user/tokens/verify` with that token returns `1000 Invalid API Token` — so it is not a user
+     API token at all, consistent with it being the gateway-scoped Authenticated-Gateway "Run"
+     token. Local gateway testing is broken until this is replaced.
+   - **Prod (the `CF_AIG_TOKEN` secret on the Worker)**: a *different* value. The dashboard shows the
+     secret exists but not its scopes, and prod sits behind Access (a probe returns 302 to the Access
+     login), so it cannot be tested from here. It has probably never been exercised: on the deployed
+     `a4f78d2`, only Dynamic Routing uses this token, and Dynamic Routing is listed below as unproven
+     end to end.
 
    The real requirement is `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read` on a normal
    API token. Our own earlier docs/error text said "AI Gateway Run", which is not a real permission
@@ -635,16 +643,19 @@ uncommitted.
 
    **Why this gates the deploy specifically.** Prod currently runs `a4f78d2`, where a plain gateway
    call still used the `env.AI.run(..., {gateway})` binding and needed no token — so the gateway
-   route *works in prod today*. The REST migration (`14a71f6`) makes the token mandatory for every
-   gateway request. Deploying without fixing the token would convert a working customer-facing path
-   into a hard error: the route toggle, the purple Guardrails card, and gateway-routed red-team runs
-   all fail. The direct Workers AI route, edge verdicts, all three analytics tabs, the prompt log and
-   compliance are unaffected.
+   route *works in prod today regardless of the token*. The REST migration (`14a71f6`) makes the
+   token mandatory for every gateway request. If the prod token is also wrong, deploying converts a
+   working customer-facing path into a hard error: the route toggle, the purple Guardrails card and
+   gateway-routed red-team runs all fail. The direct Workers AI route, edge verdicts, all three
+   analytics tabs, the prompt log and compliance are unaffected either way.
 
-   Fix (dashboard + one command, then retest):
-   1. Create an API token with the three permissions above (not the Authenticated Gateway "Run" token).
-   2. `npx wrangler secret put CF_AIG_TOKEN`
-   3. Retest a plain gateway send locally — it must return a reply, not `10000` — then deploy.
+   **Fix once, for both** — the local token needs replacing regardless, so mint one good token and
+   use it in both places rather than gambling on prod's current value:
+   1. Create an API token with `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read`
+      (**not** the Authenticated Gateway "Run" token).
+   2. Put it in `.env` as `CF_AIG_TOKEN`, and `npx wrangler secret put CF_AIG_TOKEN` for prod.
+   3. Retest a plain gateway send on `wrangler dev` — it must return a reply, not `10000`.
+   4. Then `npm run deploy`. `npx wrangler rollback` restores the previous deployment if needed.
 2. **Zero Trust Access misconfiguration — root cause of a live "false block attribution" incident.**
    An Access `Bypass` policy intended to exempt `/api/chat` for an AI red-team service was scoped to
    the entire application (no path restriction) and used `Bypass`, which Cloudflare separately
