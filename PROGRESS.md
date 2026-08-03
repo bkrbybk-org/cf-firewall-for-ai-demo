@@ -623,8 +623,17 @@ uncommitted.
 
 **Blocking / high severity**
 
-1. **The LOCAL `CF_AIG_TOKEN` is invalid — confirmed 2026-08-03. The PROD one is unverified.**
-   Keep these apart; an earlier note in this file conflated them.
+1. **PROD `CF_AIG_TOKEN` is fine — verified 2026-08-03. Only the LOCAL one is broken.**
+   Settled by an authenticated prod smoke test (`npm run smoke:prod`): a plain AI Gateway send
+   against prod returns **200 with a real reply and gateway metadata**, not the `10000` auth error.
+   The whole "this gates the deploy" concern below turned out to apply only to local dev. Prod's
+   gateway route, Guardrails path and gateway-routed red-team runs all work.
+
+   Remaining: the token in `.env` is still invalid, so **`wrangler dev` cannot exercise the gateway
+   route locally**. Replace it with a normal API token (`AI Gateway - Read`, `AI Gateway - Edit`,
+   `Workers AI - Read`) to restore local gateway testing. Prod needs no change.
+
+   Historical detail, kept because the distinction cost real time:
    - **Local (`.env`, what `wrangler dev` uses — it logs "Using secrets defined in .env")**: a plain
      gateway send returns `{"code":10000,"message":"Authentication error"}`, and
      `GET /user/tokens/verify` with that token returns `1000 Invalid API Token` — so it is not a user
@@ -674,9 +683,22 @@ uncommitted.
    prod D1 prompt log: **67 rows** with `outcome='guardrails'`, all on `cf-ai-sec-demo-gw` with
    `guarded=1` (most recent 2026-07-31). Guardrails *is* blocking on prod. Visible in-app under
    Analytics → Prompt log with the outcome filter set to `guardrails-blocked`.
-4. **WAF block responses are still Cloudflare's default HTML page**, not Custom JSON — set each
-   block rule's response to Custom JSON so the blocked card pretty-prints instead of showing "not a
-   custom JSON body".
+4. ~~**WAF block responses are still Cloudflare's default HTML page**~~ **RESOLVED 2026-08-03** —
+   the rules now return Custom JSON. Verified in prod:
+   ```json
+   {"error":"request_blocked","reason_code":"LLM_PII_BLOCKED",
+    "message":"This request was blocked because it may contain sensitive personal or regulated data.",
+    "detail":"Please remove sensitive data such as payment, contact, or credential-related information and try again.",
+    "support_hint":"Please provide the cf-ray response header to support."}
+   ```
+   **But the client does not read this shape**, so the demo now displays less than the edge gives it.
+   `useChat.ts` does `detection: data?.blocked ? data.detection : undefined` and `reason: data?.reason`
+   — none of `blocked`/`detection`/`reason` exist in the payload above, so both come out undefined and
+   `Chat.tsx` falls back to the generic "Blocked by Cloudflare AI Security for Apps" instead of the
+   rule's own message. Attribution is unaffected (`verdictOutcome` works off the edge verdict's rules
+   + httpStatus, not the body), and the raw-response viewer still pretty-prints it. Fix: map
+   `reason_code` → detection (`LLM_PII_BLOCKED` → `pii`, etc.) and show `message`, keeping the
+   existing `{blocked,detection,reason}` shape working so either rule config renders correctly.
 5. **Account-level "Monitor Likely Attacks (Score GE 20 AND LE 50)" is a red herring** — fires on a
    non-LLM attack score despite the name. **Mitigated in the UI** as of 2026-08-01: it now lands in
    the "not AI Security" group rather than the AI Security rule list, so it can no longer be read as
@@ -741,10 +763,15 @@ uncommitted.
       the passphrase cached from an earlier session).
 - [x] ~~Merge `feat/gateway-rest-and-red-team` into `main`~~ — done 2026-08-03, fast-forward to
       `b30da22` (8 commits). Repo has no remote, so nothing to push.
-- [ ] **Deploy — held deliberately.** `main` is merged, green (142 tests) and built, but the deploy
-      is blocked on Open bug #1: `CF_AIG_TOKEN` is confirmed mis-scoped, and shipping would break
-      the AI Gateway route that works in prod today. Fix the token, retest a plain gateway send,
-      then `npm run deploy`.
+- [x] ~~**Deploy**~~ — **DONE 2026-08-03, verified.** Prod runs the merged `main`
+      (`/api/zone-rules` answers with JSON, which only exists in the new code); no commit touching
+      `src/` or `web/` postdates the deployment. `npm run smoke:prod` passes all five checks
+      through Access: gateway route 200, direct route 200, PII prompt correctly 403, and the four
+      read-only endpoints healthy.
+- [ ] Map the prod block-response JSON keys in the client (Open bug #4) — the edge now returns a
+      specific reason the UI throws away.
+- [ ] Replace the local `.env` `CF_AIG_TOKEN` so `wrangler dev` can exercise the gateway route
+      again (prod is fine — Open bug #1).
 
 **Then verify what is currently unproven**
 
