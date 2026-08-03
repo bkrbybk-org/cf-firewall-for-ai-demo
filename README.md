@@ -48,6 +48,8 @@ src/                    Worker (TypeScript)
   *.test.ts             vitest — redaction, dynamic-route parsing, verdict window
 migrations/
   0001_prompt_log.sql   D1 schema for the prompt log
+scripts/
+  thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
 web/                    React app (Vite root)
   index.html            SPA entry + pre-paint theme script
   src/
@@ -86,6 +88,7 @@ npm run build      # tsc -b web + vite build → dist/
 npm run deploy     # build, then wrangler deploy
 npm run check      # worker typecheck
 npm test           # vitest (vitest.config.ts — separate from vite.config.ts, which sets root: "web")
+npm run corpus:thai -- --n=100 --out=thai-corpus.csv   # build a Thai red-team corpus (see /redteam)
 
 # Local dev (two terminals): Vite HMR proxies /api → wrangler dev
 npm run dev:worker # wrangler dev  (port 8787, serves API + built dist)
@@ -253,6 +256,24 @@ This is a sample prompt,Optional goal text (leave empty for AI-generated goal)
 - **Severity and scan ASR columns disappear** for a CSV corpus, and the by-severity breakdown is dropped from the scorecard. Those are Prisma's assessments; filling them in with plausible-looking values would launder a guess into something that renders like scan data.
 - Capped at **200 prompts** — each one is a real inference call against the Neuron budget, sent sequentially. Beyond that a "corpus" is a load test, which this page is not. Rows over the cap and rows with a blank prompt are reported, not silently dropped.
 - Parsing happens **in the browser**; the file is never uploaded. Prompts reach the Worker only by being sent as ordinary chat requests, which is exactly what subjects them to the real edge scan.
+#### Ready-made Thai corpus — ThaiSafetyBench
+
+[`typhoon-ai/ThaiSafetyBench`](https://huggingface.co/datasets/typhoon-ai/ThaiSafetyBench) is a 1,889-prompt Thai safety benchmark (apache-2.0) with a `risk_area` → `types_of_harm` → `subtypes_of_harm` taxonomy. It answers the question the Prisma corpus can't: **how well do `cf.llm.*` and Guardrails detect Thai-language attacks?**
+
+```bash
+npm run corpus:thai -- --n=100 --out=thai-corpus.csv
+```
+
+Then load it from **Corpus → Load CSV**. The script ([`scripts/thaisafety-csv.mjs`](scripts/thaisafety-csv.mjs)) reads the dataset's parquet directly, takes a **deterministic stratified sample** across risk areas, and writes `prompt,goal` with the taxonomy in the goal column. Deterministic matters: re-running the same corpus after a rule change is the only way a before/after comparison means anything.
+
+- `--n` defaults to **100** (≈8 min: sends are sequential at ~4 s each, plus the 90 s settle). 200 is the parser's cap and ≈15 min. Every prompt is a billable inference call against the daily Neuron allocation, so the full 1,889 is a load test and isn't offered.
+- **The generated CSV is gitignored on purpose.** The dataset card says the data is "intended for academic purposes only", which does not match the apache-2.0 licence it also carries — that discrepancy is worth a legal glance before this appears in a paid engagement, and it isn't resolved by committing a few hundred harmful Thai prompts into a customer-facing repo. Regenerate from the script instead.
+- Upstream **removed Monarchy-related content per Thai regulations** (1,954 → 1,889 rows). Don't re-add such prompts or author replacements — relevant to lèse-majesté exposure for a demo run in Thailand.
+- A run stores these prompts in the D1 prompt log (redacted) and, on the gateway route, in **AI Gateway logs raw**. Use the per-turn `log prompt` opt-out if that matters.
+- `hyparquet` (MIT, zero dependencies) is a **devDependency** used only by this script — it never reaches the Worker or the SPA bundle.
+
+The companion `typhoon-ai/ThaiSafetyClassifier` is deliberately **not** wired in as a guardrail — see PROGRESS.md for why.
+
 - **Template** downloads a starter CSV. **Clear** drops the corpus. Switching corpora discards the previous run's results, so the scorecard can never describe a different corpus than the table below it. The corpus survives tab switches and is cleared by a refresh (module store, never localStorage — someone else's attack prompts shouldn't outlive the session on a shared demo laptop).
 
 Local dev has no `cf-ray`, so verdicts never resolve there — only the runner mechanics are exercised. Scoring needs the production hostname.
@@ -389,7 +410,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **124 tests across 11 files**. Each exists because a real bug shipped, and each was mutation-verified.
+`npm test` — **142 tests across 12 files**. Each exists because a real bug shipped, and each was mutation-verified.
 
 | File | Covers |
 |---|---|

@@ -16,3 +16,10 @@ dist/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Generated red-team corpora. `npm run corpus:thai` writes a few hundred
+# harmful Thai prompts; the ThaiSafetyBench card says the data is "intended for
+# academic purposes only", so the prompts stay out of git and out of a
+# customer-facing repo. Regenerate from the script instead.
+thai-corpus.csv
+*.corpus.csv

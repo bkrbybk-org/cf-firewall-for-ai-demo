@@ -115,6 +115,25 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   had fired them — the same misattribution class as the `denied` fix. `isLlmRule()` in `data.ts`
   matches `ZONE_RULES` by name with a `\bLLM\b` fallback (so a renamed rule degrades to "probably
   LLM" rather than silently dropping into "other"), and `EdgeTab` renders two labelled groups.
+- **ThaiSafetyBench is wired in as data, not as code.** `scripts/thaisafety-csv.mjs` converts the
+  1,889-prompt apache-2.0 Thai benchmark into the `prompt,goal` CSV the corpus feature already
+  reads — no application change, no runtime dependency, nothing leaving Cloudflare. The sample is
+  **deterministic** (id-ordered, even stride within each `risk_area`, largest-remainder allocation
+  so the parts sum exactly to `--n`): a random sample would make the before/after re-run that the
+  page exists for meaningless. Default `--n=100` because sends are sequential — 100 ≈ 8 min and 100
+  billable model calls; 200 is the parser cap; the full set is a load test.
+  **Generated CSV is gitignored**: the dataset card says "academic purposes only" while the licence
+  is apache-2.0, and that unresolved discrepancy is not something to settle by committing a few
+  hundred harmful Thai prompts to a customer-facing repo. Upstream removed Monarchy content per
+  Thai regulations (1,954 → 1,889) — do not re-add it.
+- **`typhoon-ai/ThaiSafetyClassifier` was evaluated and rejected as an inline guardrail** — recorded
+  so it is not re-proposed. It cannot run on Workers AI (fixed catalog, no custom model upload) or
+  inside the Worker (0.2B F32 ≈ 800 MB, and it ships safetensors only — no ONNX/GGUF). Reaching it
+  needs a paid HF Inference Endpoint behind an AI Gateway custom provider, which puts an app-layer
+  control *after* the edge and sends prompts off Cloudflare — both at odds with the demo's thesis
+  that detection happens at the edge before the model. It would also let `/redteam` assert model
+  compliance, which the page deliberately refuses to do without a judge. Revisit only as an
+  explicitly separate, separately-labelled column.
 - **The red-team corpus can be the operator's own CSV, in Prisma's upload shape.** `prompt,goal`
   header, parsed **in the browser** (`lib/attackCsv.ts` — quoted fields, embedded newlines, doubled
   quotes, BOM, CRLF; 200-prompt cap because each row is a real inference call sent sequentially).
@@ -281,7 +300,9 @@ web/src/
 ```
 
 New since the layout above was written: `src/promptlog.ts` (prompt-log query builder), `src/sse.ts`
-(Worker-side SSE reader), `web/src/hooks/useZoneRules.ts` (live zone rules + fallback).
+(Worker-side SSE reader), `web/src/hooks/useZoneRules.ts` (live zone rules + fallback),
+`web/src/lib/attackCsv.ts` + `customCorpus.ts` (custom CSV corpus), `scripts/thaisafety-csv.mjs`
+(ThaiSafetyBench → CSV; dev tooling, `hyparquet` devDependency, never bundled).
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
@@ -313,7 +334,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **124 across 11 files** (102 before the CSV corpus, 64 before the hygiene pass).
+**Tests** — `npm test`, **142 across 12 files** (124 before the Thai corpus, 102 before the CSV corpus).
 Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
 - `src/promptlog.test.ts` (17) — the prompt-log query builder. Offset reaching past the old 200-row
   ceiling, LIKE-wildcard escaping (searching `100%` used to match everything), and an `ORDER BY`
@@ -726,6 +747,12 @@ uncommitted.
       buildHistory, cost calc). The SSE line parser is now covered (`src/sse.test.ts`).
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
       (53 successful attacks) has no rule covering it at all.
+- [ ] **Run the ThaiSafetyBench corpus on prod** (`npm run corpus:thai`) — the point is which Thai
+      harm categories `cf.llm.*` and Guardrails miss. Local dev has no `cf-ray`, so only the
+      mechanics are exercised there. Then map the "reached" categories to new Custom Topics and
+      re-run the same deterministic corpus for the before/after.
+- [ ] Legal glance on ThaiSafetyBench's "academic purposes only" card note vs its apache-2.0
+      licence before the corpus appears in a paid engagement.
 - [ ] Compliance page: GRC reviewer to sanity-check subcategory titles + section descriptions before
       regulated-customer use.
 
