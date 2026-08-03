@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-08-01_
+_Last updated: 2026-08-03_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -623,16 +623,28 @@ uncommitted.
 
 **Blocking / high severity**
 
-1. **`CF_AIG_TOKEN` permission scope is unverified in prod, and now blocks the entire AI Gateway
-   route, not just Dynamic Routing.** Diagnosed this session: the real requirement is `AI Gateway -
-   Read`, `AI Gateway - Edit`, `Workers AI - Read` on a normal API token — our own prior docs/error
-   text said "AI Gateway Run", which isn't a real permission name, and pointed people toward the
-   gateway-scoped Authenticated-Gateway token instead, which this REST call rejects outright
-   (`{"code":10000,"message":"Authentication error"}` — reproduced against the live token this
-   session). Because the gateway route no longer has a binding fallback, **if this token is
-   mis-scoped, toggling to "AI Gateway" in prod fails on every single request**, not just Dynamic
-   Routes. Fix: recreate/re-scope the token with the three permissions above, `wrangler secret put
-   CF_AIG_TOKEN`, then retest a plain (non-Dynamic-Route) gateway send in prod.
+1. **`CF_AIG_TOKEN` is mis-scoped — CONFIRMED 2026-08-03, and it is now the one thing blocking the
+   deploy.** No longer a suspicion: a plain (non-Dynamic-Route) gateway send against the current
+   secret returns `{"code":10000,"message":"Authentication error"}`, reproduced on `wrangler dev`
+   with the same secret prod uses.
+
+   The real requirement is `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read` on a normal
+   API token. Our own earlier docs/error text said "AI Gateway Run", which is not a real permission
+   name, and pointed at the gateway-scoped Authenticated-Gateway token — which this REST endpoint
+   rejects with exactly the error above.
+
+   **Why this gates the deploy specifically.** Prod currently runs `a4f78d2`, where a plain gateway
+   call still used the `env.AI.run(..., {gateway})` binding and needed no token — so the gateway
+   route *works in prod today*. The REST migration (`14a71f6`) makes the token mandatory for every
+   gateway request. Deploying without fixing the token would convert a working customer-facing path
+   into a hard error: the route toggle, the purple Guardrails card, and gateway-routed red-team runs
+   all fail. The direct Workers AI route, edge verdicts, all three analytics tabs, the prompt log and
+   compliance are unaffected.
+
+   Fix (dashboard + one command, then retest):
+   1. Create an API token with the three permissions above (not the Authenticated Gateway "Run" token).
+   2. `npx wrangler secret put CF_AIG_TOKEN`
+   3. Retest a plain gateway send locally — it must return a reply, not `10000` — then deploy.
 2. **Zero Trust Access misconfiguration — root cause of a live "false block attribution" incident.**
    An Access `Bypass` policy intended to exempt `/api/chat` for an AI red-team service was scoped to
    the entire application (no path restriction) and used `Bypass`, which Cloudflare separately
@@ -716,8 +728,12 @@ uncommitted.
       for human logins. Re-verify the app still works for a normal browser session afterward.
 - [x] ~~Commit the chart rework~~ — done, `4f2079d` (signed fine non-interactively; gpg-agent had
       the passphrase cached from an earlier session).
-- [ ] Merge `feat/gateway-rest-and-red-team` into `main` and **redeploy** — prod is still running
-      `a4f78d2`, i.e. none of the last two sessions' work is live.
+- [x] ~~Merge `feat/gateway-rest-and-red-team` into `main`~~ — done 2026-08-03, fast-forward to
+      `b30da22` (8 commits). Repo has no remote, so nothing to push.
+- [ ] **Deploy — held deliberately.** `main` is merged, green (142 tests) and built, but the deploy
+      is blocked on Open bug #1: `CF_AIG_TOKEN` is confirmed mis-scoped, and shipping would break
+      the AI Gateway route that works in prod today. Fix the token, retest a plain gateway send,
+      then `npm run deploy`.
 
 **Then verify what is currently unproven**
 
