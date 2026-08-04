@@ -32,6 +32,24 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   `src/redact.ts`. **Opt-out per request**: a "log prompt" toggle sends `excludeFromLog: true`,
   which short-circuits the write before it happens — independent of AI Gateway's own request log.
   Optional — unbinding `DB` degrades the tab to a setup hint.
+- **`redact()`'s regexes are not a ReDoS risk — measured 2026-08-03, not assumed.** Two of them
+  (`iban` `src/redact.ts:27`, `card` `:29`) are nested quantifiers, the shape SonarQube flags as
+  `S5852` super-linear backtracking, and they run inside the Worker on **attacker-controlled prompt
+  text** — worth checking properly rather than reasoning about. Benchmarked by doubling input length
+  on inputs built to force maximal backtracking (long runs the pattern almost matches, ending in a
+  character that defeats the trailing `\b`):
+
+  | input | time |
+  |---|---|
+  | isolated `card` / `iban` patterns, 16k chars | < 0.1 ms, **×2.0 per doubling** (linear) |
+  | real `redact()`, all 7 rules, 200k chars | **4.55 ms**, linear |
+
+  Both repetitions are **bounded** (`{12,18}`, `{10,30}`), which caps alternatives per start
+  position at 7 and 21 — so worst case is O(n × k) with a small constant, not exponential. If Sonar
+  raises S5852 here, the correct disposition is **Safe**, citing this measurement; do not rewrite
+  the patterns for it. (Redaction also runs under `ctx.waitUntil`, off the response path, so even a
+  much larger constant would not delay a reply.) No timing regression test was added: at these
+  margins it would only contribute CI flakiness.
 - **Detection happens at the edge, not in app code.** AI Security scans the request body *before*
   the Worker runs; WAF custom rules block/log. The app generates traffic + reads back what the edge
   did via GraphQL Analytics. Fires only on the proxied zone hostname + `cf-llm`-labeled `/api/chat`.
