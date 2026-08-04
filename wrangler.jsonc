@@ -6,14 +6,19 @@
   "account_id": "daf82c7c231958777ed36e9c0b6d347a",
   "workers_dev": false,
   "routes": [{ "pattern": "cf-ai-waf-demo.nttlab.org", "custom_domain": true }],
+  // CF_ZONE_ID and CF_ACCOUNT_ID are deliberately NOT here — they are set as
+  // secrets instead:
+  //   npx wrangler secret put CF_ZONE_ID
+  //   npx wrangler secret put CF_ACCOUNT_ID
+  // They must stay out of `vars`: a name listed here is re-applied as plaintext
+  // on every deploy, and Cloudflare rejects a secret that shadows an existing
+  // var ("Binding name already in use", code 10053). For the same reason,
+  // `wrangler dev` no longer gets them from this file — they live in .env.
+  //
+  // Both still need CF_ANALYTICS_TOKEN, a secret with BOTH "Zone Analytics:
+  // Read" (this zone) AND "Account Analytics: Read" (this account):
+  //   npx wrangler secret put CF_ANALYTICS_TOKEN
   "vars": {
-    // Zone that hosts ai-demo.nttlab.org — used by GET /api/verdict.
-    // Account that owns the Workers AI usage — used by GET /api/neurons.
-    // Both need CF_ANALYTICS_TOKEN, a secret with BOTH "Zone Analytics: Read"
-    // (on this zone) AND "Account Analytics: Read" (on this account):
-    //   npx wrangler secret put CF_ANALYTICS_TOKEN
-    "CF_ZONE_ID": "6b1b2b6c349ba51e5ed8446c1b8c993d",
-    "CF_ACCOUNT_ID": "daf82c7c231958777ed36e9c0b6d347a",
     // AI Gateway name for /api/gateway/chat. "default" auto-creates on first use.
     "CF_AI_GATEWAY_ID": "cf-ai-sec-demo-gw-no-guardrail",
     // Second gateway with Guardrails ENABLED (create it in dashboard → AI →

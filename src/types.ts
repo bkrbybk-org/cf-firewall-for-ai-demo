@@ -10,9 +10,9 @@ export interface Env {
   // PII-redacted before they are written here.
   DB?: D1Database;
   // Optional: enables the live "edge verdict" lookup (GET /api/verdict).
-  CF_ZONE_ID?: string; // zone id, set as a plain var in wrangler.jsonc
+  CF_ZONE_ID?: string; // set as a SECRET (and in .env for wrangler dev)
   // Optional: enables the Neuron usage monitor (GET /api/neurons).
-  CF_ACCOUNT_ID?: string; // account id, set as a plain var in wrangler.jsonc
+  CF_ACCOUNT_ID?: string; // set as a SECRET (and in .env for wrangler dev)
   // API token used by both features above. Needs BOTH "Zone Analytics: Read"
   // (for /api/verdict) and "Account Analytics: Read" (for /api/neurons).
   CF_ANALYTICS_TOKEN?: string; // set as a secret

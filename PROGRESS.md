@@ -32,6 +32,25 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   `src/redact.ts`. **Opt-out per request**: a "log prompt" toggle sends `excludeFromLog: true`,
   which short-circuits the write before it happens — independent of AI Gateway's own request log.
   Optional — unbinding `DB` degrades the tab to a setup hint.
+- **`CF_ZONE_ID` and `CF_ACCOUNT_ID` are secrets, not vars (2026-08-04).** Requested deliberately.
+  Worth knowing what it does and does not buy: to the Worker there is no difference — Cloudflare's
+  docs say a secret *is* an environment variable, just hidden in the dashboard and Wrangler — so
+  `env.CF_ZONE_ID` is unchanged and no code moved. It does **not** make the values private: both are
+  still in `wrangler.jsonc` history, `README.md` and `PROGRESS.md`, and the account id must also
+  remain as the top-level `account_id` key, which Wrangler requires and which cannot be a secret.
+  They are identifiers, not credentials, and useless without a token.
+  Two operational facts learned the hard way:
+  - **You cannot convert in place.** Cloudflare rejects a secret that shadows an existing plaintext
+    var — `Binding name 'CF_ZONE_ID' already in use` (code `10053`). The order must be: remove from
+    `vars` → deploy → `secret put`. That leaves a short window where prod has neither, during which
+    `/api/verdict`, `/api/analytics`, `/api/neurons` report `configured:false` and the AI Gateway
+    route 501s. Chain the commands to keep it to seconds.
+  - **Each `secret put` deploys its own version, and rollout is gradual.** The smoke test run
+    immediately afterwards showed a genuinely confusing mix — `/api/neurons` green while the gateway
+    route claimed `CF_ACCOUNT_ID` was missing, both of which read the same value. That was version
+    propagation, not a fault; re-running ~45s later passed all five checks. Do not diagnose a fresh
+    deploy from the first smoke run.
+  - `wrangler dev` no longer reads them from config, so they now live in `.env` too.
 - **`redact()`'s regexes are not a ReDoS risk — measured 2026-08-03, not assumed.** Two of them
   (`iban` `src/redact.ts:27`, `card` `:29`) are nested quantifiers, the shape SonarQube flags as
   `S5852` super-linear backtracking, and they run inside the Worker on **attacker-controlled prompt

@@ -176,13 +176,20 @@ Three behaviours worth knowing:
 
 **Timing**: GraphQL ingests ~1–2 min behind. The live poller waits 60 s, then checks every 5 s up to ~190 s. Historical lookups are **one-shot** (`fetchVerdictOnce`) with a module-level per-ray cache, so re-expanding a row never re-fetches. `firewallEventsAdaptive` and `httpRequestsAdaptive` ingest independently and in no fixed order; the poller waits for both when a rule is expected rather than silently dropping scores.
 
-### Enable it (one secret)
+### Enable it (secrets)
 
-`CF_ZONE_ID` / `CF_ACCOUNT_ID` are already set in `wrangler.jsonc`. Add the analytics token:
+All three are **secrets**, not `wrangler.jsonc` vars:
 
 ```sh
+npx wrangler secret put CF_ZONE_ID
+npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put CF_ANALYTICS_TOKEN
 ```
+
+Two consequences of them being secrets rather than vars:
+
+- **Keep them out of `vars`.** A name listed there is re-applied as plaintext on every deploy, and Cloudflare refuses to create a secret that shadows an existing var — `Binding name 'CF_ZONE_ID' already in use` (code `10053`). To convert an existing var you must remove it from `vars`, deploy, *then* `secret put`; there is no in-place swap.
+- **`wrangler dev` needs them in `.env`** (gitignored), since it can no longer read them from the config file. Without that, every analytics/verdict/neuron endpoint reports `configured: false` locally while working fine in prod.
 
 Without it `/api/verdict` returns `{ "configured": false }` and the UI shows a hint — everything else keeps working.
 
