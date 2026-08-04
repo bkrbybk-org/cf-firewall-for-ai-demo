@@ -85,11 +85,17 @@ function SortHeader({
   const active = sortKey === col;
   const Icon = !active ? ArrowUpDown : sortDir === "asc" ? ArrowUp : ArrowDown;
   return (
-    <th scope="col" className={`px-2.5 py-1.5 font-semibold ${className}`}>
+    <th
+      scope="col"
+      // aria-sort belongs on the header cell per the ARIA spec — it is not a
+      // valid attribute on role=button, so putting it on the <button> below
+      // gave screen readers no sort state at all. Keep it here.
+      aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
+      className={`px-2.5 py-1.5 font-semibold ${className}`}
+    >
       <button
         type="button"
         onClick={() => onSort(col)}
-        aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
         // uppercase repeated here: preflight resets text-transform on <button>,
         // so without it these headers would not match the plain <th> ones.
         className={`inline-flex items-center gap-1 uppercase transition hover:text-text ${active ? "text-text" : ""}`}

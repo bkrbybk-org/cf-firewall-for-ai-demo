@@ -193,7 +193,10 @@ export function EventSeries({
         // Sized purely by CSS instead, with the viewBox tracking the measured
         // box so 1 unit stays 1 CSS px.
         className="block h-full w-full touch-none focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-        role="img"
+        // No role="img" here: this svg is focusable and takes key input to
+        // step through buckets, which conflicts with the non-interactive img
+        // role. aria-label alone (plus the aria-live region below for the
+        // hovered/selected bucket) already gives it an accessible name.
         tabIndex={0}
         aria-label={`${ariaLabel}. Use arrow keys to step through time buckets.`}
         onPointerMove={onMove}

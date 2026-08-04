@@ -1,3 +1,5 @@
+import { useId } from "react";
+
 // Tailwind's standard toggle-switch pattern (Tailwind Plus "Toggle" component,
 // reimplemented from scratch since the block's source is behind a paywall) —
 // a pill track with a sliding thumb, driven by plain state instead of
@@ -15,9 +17,18 @@ export function Switch({
   title?: string;
   disabled?: boolean;
 }) {
+  // <label htmlFor> forwards its click to the labelled control natively, so the
+  // label text stays a click target with no JS handler on it. That matters:
+  // the previous bare <span onClick> was mouse-only (Sonar S6848/S1082), and
+  // the obvious fix — role="button" + tabIndex + onKeyDown — would give every
+  // switch a SECOND tab stop, doubling the tab count on pages that stack six of
+  // them. A real label gives keyboard users one stop and screen readers a
+  // proper accessible name.
+  const id = useId();
   return (
     <span className={`inline-flex items-center gap-2 ${disabled ? "opacity-50" : ""}`} title={title}>
       <button
+        id={id}
         type="button"
         role="switch"
         aria-checked={checked}
@@ -34,7 +45,11 @@ export function Switch({
           }`}
         />
       </button>
-      {label && <span className="cursor-pointer text-[13px]" onClick={() => !disabled && onChange(!checked)}>{label}</span>}
+      {label && (
+        <label htmlFor={id} className="cursor-pointer text-[13px]">
+          {label}
+        </label>
+      )}
     </span>
   );
 }

@@ -92,7 +92,7 @@ export function BarList({
   const max = Math.max(1, scaleMax ?? 0, ...rows.map((r) => r.count));
   return (
     <div className="flex flex-col gap-2.5">
-      {rows.map((r, i) => {
+      {rows.map((r) => {
         const body = (
           <>
             <div className="mb-1 flex items-baseline gap-2 text-[12px]">
@@ -113,7 +113,10 @@ export function BarList({
         const title = r.hint ?? `${r.name}: ${r.count}`;
         return onPick ? (
           <button
-            key={i}
+            // r.name is the grouping key callers aggregate rows by (model,
+            // rule, topic, ...), so it's stable and unique within one list —
+            // unlike the array index, it survives reorders on refresh.
+            key={r.name}
             type="button"
             title={title}
             onClick={() => onPick({ name: r.name, count: r.count })}
@@ -122,7 +125,7 @@ export function BarList({
             {body}
           </button>
         ) : (
-          <div key={i} title={title}>
+          <div key={r.name} title={title}>
             {body}
           </div>
         );

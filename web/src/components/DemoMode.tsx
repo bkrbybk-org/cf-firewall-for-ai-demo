@@ -174,7 +174,11 @@ export function DemoMode({
             {DEMO_SCRIPT.map((step, i) => {
               const s = steps[i];
               return (
-                <div key={i} className="flex items-start gap-2.5 rounded-xl px-2 py-2">
+                // step.label is unique across DEMO_SCRIPT and stays attached to
+                // the same step as it progresses through phases, unlike the
+                // array index which would be fine here anyway since the list
+                // never reorders — kept for consistency with the state array.
+                <div key={step.label} className="flex items-start gap-2.5 rounded-xl px-2 py-2">
                   <div className="mt-0.5">
                     <StepIcon s={s} />
                   </div>

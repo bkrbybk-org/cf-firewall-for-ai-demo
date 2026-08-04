@@ -1,8 +1,7 @@
 // Security analytics dashboard shell: shared range picker, per-tab filters, and
 // the fetch/refresh cycle. The tabs themselves live in components/analytics/.
 import { useCallback, useEffect, useState } from "react";
-import { CalendarClock, Crosshair, X } from "lucide-react";
-import { RefreshCw } from "lucide-react";
+import { CalendarClock, Crosshair, RefreshCw, X } from "lucide-react";
 import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";

@@ -95,6 +95,7 @@ export function AttackLibrary({
               {presets.map((p) => (
                 <button
                   key={p.label + p.prompt}
+                  type="button"
                   onClick={() => onPick(p.prompt)}
                   className="rounded-lg border border-line bg-surface px-2.5 py-2 text-left text-[12.5px] leading-snug transition hover:border-accent hover:bg-surface-hover active:scale-[.985]"
                 >

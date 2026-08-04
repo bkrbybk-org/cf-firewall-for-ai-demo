@@ -177,9 +177,13 @@ async function main() {
 }
 
 // Only run when invoked directly, so the helpers above can be imported by tests.
+// Top-level await (this is ESM .mjs) in place of a trailing .catch() chain —
+// same error handling and non-zero exit, just without the promise chain.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err) => {
+  try {
+    await main();
+  } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
-  });
+  }
 }

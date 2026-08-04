@@ -39,8 +39,13 @@ fi
 AUTH=(-H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}")
 JSON=(-H 'content-type: application/json')
 FAIL=0
+# Shared curl -w format, used by every check below — one place to change it.
+readonly HTTP_CODE_FMT='%{http_code}'
 
-hr() { printf '%s\n' "────────────────────────────────────────────────────────"; }
+hr() {
+  printf '%s\n' "────────────────────────────────────────────────────────"
+  return 0
+}
 
 # Prints PASS/FAIL and the first bytes of the body, so a redirect-to-login or an
 # upstream auth error is visible rather than being swallowed by a 200.
@@ -54,6 +59,7 @@ check() {
   fi
   head -c 220 "$file" 2>/dev/null | tr -d '\n' | sed 's/^/      /'
   echo
+  return 0
 }
 
 hr
@@ -63,7 +69,7 @@ hr
 # 1. Access itself. A 302 here means the service token was not accepted (usually
 #    no Service Auth policy admits it), and nothing below can be trusted.
 echo "[1] Access + static app"
-CODE=$(curl -s -o /tmp/smoke1.txt -w '%{http_code}' "${AUTH[@]}" "$BASE/api/models" --max-time 25)
+CODE=$(curl -s -o /tmp/smoke1.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "$BASE/api/models" --max-time 25)
 check "GET /api/models" 200 /tmp/smoke1.txt "$CODE"
 if [[ "$CODE" == "302" ]]; then
   echo
@@ -75,7 +81,7 @@ fi
 # 2. Direct Workers AI route — the default path, no CF_AIG_TOKEN involved.
 echo
 echo "[2] Direct Workers AI route"
-CODE=$(curl -s -o /tmp/smoke2.txt -w '%{http_code}' "${AUTH[@]}" "${JSON[@]}" \
+CODE=$(curl -s -o /tmp/smoke2.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
   -d '{"prompt":"Reply with the single word OK.","stream":false,"excludeFromLog":true}' --max-time 60)
 check "POST /api/chat (direct)" 200 /tmp/smoke2.txt "$CODE"
@@ -84,7 +90,7 @@ check "POST /api/chat (direct)" 200 /tmp/smoke2.txt "$CODE"
 #    token surfaces as {"code":10000,"message":"Authentication error"}.
 echo
 echo "[3] AI Gateway route (exercises CF_AIG_TOKEN)"
-CODE=$(curl -s -o /tmp/smoke3.txt -w '%{http_code}' "${AUTH[@]}" "${JSON[@]}" \
+CODE=$(curl -s -o /tmp/smoke3.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
   -d '{"prompt":"Reply with the single word OK.","gateway":true,"stream":false,"excludeFromLog":true}' --max-time 60)
 check "POST /api/chat (gateway)" 200 /tmp/smoke3.txt "$CODE"
@@ -99,7 +105,7 @@ fi
 #    let PII through, which is the demo's whole claim failing.
 echo
 echo "[4] Edge WAF still blocks PII (403 expected)"
-CODE=$(curl -s -o /tmp/smoke4.txt -w '%{http_code}' "${AUTH[@]}" "${JSON[@]}" \
+CODE=$(curl -s -o /tmp/smoke4.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
   -d '{"prompt":"my credit card is 4111 1111 1111 1111","stream":false,"excludeFromLog":true}' --max-time 60)
 check "POST /api/chat (PII → blocked)" 403 /tmp/smoke4.txt "$CODE"
@@ -108,7 +114,7 @@ check "POST /api/chat (PII → blocked)" 403 /tmp/smoke4.txt "$CODE"
 echo
 echo "[5] Read-only endpoints"
 for path in "/api/neurons" "/api/analytics?hours=1" "/api/zone-rules" "/api/prompt-log?limit=1"; do
-  CODE=$(curl -s -o /tmp/smoke5.txt -w '%{http_code}' "${AUTH[@]}" "$BASE$path" --max-time 30)
+  CODE=$(curl -s -o /tmp/smoke5.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "$BASE$path" --max-time 30)
   check "GET $path" 200 /tmp/smoke5.txt "$CODE"
 done
 

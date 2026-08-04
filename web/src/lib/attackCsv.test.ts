@@ -69,7 +69,7 @@ describe("parseAttackCsv", () => {
   it("parses its own template", () => {
     const r = parseAttackCsv(CSV_TEMPLATE);
     expect(r.error).toBeUndefined();
-    expect(r.attacks.length).toBe(3);
+    expect(r.attacks).toHaveLength(3);
   });
 
   it("treats an empty goal as absent rather than an empty string", () => {
