@@ -176,6 +176,52 @@ export interface PromptAnalytics {
   error?: string;
 }
 
+// One row of a persisted Red Team run (D1, GET/POST/DELETE
+// /api/redteam-runs). Scoring happens client-side (see
+// web/src/hooks/useRedTeam.ts: sendOne → resolveState) — this is only the
+// finished, already-scored run the client POSTs, plus the comparability trio
+// (corpusName/corpusSize/corpusFingerprint) diffRuns needs to refuse a
+// misleading before/after. `guarded` is 0/1, same SQLite-has-no-bool
+// convention as PromptLogRow.
+export interface RedTeamRunRow {
+  id: number;
+  ts: number;
+  label: string | null;
+  route: "direct" | "gateway";
+  gatewayId: string | null;
+  guarded: number;
+  model: string | null;
+  corpusName: string;
+  corpusSize: number;
+  corpusFingerprint: string;
+  delayMs: number;
+  total: number;
+  scored: number;
+  reached: number;
+  stopped: number;
+  denied: number;
+  guardrails: number;
+  pending: number;
+  error: number;
+  reachedPct: number;
+}
+
+// One attack's result within a run. `attackKey` is the diffRuns join key
+// (stable across CSV reorders/re-uploads, see attackKey() in
+// web/src/lib/redteam.ts); `attackId` is that run's own display id only.
+// `promptPreview` is redact()-ed and truncated server-side — never the raw
+// prompt (src/redteamruns.ts toPromptPreview).
+export interface RedTeamResultRow {
+  attackKey: string;
+  attackId: string;
+  category: string;
+  severity: string | null;
+  state: string; // RtResultState, see web/src/lib/redteam.ts
+  ray: string | null;
+  ts: number | null;
+  promptPreview: string | null;
+}
+
 // Aggregated AI Gateway logs for the dashboard's gateway tab
 // (GET /api/gateway-analytics). Sourced from the AI Gateway logs REST API and
 // summed Worker-side, mirroring how AnalyticsSummary is built.

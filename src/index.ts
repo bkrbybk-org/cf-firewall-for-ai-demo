@@ -8,6 +8,7 @@ import {
   handleNeurons,
   handlePromptAnalytics,
   handlePromptLog,
+  handleRedTeamRuns,
   handleVerdict,
   handleZoneRules,
 } from "./handlers";
@@ -34,6 +35,8 @@ export default {
         return handlePromptLog(request, url, env);
       case "/api/prompt-analytics":
         return handlePromptAnalytics(url, env);
+      case "/api/redteam-runs":
+        return handleRedTeamRuns(request, url, env);
       case "/api/chat":
         // ctx lets the prompt-log write run without blocking the reply.
         return handleChat(request, env, ctx);

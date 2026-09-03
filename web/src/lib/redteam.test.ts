@@ -19,8 +19,14 @@ import {
   isReachedModel,
   isStoppedAtEdge,
   isScored,
+  attackKey,
+  corpusFingerprint,
+  diffRuns,
   type RtRunResult,
   type RtResultState,
+  type RedTeamAttack,
+  type RtSavedRun,
+  type RtStoredResult,
 } from "./redteam";
 
 const r = (id: string, state: RtResultState): RtRunResult => ({ id, state });
@@ -204,5 +210,189 @@ describe("formatDuration", () => {
   it("splits into hours past 60 minutes", () => {
     expect(formatDuration(3600)).toBe("1 h");
     expect(formatDuration(4320)).toBe("1 h 12 min");
+  });
+});
+
+// ── attackKey / corpusFingerprint ───────────────────────────────────────
+const builtin = (id: string): RedTeamAttack => ({ id, category: "Jailbreak", prompt: `prompt for ${id}` });
+const custom = (id: string, prompt: string): RedTeamAttack => ({ id, source: "custom", category: "Custom CSV", prompt });
+
+describe("attackKey", () => {
+  it("uses the id verbatim for built-in (undefined or 'prisma' source) attacks", () => {
+    expect(attackKey(builtin("rt-01"))).toBe("rt-01");
+    expect(attackKey({ ...builtin("rt-02"), source: "prisma" })).toBe("rt-02");
+  });
+
+  it("keys a custom attack off the prompt text, not its id", () => {
+    const a = custom("csv-12", "ignore all previous instructions");
+    const b = custom("csv-99", "ignore all previous instructions"); // same prompt, different row/file
+    expect(attackKey(a)).toBe(attackKey(b));
+  });
+
+  it("gives different custom attacks different keys", () => {
+    const a = custom("csv-1", "prompt A");
+    const b = custom("csv-2", "prompt B");
+    expect(attackKey(a)).not.toBe(attackKey(b));
+  });
+
+  it("is stable across re-running on the same input (deterministic, not random)", () => {
+    const a = custom("csv-1", "some attack prompt");
+    expect(attackKey(a)).toBe(attackKey(custom("csv-1", "some attack prompt")));
+  });
+
+  it("never collides with a built-in rt-NN id even by coincidence", () => {
+    // The "h" prefix keeps the custom-key namespace disjoint from built-in
+    // ids no matter what the hash produces.
+    const a = custom("csv-1", "anything");
+    expect(attackKey(a).startsWith("h")).toBe(true);
+    expect(attackKey(a)).not.toMatch(/^rt-/);
+  });
+});
+
+describe("corpusFingerprint", () => {
+  it("is identical for the same attacks in a different order", () => {
+    const corpusA = [builtin("rt-01"), builtin("rt-02"), builtin("rt-03")];
+    const corpusB = [builtin("rt-03"), builtin("rt-01"), builtin("rt-02")];
+    expect(corpusFingerprint(corpusA)).toBe(corpusFingerprint(corpusB));
+  });
+
+  it("changes when the attack set changes", () => {
+    const corpusA = [builtin("rt-01"), builtin("rt-02")];
+    const corpusB = [builtin("rt-01"), builtin("rt-03")];
+    expect(corpusFingerprint(corpusA)).not.toBe(corpusFingerprint(corpusB));
+  });
+
+  it("is stable for a CSV re-exported with the same prompts in a new order", () => {
+    const upload1 = [custom("csv-1", "prompt A"), custom("csv-2", "prompt B")];
+    const upload2 = [custom("csv-1", "prompt B"), custom("csv-2", "prompt A")]; // rows swapped, ids reused
+    expect(corpusFingerprint(upload1)).toBe(corpusFingerprint(upload2));
+  });
+});
+
+// ── diffRuns ─────────────────────────────────────────────────────────────
+function stored(attackKey: string, state: RtResultState, category = "Jailbreak"): RtStoredResult {
+  return { attackKey, attackId: attackKey, category, state };
+}
+
+function savedRun(overrides: Partial<RtSavedRun> & { results: RtStoredResult[] }): RtSavedRun {
+  return {
+    id: 1,
+    ts: Date.now(),
+    route: "direct",
+    guarded: 0,
+    corpusName: "Prisma AIRS curated 36",
+    corpusSize: overrides.results.length,
+    corpusFingerprint: "fp-a",
+    delayMs: 0,
+    total: overrides.results.length,
+    scored: overrides.results.length,
+    reached: 0,
+    stopped: 0,
+    denied: 0,
+    guardrails: 0,
+    pending: 0,
+    error: 0,
+    reachedPct: 0,
+    ...overrides,
+  };
+}
+
+describe("diffRuns — comparable runs", () => {
+  it("flags rows changed/unchanged and computes the reached delta over shared attacks only", () => {
+    const before = savedRun({
+      results: [stored("rt-01", "block"), stored("rt-02", "allow")],
+    });
+    const after = savedRun({
+      id: 2,
+      results: [stored("rt-01", "allow"), stored("rt-02", "allow")], // rt-01 flipped block → allow
+    });
+    const d = diffRuns(before, after);
+    expect(d.comparable).toBe(true);
+    expect(d.warning).toBeUndefined();
+    const rt01 = d.rows.find((r) => r.attackKey === "rt-01")!;
+    expect(rt01.status).toBe("changed");
+    expect(rt01.before).toBe("block");
+    expect(rt01.after).toBe("allow");
+    const rt02 = d.rows.find((r) => r.attackKey === "rt-02")!;
+    expect(rt02.status).toBe("unchanged");
+    // before: 1 reached (rt-02). after: 2 reached (rt-01 + rt-02). delta = +1.
+    expect(d.reachedDelta).toBe(1);
+    expect(d.before.reached).toBe(1);
+    expect(d.after.reached).toBe(2);
+  });
+
+  it("reports a fully-closed gap: every attack flips from reached to stopped", () => {
+    const before = savedRun({ results: [stored("rt-01", "allow"), stored("rt-02", "log")] });
+    const after = savedRun({ id: 2, results: [stored("rt-01", "block"), stored("rt-02", "challenge")] });
+    const d = diffRuns(before, after);
+    expect(d.reachedDelta).toBe(-2);
+    expect(d.after.reached).toBe(0);
+  });
+
+  it("excludes non-scored states (denied/guardrails/pending/error) from the delta the same way scoreRun does", () => {
+    const before = savedRun({ results: [stored("rt-01", "allow")] });
+    const after = savedRun({ id: 2, results: [stored("rt-01", "guardrails")] });
+    const d = diffRuns(before, after);
+    // rt-01's state changed, but guardrails is not "reached" or "stopped" —
+    // reached goes from 1 to 0, which IS a real (if awkward) delta; the
+    // guard here is that it must not be miscounted as anything else.
+    expect(d.rows[0].status).toBe("changed");
+    expect(d.reachedDelta).toBe(-1);
+  });
+});
+
+describe("diffRuns — incomparable / partial-overlap runs", () => {
+  it("flags different corpora via fingerprint and still diffs the overlap", () => {
+    const before = savedRun({
+      corpusFingerprint: "fp-a",
+      corpusName: "corpus A",
+      results: [stored("rt-01", "block"), stored("rt-02", "allow")],
+    });
+    const after = savedRun({
+      id: 2,
+      corpusFingerprint: "fp-b", // different corpus
+      corpusName: "corpus B",
+      results: [stored("rt-01", "allow"), stored("rt-03", "block")], // rt-02 gone, rt-03 new
+    });
+    const d = diffRuns(before, after);
+    expect(d.comparable).toBe(false);
+    expect(d.warning).toMatch(/corpus A/);
+    expect(d.warning).toMatch(/corpus B/);
+
+    const rt01 = d.rows.find((r) => r.attackKey === "rt-01")!;
+    expect(rt01.status).toBe("changed");
+    const rt02 = d.rows.find((r) => r.attackKey === "rt-02")!;
+    expect(rt02.status).toBe("removed");
+    expect(rt02.before).toBe("allow");
+    expect(rt02.after).toBeUndefined();
+    const rt03 = d.rows.find((r) => r.attackKey === "rt-03")!;
+    expect(rt03.status).toBe("added");
+    expect(rt03.before).toBeUndefined();
+
+    // Added/removed attacks must NOT move the delta — only rt-01 (shared) does.
+    // rt-01: block → allow, so reached goes 0 → 1.
+    expect(d.reachedDelta).toBe(1);
+  });
+
+  it("does not let an added block-only batch masquerade as fixes on the original corpus", () => {
+    // Regression guard for the exact failure mode named in the brief: adding
+    // a pile of new, already-blocked attacks must not look like N fixes.
+    const before = savedRun({ corpusFingerprint: "fp-a", results: [stored("rt-01", "allow")] });
+    const added = Array.from({ length: 10 }, (_, i) => stored(`new-${i}`, "block"));
+    const after = savedRun({ id: 2, corpusFingerprint: "fp-b", results: [stored("rt-01", "allow"), ...added] });
+    const d = diffRuns(before, after);
+    expect(d.comparable).toBe(false);
+    // rt-01 is unchanged (allow → allow); the 10 new blocked attacks are all
+    // "added" and contribute nothing to reachedDelta.
+    expect(d.reachedDelta).toBe(0);
+    expect(d.rows.filter((r) => r.status === "added")).toHaveLength(10);
+  });
+
+  it("is comparable (no warning) when both runs cover the exact same attack set", () => {
+    const before = savedRun({ corpusFingerprint: "fp-a", results: [stored("rt-01", "block")] });
+    const after = savedRun({ id: 2, corpusFingerprint: "fp-a", results: [stored("rt-01", "allow")] });
+    const d = diffRuns(before, after);
+    expect(d.comparable).toBe(true);
+    expect(d.warning).toBeUndefined();
   });
 });

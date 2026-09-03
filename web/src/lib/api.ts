@@ -9,6 +9,10 @@ import type {
   Neurons,
   PromptAnalytics,
   PromptLog,
+  RedTeamRunDeleteResult,
+  RedTeamRunDetail,
+  RedTeamRunSaveResult,
+  RedTeamRunsList,
   Usage,
   Verdict,
   ZoneRules,
@@ -112,6 +116,95 @@ export async function getPromptAnalytics(window: TimeWindow = {}): Promise<Promp
 
 export async function clearPromptLog(): Promise<{ cleared?: boolean; error?: string }> {
   const r = await fetch("/api/prompt-log", { method: "DELETE" });
+  return r.json();
+}
+
+// ── Red Team run persistence ────────────────────────────────────────────
+// The Worker never scores anything here — a Red Team run is scored entirely
+// client-side (web/src/hooks/useRedTeam.ts). This is only the save/list/
+// fetch/delete surface for a run that has ALREADY finished, so "before" and
+// "after" survive a reload and can be diffed (web/src/lib/redteam.ts:
+// diffRuns). See src/redteamruns.ts for the server-side validation this body
+// is checked against — every cap named there (500 attacks, string lengths,
+// the RtResultState union) is enforced server-side regardless of what this
+// client sends.
+
+// One result as POSTed. `prompt` is the attack's full text, sent whole
+// rather than pre-truncated by the client: the Worker redacts it
+// (src/redact.ts) and truncates it to a preview server-side, the same way
+// prompt_log redacts server-side rather than trusting the caller to have
+// already done it. A custom CSV can contain anything a user pasted, so this
+// is not optional.
+export interface RedTeamResultInput {
+  attackKey: string; // attackKey(attack) — the diffRuns join key, see ./redteam
+  attackId: string; // display id only, e.g. "rt-01" / "csv-12"
+  category: string;
+  severity?: string | null;
+  state: string; // RtResultState
+  ray?: string | null;
+  ts?: number | null;
+  prompt: string;
+}
+
+export interface RedTeamRunSaveRequest {
+  ts?: number; // epoch ms; server defaults to Date.now() if omitted
+  label?: string | null;
+  route: "direct" | "gateway";
+  gatewayId?: string | null;
+  guarded?: boolean;
+  model?: string | null;
+  corpusName: string;
+  corpusSize: number; // the corpus the run was fired against — may exceed results.length on a stopped run
+  corpusFingerprint: string; // corpusFingerprint(corpus), see ./redteam
+  delayMs?: number;
+  // The RtScore totals (web/src/lib/redteam.ts: scoreRun) computed client-side
+  // over `results`. The server trusts and clamps these rather than
+  // re-deriving them — see the comment in src/redteamruns.ts for why
+  // recomputing them Worker-side would be scoring server-side, which the
+  // brief this endpoint was built against explicitly rules out.
+  total: number;
+  scored: number;
+  reached: number;
+  stopped: number;
+  denied: number;
+  guardrails: number;
+  pending: number;
+  error: number;
+  reachedPct: number;
+  results: RedTeamResultInput[];
+}
+
+// POST /api/redteam-runs. 201 + { id } on success; { error } (400) if the
+// server's validation rejected the body — e.g. an empty/oversized results
+// array or a `state` outside the RtResultState union.
+export async function saveRedTeamRun(run: RedTeamRunSaveRequest): Promise<RedTeamRunSaveResult> {
+  const r = await fetch("/api/redteam-runs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(run),
+  });
+  return r.json();
+}
+
+// GET /api/redteam-runs — every saved run's metadata (id, corpus info, RtScore
+// totals), newest first. No results — fetch a run's results with
+// getRedTeamRun below when the operator actually opens it.
+export async function listRedTeamRuns(): Promise<RedTeamRunsList> {
+  const r = await fetch("/api/redteam-runs");
+  return r.json();
+}
+
+// GET /api/redteam-runs?id= — one run plus its full per-attack results.
+// `run: null` (404) when the id doesn't exist, e.g. it was pruned by the
+// server-side 50-run cap or already deleted.
+export async function getRedTeamRun(id: number): Promise<RedTeamRunDetail> {
+  const r = await fetch("/api/redteam-runs?id=" + encodeURIComponent(String(id)));
+  return r.json();
+}
+
+// DELETE /api/redteam-runs?id= — removes the run and its results.
+export async function deleteRedTeamRun(id: number): Promise<RedTeamRunDeleteResult> {
+  const r = await fetch("/api/redteam-runs?id=" + encodeURIComponent(String(id)), { method: "DELETE" });
   return r.json();
 }
 

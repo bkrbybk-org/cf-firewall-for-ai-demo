@@ -584,3 +584,195 @@ export function bySeverity(corpus: RedTeamAttack[], results: Map<string, RtRunRe
     (a, b) => SEVERITY_RANK[a.key as RtSeverity] - SEVERITY_RANK[b.key as RtSeverity],
   );
 }
+
+// ── Persistence: attackKey, corpus fingerprint, run diffing ────────────────
+// Everything below exists for one reason: PROGRESS.md's own framing of the
+// point of this feature — "add the Self-criticism custom topic and re-run to
+// prove the gap closed. That before/after is the entire point." Results only
+// live in React state today, so "before" is gone the moment you reload to
+// pick up a WAF config change. This section is the pure, testable half of
+// fixing that (the storage and wiring live in src/redteamruns.ts,
+// src/handlers.ts and web/src/lib/api.ts).
+
+// FNV-1a, 32-bit. Chosen over WebCrypto's subtle.digest deliberately: that API
+// is async-only in the browser (no sync digest), which would force attackKey
+// — called from array maps, Set builders, and sort comparators throughout
+// this file and its callers — to become async and ripple that outward. There
+// is no security property to buy here: this hash only needs to distinguish
+// prompts within one operator's corpus, not resist a deliberate collision
+// attempt, so a small sync non-crypto hash is the right tool, not a
+// compromise.
+function fnv1a(s: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+// The join key `diffRuns` compares two runs on. Built-in corpus attacks keep
+// their existing stable `id` ("rt-01") unchanged. Custom (CSV) attacks do
+// NOT reuse `id`: there it means "row 12 of whatever file was last
+// uploaded" — two different CSVs both have a "csv-12", and re-exporting the
+// same CSV with rows in a different order silently renumbers every id. Two
+// runs joined on that would compare unrelated prompts and report bogus
+// flips. Hashing the PROMPT TEXT instead means the same prompt gets the same
+// key regardless of which file, upload, or row it arrived as — which is
+// exactly the stability diffRuns needs across a "before" and "after" upload.
+// The "h" prefix keeps a custom key out of the built-in id space even in the
+// (astronomically unlikely) case an 8-hex-digit hash collided with "rt-NN".
+export function attackKey(a: RedTeamAttack): string {
+  if (a.source == null || a.source === "prisma") return a.id;
+  return "h" + fnv1a(a.prompt);
+}
+
+// Fingerprint over an attack SET: the hash of its sorted attackKeys, joined.
+// Sorting first makes the fingerprint independent of row/upload order — two
+// CSVs holding the same prompts in a different order, or the same file
+// re-exported, must fingerprint identically, or a harmless re-export would
+// read as "a different corpus" the next time a run is saved. This is what
+// `diffRuns` actually compares two runs' comparability on (corpusName/
+// corpusSize are carried alongside only for the human-readable half of the
+// warning message).
+export function corpusFingerprint(attacks: RedTeamAttack[]): string {
+  const keys = attacks.map(attackKey).sort();
+  return fnv1a(keys.join("\n"));
+}
+
+// One persisted attack result — what a saved run's `results` array holds.
+// Carries `attackKey` (the join key) alongside the run's own `attackId` for
+// display; diffRuns must only ever key off the former. `promptPreview` is
+// redact()-ed and truncated server-side (src/redteamruns.ts) before storage.
+export interface RtStoredResult {
+  attackKey: string;
+  attackId: string;
+  category: string;
+  severity?: RtSeverity | null;
+  state: RtResultState;
+  ray?: string | null;
+  ts?: number | null;
+  promptPreview?: string | null;
+}
+
+// A saved run's metadata — everything GET /api/redteam-runs (list) returns
+// per row, and the shape POST /api/redteam-runs expects for the run-level
+// fields. Extends RtScore directly rather than nesting it: the server stores
+// (and the list endpoint returns) these as flat columns, and nesting here
+// would just mean unwrapping it again in every caller.
+export interface RtRunSummary extends RtScore {
+  id: number;
+  ts: number;
+  label?: string | null;
+  route: "direct" | "gateway";
+  gatewayId?: string | null;
+  guarded: number; // 0/1, matching the prompt_log convention (SQLite has no bool)
+  model?: string | null;
+  corpusName: string;
+  corpusSize: number;
+  corpusFingerprint: string;
+  delayMs: number;
+}
+
+// A saved run plus its per-attack results — what GET /api/redteam-runs?id=
+// returns, and what `diffRuns` takes as both of its arguments.
+export interface RtSavedRun extends RtRunSummary {
+  results: RtStoredResult[];
+}
+
+export type RtDiffStatus = "changed" | "unchanged" | "added" | "removed";
+
+export interface RtDiffRow {
+  attackKey: string;
+  category: string;
+  severity?: RtSeverity | null;
+  status: RtDiffStatus;
+  before?: RtResultState; // absent when status === "added"
+  after?: RtResultState; // absent when status === "removed"
+}
+
+export interface RtRunDiff {
+  // False whenever the two runs are not a clean apples-to-apples pair —
+  // different corpus fingerprint, or (defensively) a mismatch the fingerprint
+  // should have already ruled out. Always check this before reading
+  // reachedDelta as "the gap closed": a false here means the number below is
+  // computed over a partial overlap, not the full corpus either run claims.
+  comparable: boolean;
+  warning?: string;
+  rows: RtDiffRow[];
+  // after.reached − before.reached, computed ONLY over attacks present in
+  // BOTH runs (the "changed"/"unchanged" rows). This is the number the
+  // customer-facing "we closed the gap" claim rests on, so it must never be
+  // inflated by attacks that only exist in one run.
+  reachedDelta: number;
+  before: RtScore; // recomputed over the shared subset — NOT the run's own stored totals
+  after: RtScore;
+}
+
+// Pure, and thoroughly unit-tested (see redteam.test.ts): this is the
+// function the customer-facing "we closed the gap" claim ultimately rests
+// on, so it must not be able to overstate a result. Two failure modes it
+// specifically guards against:
+//   1. Comparing runs from different corpora and reporting a delta as if it
+//      were a regression/fix on the same attacks (comparable/warning).
+//   2. Letting attacks that only exist in one run (added/removed) shift
+//      reachedDelta — an "after" run with 10 new blocked attacks added must
+//      not look like 10 fixes on the ORIGINAL corpus.
+export function diffRuns(before: RtSavedRun, after: RtSavedRun): RtRunDiff {
+  const beforeByKey = new Map(before.results.map((r) => [r.attackKey, r]));
+  const afterByKey = new Map(after.results.map((r) => [r.attackKey, r]));
+  const allKeys = new Set<string>([...beforeByKey.keys(), ...afterByKey.keys()]);
+
+  const rows: RtDiffRow[] = [];
+  for (const key of allKeys) {
+    const b = beforeByKey.get(key);
+    const a = afterByKey.get(key);
+    if (b && a) {
+      rows.push({
+        attackKey: key,
+        category: a.category,
+        severity: a.severity,
+        status: b.state === a.state ? "unchanged" : "changed",
+        before: b.state,
+        after: a.state,
+      });
+    } else if (a) {
+      rows.push({ attackKey: key, category: a.category, severity: a.severity, status: "added", after: a.state });
+    } else if (b) {
+      rows.push({ attackKey: key, category: b.category, severity: b.severity, status: "removed", before: b.state });
+    }
+  }
+
+  // Score deltas over the INTERSECTION only (changed + unchanged) — see the
+  // function comment. `id` here is just scoreRun's row identity, not
+  // meaningful outside this call.
+  const shared = rows.filter((r): r is RtDiffRow & { before: RtResultState; after: RtResultState } =>
+    r.status === "changed" || r.status === "unchanged",
+  );
+  const beforeScore = scoreRun(shared.map((r) => ({ id: r.attackKey, state: r.before })));
+  const afterScore = scoreRun(shared.map((r) => ({ id: r.attackKey, state: r.after })));
+
+  const comparable = before.corpusFingerprint === after.corpusFingerprint;
+  let warning: string | undefined;
+  if (!comparable) {
+    warning =
+      `Different corpora: "${before.corpusName}" (${before.corpusSize} attacks) vs ` +
+      `"${after.corpusName}" (${after.corpusSize} attacks) — comparing only the ` +
+      `${shared.length} attack(s) present in both runs.`;
+  } else if (rows.some((r) => r.status === "added" || r.status === "removed")) {
+    // Should be unreachable when the fingerprints match (the fingerprint IS
+    // the hash of the sorted key set) — guarded anyway rather than trusting
+    // that invariant silently, since this is exactly the function a bug here
+    // must not fail open in.
+    warning = "Matching corpus fingerprints, but the attack sets differ — treat this diff with caution.";
+  }
+
+  return {
+    comparable,
+    warning,
+    rows,
+    reachedDelta: afterScore.reached - beforeScore.reached,
+    before: beforeScore,
+    after: afterScore,
+  };
+}

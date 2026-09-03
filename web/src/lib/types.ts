@@ -207,6 +207,74 @@ export interface PromptAnalytics {
   error?: string;
 }
 
+// GET/POST/DELETE /api/redteam-runs — persisted Red Team runs (D1), hand-
+// mirrored from src/types.ts's RedTeamRunRow/RedTeamResultRow. These are the
+// raw wire shapes the Worker returns; the domain types callers actually work
+// with (RtRunSummary, RtSavedRun, RtStoredResult) and diffRuns() itself live
+// in ./redteam — this file's RedTeamRunRow/RedTeamResultRow are structurally
+// identical to those, kept as separate named types only so this file stays
+// consistent with how every other endpoint here mirrors its Worker-side row
+// shape (see PromptLogRow above).
+export interface RedTeamRunRow {
+  id: number;
+  ts: number;
+  label: string | null;
+  route: "direct" | "gateway";
+  gatewayId: string | null;
+  guarded: number;
+  model: string | null;
+  corpusName: string;
+  corpusSize: number;
+  corpusFingerprint: string;
+  delayMs: number;
+  total: number;
+  scored: number;
+  reached: number;
+  stopped: number;
+  denied: number;
+  guardrails: number;
+  pending: number;
+  error: number;
+  reachedPct: number;
+}
+
+export interface RedTeamResultRow {
+  attackKey: string;
+  attackId: string;
+  category: string;
+  severity: string | null;
+  state: string; // RtResultState, see ./redteam
+  ray: string | null;
+  ts: number | null;
+  promptPreview: string | null;
+}
+
+export interface RedTeamRunsList {
+  configured: boolean;
+  runs?: RedTeamRunRow[];
+  error?: string;
+}
+
+export interface RedTeamRunDetail {
+  configured: boolean;
+  run?: RedTeamRunRow | null;
+  results?: RedTeamResultRow[];
+  error?: string;
+}
+
+export interface RedTeamRunSaveResult {
+  configured: boolean;
+  id?: number;
+  pruned?: number; // how many older runs were dropped by the server-side 50-run cap
+  error?: string;
+}
+
+export interface RedTeamRunDeleteResult {
+  configured: boolean;
+  deleted?: boolean;
+  error?: string;
+}
+
 // GET /api/gateway-analytics — aggregated AI Gateway logs, see Worker
 // GatewayAnalytics. Account-scoped: covers every app using the gateway.
 export interface GatewayAnalytics {

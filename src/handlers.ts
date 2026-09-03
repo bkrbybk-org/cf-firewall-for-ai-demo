@@ -33,9 +33,18 @@ import {
   queryZoneRules,
 } from "./cloudflare";
 import { buildPromptLogQuery } from "./promptlog";
+import { parseRunId, REDTEAM_RUNS_LIST_LIMIT, REDTEAM_RUNS_MAX_STORED, validateRedTeamRunPayload } from "./redteamruns";
 import { redact } from "./redact";
 import { createSseAccumulator } from "./sse";
-import type { ChatRequestBody, ChatTurn, Env, PromptAnalytics, PromptLogRow } from "./types";
+import type {
+  ChatRequestBody,
+  ChatTurn,
+  Env,
+  PromptAnalytics,
+  PromptLogRow,
+  RedTeamResultRow,
+  RedTeamRunRow,
+} from "./types";
 
 // The `guarded` flag drives the purple "Guardrails" badge. The AI Gateway
 // REST API does not report which gateways have Guardrails enabled, so we mark
@@ -1095,6 +1104,167 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       lastTs: totals?.lastTs ?? null,
     };
     return Response.json({ configured: true, ...summary });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(message)) return Response.json({ configured: false });
+    return Response.json({ configured: true, error: message }, { status: 502 });
+  }
+}
+
+// GET  /api/redteam-runs             — list saved runs, metadata only (no results).
+// GET  /api/redteam-runs?id=123      — one run plus its per-attack results.
+// POST /api/redteam-runs             — save a finished run (see below).
+// DELETE /api/redteam-runs?id=123    — delete one run (cascades its results).
+//
+// Persists what web/src/hooks/useRedTeam.ts already scored client-side — the
+// Worker never re-derives a verdict or a state here (see the header on
+// redteam_runs in migrations/0003_redteam_runs.sql). This is the layer that
+// makes the feature's before/after claim survive a reload: without it, two
+// runs only ever exist in React state at once and the "we closed the gap"
+// comparison the Red Team page exists to make is impossible.
+//
+// POST is unauthenticated in `wrangler dev` (prod sits behind Cloudflare
+// Access; local/dev does not), so every field is validated and capped in
+// validateRedTeamRunPayload (src/redteamruns.ts) before anything is bound
+// into SQL or written to D1 — nothing here trusts the client body directly.
+export async function handleRedTeamRuns(request: Request, url: URL, env: Env): Promise<Response> {
+  if (!env.DB) return Response.json({ configured: false });
+
+  if (request.method === "DELETE") {
+    const id = parseRunId(url.searchParams.get("id"));
+    if (id == null) return Response.json({ configured: true, error: "id must be a positive integer" }, { status: 400 });
+    try {
+      // Results first: they carry no FK enforcement (D1/SQLite won't cascade
+      // on their own here), so deleting the run first would orphan them.
+      await env.DB.prepare("DELETE FROM redteam_results WHERE run_id = ?").bind(id).run();
+      const del = await env.DB.prepare("DELETE FROM redteam_runs WHERE id = ?").bind(id).run();
+      return Response.json({ configured: true, deleted: (del.meta.changes ?? 0) > 0 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/no such table/i.test(message)) return Response.json({ configured: false });
+      return Response.json({ configured: true, error: message }, { status: 502 });
+    }
+  }
+
+  if (request.method === "POST") {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return Response.json({ configured: true, error: "Invalid JSON body" }, { status: 400 });
+    }
+    const validated = validateRedTeamRunPayload(body);
+    if (!validated.ok) return Response.json({ configured: true, error: validated.error }, { status: 400 });
+    const run = validated.run;
+
+    try {
+      // Insert the run row first (not part of the batch below) so its
+      // AUTOINCREMENT id is known before the per-attack result rows, which
+      // all carry it as run_id, are built.
+      const runInsert = await env.DB.prepare(
+        `INSERT INTO redteam_runs
+           (ts, label, route, gateway_id, guarded, model, corpus_name, corpus_size,
+            corpus_fingerprint, delay_ms, total, scored, reached, stopped, denied,
+            guardrails, pending, error, reached_pct)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+        .bind(
+          run.ts,
+          run.label,
+          run.route,
+          run.gatewayId,
+          run.guarded ? 1 : 0,
+          run.model,
+          run.corpusName,
+          run.corpusSize,
+          run.corpusFingerprint,
+          run.delayMs,
+          run.total,
+          run.scored,
+          run.reached,
+          run.stopped,
+          run.denied,
+          run.guardrails,
+          run.pending,
+          run.error,
+          run.reachedPct,
+        )
+        .run();
+      const runId = runInsert.meta.last_row_id;
+
+      // One batch for every result row plus the two prune deletes, so a
+      // crash mid-write can't leave a run with only half its results stored,
+      // or leave pruned runs' results behind as orphans.
+      const resultStmt = env.DB.prepare(
+        `INSERT INTO redteam_results
+           (run_id, attack_key, attack_id, category, severity, state, ray, ts, prompt_preview)
+         VALUES (?,?,?,?,?,?,?,?,?)`,
+      );
+      const statements = run.results.map((r) =>
+        resultStmt.bind(runId, r.attackKey, r.attackId, r.category, r.severity, r.state, r.ray, r.ts, r.promptPreview),
+      );
+      // Prune to the newest REDTEAM_RUNS_MAX_STORED runs so this table — sitting
+      // behind an unauthenticated write in dev — cannot grow without bound.
+      statements.push(
+        env.DB.prepare(
+          `DELETE FROM redteam_runs WHERE id NOT IN
+             (SELECT id FROM redteam_runs ORDER BY ts DESC LIMIT ?)`,
+        ).bind(REDTEAM_RUNS_MAX_STORED),
+        env.DB.prepare(`DELETE FROM redteam_results WHERE run_id NOT IN (SELECT id FROM redteam_runs)`),
+      );
+      const batchResults = await env.DB.batch(statements);
+      const pruned = batchResults[run.results.length]?.meta.changes ?? 0;
+
+      return Response.json({ configured: true, id: runId, pruned }, { status: 201 });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/no such table/i.test(message)) return Response.json({ configured: false });
+      return Response.json({ configured: true, error: message }, { status: 502 });
+    }
+  }
+
+  if (request.method !== "GET") return Response.json({ error: "Use GET, POST or DELETE" }, { status: 405 });
+
+  const idParam = url.searchParams.get("id");
+  try {
+    if (idParam != null) {
+      const id = parseRunId(idParam);
+      if (id == null) return Response.json({ configured: true, error: "id must be a positive integer" }, { status: 400 });
+      const run = await env.DB.prepare(
+        `SELECT id, ts, label, route, gateway_id AS gatewayId, guarded, model,
+                corpus_name AS corpusName, corpus_size AS corpusSize,
+                corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
+                total, scored, reached, stopped, denied, guardrails, pending, error,
+                reached_pct AS reachedPct
+         FROM redteam_runs WHERE id = ?`,
+      )
+        .bind(id)
+        .first<RedTeamRunRow>();
+      if (!run) return Response.json({ configured: true, run: null, results: [] }, { status: 404 });
+      const { results } = await env.DB.prepare(
+        `SELECT attack_key AS attackKey, attack_id AS attackId, category, severity, state,
+                ray, ts, prompt_preview AS promptPreview
+         FROM redteam_results WHERE run_id = ? ORDER BY id ASC`,
+      )
+        .bind(id)
+        .all<RedTeamResultRow>();
+      return Response.json({ configured: true, run, results: results ?? [] });
+    }
+
+    // List: metadata only. A run can carry up to REDTEAM_RUN_MAX_ATTACKS (500)
+    // result rows, so the list view — read far more often than any one run's
+    // detail — must never pull results just to render a table of totals.
+    const { results } = await env.DB.prepare(
+      `SELECT id, ts, label, route, gateway_id AS gatewayId, guarded, model,
+              corpus_name AS corpusName, corpus_size AS corpusSize,
+              corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
+              total, scored, reached, stopped, denied, guardrails, pending, error,
+              reached_pct AS reachedPct
+       FROM redteam_runs ORDER BY ts DESC LIMIT ?`,
+    )
+      .bind(REDTEAM_RUNS_LIST_LIMIT)
+      .all<RedTeamRunRow>();
+    return Response.json({ configured: true, runs: results ?? [] });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return Response.json({ configured: false });
