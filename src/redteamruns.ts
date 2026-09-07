@@ -76,6 +76,8 @@ export interface ValidatedRun {
   gatewayId: string | null;
   guarded: boolean;
   model: string | null;
+  /** AI Gateway Dynamic Route, or null. Gateway route only. */
+  dynamicRoute: string | null;
   corpusName: string;
   corpusSize: number;
   corpusFingerprint: string;
@@ -223,6 +225,9 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
       gatewayId: strOrNull(body.gatewayId, REDTEAM_MAX_FIELD_LEN),
       guarded: body.guarded === true,
       model: strOrNull(body.model, REDTEAM_MAX_FIELD_LEN),
+      // Meaningless off the gateway route, so it is dropped there rather than
+      // stored as a claim the run cannot support.
+      dynamicRoute: route === "gateway" ? strOrNull(body.dynamicRoute, REDTEAM_MAX_FIELD_LEN) : null,
       corpusName,
       corpusSize,
       corpusFingerprint,

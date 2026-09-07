@@ -1243,10 +1243,10 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       // all carry it as run_id, are built.
       const runInsert = await env.DB.prepare(
         `INSERT INTO redteam_runs
-           (ts, label, route, gateway_id, guarded, model, corpus_name, corpus_size,
-            corpus_fingerprint, delay_ms, total, scored, reached, stopped, denied,
-            guardrails, pending, error, reached_pct)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           (ts, label, route, gateway_id, guarded, model, dynamic_route, corpus_name,
+            corpus_size, corpus_fingerprint, delay_ms, total, scored, reached, stopped,
+            denied, guardrails, pending, error, reached_pct)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
         .bind(
           run.ts,
@@ -1255,6 +1255,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
           run.gatewayId,
           run.guarded ? 1 : 0,
           run.model,
+          run.dynamicRoute,
           run.corpusName,
           run.corpusSize,
           run.corpusFingerprint,

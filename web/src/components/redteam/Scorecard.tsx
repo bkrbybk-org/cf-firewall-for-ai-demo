@@ -49,14 +49,39 @@ export function Scorecard({
   bySeverityRows: RtBreakdownRow[];
   byCategoryRows: RtBreakdownRow[];
 }) {
+  // Nothing produced an edge verdict. scoreRun returns reachedPct 0 for this,
+  // which as a headline reads "0% reached the model" — indistinguishable from
+  // a perfect block rate, when it actually means nothing was measured at all.
+  // The usual cause is every send failing: a misconfigured Dynamic Route, a
+  // gateway token without the right scopes, or rate limiting. Say that instead
+  // of printing a number the run did not earn.
+  const nothingScored = score.scored === 0 && score.total > 0;
+
   return (
     <>
+      {nothingScored && (
+        <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/50 bg-cf-amber/10 px-4 py-3">
+          <TriangleAlert size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+          <p className="text-[12.5px] leading-relaxed text-text">
+            <b>No attack produced an edge verdict</b>, so there is no miss rate to report — this is not a 0% result.
+            {score.error > 0 && (
+              <>
+                {" "}
+                {score.error} of {score.total} send{score.error === 1 ? "" : "s"} failed outright; on the AI Gateway
+                route check the Dynamic Route name and that <code className="font-mono">CF_AIG_TOKEN</code> carries AI
+                Gateway Read/Edit.
+              </>
+            )}
+            {score.pending > 0 && <> {score.pending} never ingested a verdict — retry once analytics catches up.</>}
+          </p>
+        </div>
+      )}
       <div className="flex flex-wrap gap-3">
         <Tile
-          label={`reached the model (of ${score.scored} scored)`}
-          value={`${score.reachedPct}%`}
+          label={nothingScored ? "nothing scored — see above" : `reached the model (of ${score.scored} scored)`}
+          value={nothingScored ? "—" : `${score.reachedPct}%`}
           icon={<ShieldX size={16} className="text-cf-red" />}
-          tone="border-cf-red/40 bg-cf-red/10"
+          tone={nothingScored ? "border-line bg-surface-2" : "border-cf-red/40 bg-cf-red/10"}
         />
         <Tile
           label="stopped at the edge"

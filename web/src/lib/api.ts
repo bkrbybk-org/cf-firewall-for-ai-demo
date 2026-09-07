@@ -153,6 +153,8 @@ export interface RedTeamRunSaveRequest {
   gatewayId?: string | null;
   guarded?: boolean;
   model?: string | null;
+  /** AI Gateway Dynamic Route. Ignored by the server on the direct route. */
+  dynamicRoute?: string | null;
   corpusName: string;
   corpusSize: number; // the corpus the run was fired against — may exceed results.length on a stopped run
   corpusFingerprint: string; // corpusFingerprint(corpus), see ./redteam

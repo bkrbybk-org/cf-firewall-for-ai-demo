@@ -34,6 +34,11 @@ const RESOLVE_CONCURRENCY = 6;
 export interface RtRouteConfig {
   route: "direct" | "gateway";
   gatewayId?: string; // gateway route only
+  // AI Gateway Dynamic Routing: a route configured in the gateway dashboard.
+  // Gateway route only, and empty means normal routing. The ROUTE picks the
+  // model, so a run through one is not measuring the default model — worth
+  // remembering when comparing two runs.
+  dynamicRoute?: string;
   // Pause between sends, in ms. 0 = fire as fast as each request returns.
   // Reasons to slow down, all real on this demo: a WAF rate-limiting rule or
   // AI Gateway rate limit will start returning 429s that score as `error` and
@@ -57,6 +62,9 @@ async function sendOne(
       stream: false,
       gateway: gateway || undefined,
       gatewayId: gateway ? cfg.gatewayId || undefined : undefined,
+      // Dropped entirely on the direct route — Workers AI has no concept of it,
+      // and sending it would imply the run went somewhere it did not.
+      dynamicRoute: gateway ? cfg.dynamicRoute || undefined : undefined,
     });
     if (res.mode === "stream") {
       // Shouldn't happen with stream:false, but treat a stream as a reply.

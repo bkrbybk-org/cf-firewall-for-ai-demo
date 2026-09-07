@@ -205,6 +205,12 @@ export function RedTeamPage() {
   // than row index so a re-sort cannot silently move the selection onto
   // different attacks.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // AI Gateway Dynamic Routing. Free text rather than a dropdown because
+  // nothing this app calls enumerates a gateway's routes — /api/models serves
+  // gateways, not their routes — and a picker built from guesses would be
+  // worse than a field that admits it does not know. The Worker normalises
+  // either accepted form (normalizeDynamicRoute in src/config.ts).
+  const [dynamicRoute, setDynamicRoute] = useState("");
   const custom = useStore(customCorpusStore);
   const [useCustom, setUseCustom] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
@@ -386,7 +392,17 @@ export function RedTeamPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined, delayMs }, toRun)}
+                onClick={() =>
+                  run(
+                    {
+                      route,
+                      gatewayId: route === "gateway" ? gatewayId : undefined,
+                      dynamicRoute: route === "gateway" ? dynamicRoute.trim() || undefined : undefined,
+                      delayMs,
+                    },
+                    toRun,
+                  )
+                }
                 disabled={toRun.length === 0}
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
               >
@@ -436,6 +452,23 @@ export function RedTeamPage() {
                   </option>
                 ))}
               </select>
+            )}
+            {route === "gateway" && (
+              <label
+                className="flex items-center gap-1.5 text-[12px] text-muted"
+                title={`Dynamic Routing: a route configured in the gateway dashboard. Either form works — "demo-routes" or the dashboard's "dynamic/demo-routes". The route picks the model, so the whole batch runs on whatever it selects. Empty = normal routing.`}
+              >
+                Route
+                <input
+                  type="text"
+                  value={dynamicRoute}
+                  disabled={running}
+                  onChange={(e) => setDynamicRoute(e.target.value)}
+                  placeholder="none"
+                  aria-label="Dynamic route"
+                  className="w-32 rounded-lg border border-line bg-surface-2 px-2 py-1.5 text-[12px] text-text outline-none focus:border-accent disabled:opacity-50"
+                />
+              </label>
             )}
 
             {phaseText && (

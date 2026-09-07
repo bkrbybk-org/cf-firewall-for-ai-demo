@@ -257,6 +257,8 @@ export interface RedTeamRunRow {
   gatewayId: string | null;
   guarded: number;
   model: string | null;
+  /** AI Gateway Dynamic Route the run went through, or null. */
+  dynamicRoute: string | null;
   corpusName: string;
   corpusSize: number;
   corpusFingerprint: string;
