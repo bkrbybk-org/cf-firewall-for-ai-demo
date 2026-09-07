@@ -1,0 +1,58 @@
+# Verification gate for the repo. Mirrors step 1 of the workflow in CLAUDE.md,
+# so a pull request fails for the same reasons a local run would.
+#
+# There is deliberately NO deploy job. Shipping here is gated on a prod smoke
+# test that runs through Cloudflare Access with a service token, and on a human
+# deciding that an outward-facing change is wanted — neither belongs in an
+# automatic reaction to a push. Deploys stay manual (`npm run deploy`).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: typecheck · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # .nvmrc is the single source of truth, so CI cannot drift from the
+          # `nvm use` the contributor guide tells people to run.
+          node-version-file: .nvmrc
+          cache: npm
+
+      # `npm ci`, not `npm install`: it installs exactly the lockfile and fails
+      # if package.json and the lock have diverged, which is the point of
+      # running this on a machine that is not the author's.
+      - run: npm ci
+
+      # Worker and SPA are separate TypeScript projects with separate configs —
+      # the SPA's adds noUnusedLocals/noUnusedParameters/noFallthroughCasesInSwitch,
+      # so a clean Worker build says nothing about it. Both, explicitly.
+      - name: Typecheck Worker
+        run: npm run check
+
+      - name: Typecheck web
+        run: npx tsc -b web/tsconfig.json
+
+      - name: Test
+        run: npm test
+
+      # `npm run build` re-runs the web typecheck and then bundles. Kept after
+      # the checks above so a type error reports as a type error rather than as
+      # a build failure, and so a bundling-only break is still caught.
+      - name: Build
+        run: npm run build

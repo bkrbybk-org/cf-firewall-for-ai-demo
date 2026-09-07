@@ -1,5 +1,7 @@
 # Cloudflare AI Security for Apps — Customer Demo
 
+[![CI](https://github.com/bkrbybk-org/cf-firewall-for-ai-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/bkrbybk-org/cf-firewall-for-ai-demo/actions/workflows/ci.yml)
+
 Chat app that demos **AI Security for Apps** (formerly *Firewall for AI*) together with **AI Gateway**: real LLM traffic flows through a Cloudflare zone, the edge inspects each prompt, and WAF custom rules block PII, prompt injection, unsafe topics and custom topics **before they reach the model**. The app then reads back what the edge did (GraphQL Analytics) and shows it per prompt.
 
 ```

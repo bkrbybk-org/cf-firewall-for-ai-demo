@@ -18,6 +18,10 @@ failure stops the chain, and the fix comes before moving on.
    console errors, the actual rendered result, both light and dark. Never ask the user to check
    something manually.
 
+   CI (`.github/workflows/ci.yml`) runs exactly these four commands on every PR
+   and every push to `main`, so a green local run is a green CI run. It does not
+   deploy — see step 3 for why.
+
 2. **Commit locally.** Not pushed yet — see step 5. This is out of order relative to how the
    workflow was first described, and deliberately so: `npm run deploy` ships the working tree, so
    committing first is what guarantees prod is always running a revision that exists in git. A
@@ -44,6 +48,13 @@ failure stops the chain, and the fix comes before moving on.
 
 5. **Push to origin** — only once prod is proven. Open or merge the PR when one is in play.
    `npx wrangler rollback` restores the previous deployment.
+
+### When a change cannot reach prod
+
+Skip steps 3 and 4 for changes that cannot affect what the Worker serves — CI
+config, `.nvmrc`, docs, editor settings. Deploying those is churn, and a smoke
+test that exercises nothing new proves nothing. Say the steps were skipped and
+why; do not skip them silently.
 
 ### When to stop and ask
 
