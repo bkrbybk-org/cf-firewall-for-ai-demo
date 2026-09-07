@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { ChevronRight, Search } from "lucide-react";
 import { CATEGORIES, type Tone } from "../lib/data";
 import { categoryIcon } from "../lib/icons";
 
@@ -30,6 +30,19 @@ export function AttackLibrary({
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
 
+  // Categories start COLLAPSED. There are a dozen of them and the longest runs
+  // to eleven prompts, so expanded-by-default buried the lower half of the list
+  // below several screens of scrolling — the panel read as a wall rather than a
+  // menu. Held as a set of open titles (not a single id) so several can be open
+  // at once while comparing categories.
+  const [openTitles, setOpenTitles] = useState<Set<string>>(new Set());
+  const toggle = (title: string) =>
+    setOpenTitles((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(title)) next.add(title);
+      return next;
+    });
+
   const filtered = useMemo(() => {
     if (!query) return CATEGORIES.map((c) => ({ cat: c, presets: c.presets }));
     return CATEGORIES.map((c) => {
@@ -42,6 +55,11 @@ export function AttackLibrary({
       return { cat: c, presets };
     }).filter((x) => x.presets.length > 0);
   }, [query]);
+
+  // Searching overrides the collapsed state: a hit the user cannot see is the
+  // same as no hit, so anything the filter kept is expanded for as long as the
+  // query stands. Clearing the box returns to whatever they had opened by hand.
+  const searching = query.length > 0;
 
   const borderSide = side === "right" ? "lg:border-l" : "lg:border-r";
 
@@ -64,18 +82,33 @@ export function AttackLibrary({
 
       {filtered.map(({ cat, presets }) => {
         const Icon = categoryIcon(cat.iconKey);
+        const open = searching || openTitles.has(cat.title);
+        const panelId = `atk-${cat.title.replace(/\W+/g, "-").toLowerCase()}`;
         return (
           <div
             key={cat.title}
             className="relative mb-3 overflow-hidden rounded-xl border border-line bg-surface-2 p-3.5 transition hover:border-line-strong hover:shadow-md"
           >
             <span className={`absolute inset-y-0 left-0 w-[3px] ${ACCENT[cat.tone]}`} />
-            <div className="mb-2 flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => toggle(cat.title)}
+              aria-expanded={open}
+              aria-controls={panelId}
+              className="flex w-full items-center gap-2.5 text-left"
+            >
               <span className={`grid h-7 w-7 place-items-center rounded-lg ${ICON_TONE[cat.tone]}`}>
                 <Icon size={15} />
               </span>
               <span className="text-sm font-semibold tracking-tight">{cat.title}</span>
-            </div>
+              {/* Collapsed, the count is the only signal of how much is inside. */}
+              <span className="ml-auto shrink-0 font-mono text-[11px] text-subtle tabular-nums">{presets.length}</span>
+              <ChevronRight
+                size={14}
+                className={`shrink-0 text-subtle transition-transform ${open ? "rotate-90" : ""}`}
+              />
+            </button>
+            <div id={panelId} hidden={!open} className="mt-2">
             {(cat.owasp || cat.atlas) && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {cat.owasp && (
@@ -103,6 +136,7 @@ export function AttackLibrary({
                   <span className="mt-0.5 block text-[11px] text-muted">{p.prompt}</span>
                 </button>
               ))}
+            </div>
             </div>
           </div>
         );

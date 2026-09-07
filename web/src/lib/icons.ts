@@ -10,6 +10,8 @@ import {
   Vote,
   Smartphone,
   Layers,
+  Bug,
+  Megaphone,
   ShieldAlert,
   type LucideIcon,
 } from "lucide-react";
@@ -25,6 +27,8 @@ const ICONS: Record<string, LucideIcon> = {
   vote: Vote,
   smartphone: Smartphone,
   layers: Layers,
+  bug: Bug,
+  megaphone: Megaphone,
 };
 
 export function categoryIcon(key: string): LucideIcon {
