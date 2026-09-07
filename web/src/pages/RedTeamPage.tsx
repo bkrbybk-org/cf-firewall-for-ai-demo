@@ -199,6 +199,12 @@ export function RedTeamPage() {
   // Which corpus is loaded: the built-in scan replay, or a CSV the operator
   // brought. The custom one lives in a module store so switching to Analytics
   // and back does not discard it.
+  // Attacks ticked for the next run, by id. EMPTY MEANS ALL — the corpus is
+  // the default unit of work, so nothing has to be ticked to press Run, and
+  // there is no "0 selected, nothing happens" dead end. Keyed by id rather
+  // than row index so a re-sort cannot silently move the selection onto
+  // different attacks.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const custom = useStore(customCorpusStore);
   const [useCustom, setUseCustom] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
@@ -212,6 +218,7 @@ export function RedTeamPage() {
   function selectCorpus(next: boolean) {
     if (next === isCustom) return;
     reset();
+    setSelected(new Set());
     setUseCustom(next);
     setSortKey(next ? "ref" : "severity");
     setSortDir("asc");
@@ -226,6 +233,7 @@ export function RedTeamPage() {
       return;
     }
     reset();
+    setSelected(new Set());
     customCorpusStore.set({
       name: file.name,
       attacks: parsed.attacks,
@@ -268,11 +276,35 @@ export function RedTeamPage() {
   const running = phase === "sending" || phase === "settling" || phase === "resolving";
 
   const resultList: RtRunResult[] = useMemo(() => [...results.values()], [results]);
+  // The subset a Run press would send. Everything downstream — the button
+  // label, the time estimate, the progress denominators — reads this rather
+  // than `corpus`, so a partial run never reports itself against the whole set.
+  const toRun = useMemo(
+    () => (selected.size === 0 ? corpus : corpus.filter((a) => selected.has(a.id))),
+    [corpus, selected],
+  );
+  const toggleOne = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  // Header tick box: all-on when every attack is explicitly ticked, and the
+  // "empty means all" default reads as none-ticked so the box starts clear.
+  const allTicked = selected.size === corpus.length && corpus.length > 0;
+  const someTicked = selected.size > 0 && !allTicked;
+
   const score = useMemo(() => scoreRun(resultList), [resultList]);
   // Empty for a custom corpus — bySeverity drops unrated attacks rather than
   // inventing a bucket, and the card is hidden below when it comes back empty.
-  const sevRows = useMemo(() => bySeverity(corpus, results), [corpus, results]);
-  const catRows = useMemo(() => byCategory(corpus, results), [corpus, results]);
+  // Scoped to attacks that actually produced a result, NOT the whole corpus.
+  // Bars sizes each group by `total` and fills it by reached/total, so scoring
+  // a 5-attack subset against a 36-attack denominator would draw the miss rate
+  // as a fraction of attacks that were never sent. Also keeps a stopped run
+  // honest, where the same mismatch appears without any selection involved.
+  const scoredCorpus = useMemo(() => corpus.filter((a) => results.has(a.id)), [corpus, results]);
+  const sevRows = useMemo(() => bySeverity(scoredCorpus, results), [scoredCorpus, results]);
+  const catRows = useMemo(() => byCategory(scoredCorpus, results), [scoredCorpus, results]);
 
   const rows = useMemo(() => {
     const dir = sortDir === "asc" ? 1 : -1;
@@ -301,15 +333,15 @@ export function RedTeamPage() {
   if (phase === "sending")
     phaseText =
       pacingLeftMs > 0
-        ? `sent ${sentCount}/${corpus.length} · next in ${(pacingLeftMs / 1000).toFixed(1)}s`
-        : `sending ${sentCount}/${corpus.length}…`;
+        ? `sent ${sentCount}/${toRun.length} · next in ${(pacingLeftMs / 1000).toFixed(1)}s`
+        : `sending ${sentCount}/${toRun.length}…`;
   else if (phase === "settling") phaseText = `waiting for edge ingestion — ${Math.ceil(settleLeftMs / 1000)}s`;
-  else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${corpus.length}…`;
+  else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${toRun.length}…`;
   else if (phase === "done") phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})`;
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
-  const runEstimate = formatDuration(estimateRunSeconds(corpus.length, delayMs));
+  const runEstimate = formatDuration(estimateRunSeconds(toRun.length, delayMs));
 
   return (
     <div className="flex h-full flex-col">
@@ -354,10 +386,21 @@ export function RedTeamPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined, delayMs }, corpus)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20"
+                onClick={() => run({ route, gatewayId: route === "gateway" ? gatewayId : undefined, delayMs }, toRun)}
+                disabled={toRun.length === 0}
+                className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
               >
-                <Play size={13} /> {hasResults ? "Re-run" : "Run"} {corpus.length} attack{corpus.length === 1 ? "" : "s"}
+                <Play size={13} /> {hasResults ? "Re-run" : "Run"} {toRun.length}{" "}
+                {selected.size > 0 ? "selected" : `attack${toRun.length === 1 ? "" : "s"}`}
+              </button>
+            )}
+            {selected.size > 0 && !running && (
+              <button
+                type="button"
+                onClick={() => setSelected(new Set())}
+                className="text-[11.5px] text-muted underline-offset-2 transition hover:text-text hover:underline"
+              >
+                clear selection ({selected.size} of {corpus.length})
               </button>
             )}
 
@@ -535,7 +578,7 @@ export function RedTeamPage() {
             <div className="border-b border-line px-4 py-2.5">
               <h2 className="text-[13px] font-bold text-text">Attacks</h2>
               <div className="mt-0.5 text-[11.5px] text-muted">
-                {corpus.length} prompts · click a column to sort ·{" "}
+                {corpus.length} prompts · tick rows to run a subset (none ticked = all) · click a column to sort ·{" "}
                 {isCustom ? (
                   <>
                     from <span className="font-mono">{custom!.name}</span> · “goal” is your note, not something this
@@ -550,6 +593,22 @@ export function RedTeamPage() {
               <table className="w-full min-w-[820px] text-left text-[12px]">
                 <thead className="text-[10px] uppercase tracking-wider text-subtle">
                   <tr>
+                    <th scope="col" className="w-8 px-2.5 py-1.5">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 cursor-pointer accent-cf-red align-middle"
+                        checked={allTicked}
+                        // Indeterminate is a DOM property, not an attribute, so
+                        // it can only be set through the node itself.
+                        ref={(el) => {
+                          if (el) el.indeterminate = someTicked;
+                        }}
+                        disabled={running}
+                        onChange={() => setSelected(allTicked ? new Set() : new Set(corpus.map((a) => a.id)))}
+                        aria-label={allTicked ? "Clear selection" : "Select every attack"}
+                        title="Select attacks to run a subset. Nothing ticked runs the whole corpus."
+                      />
+                    </th>
                     <SortHeader label="#" col="ref" sortKey={sortKey} sortDir={sortDir} onSort={onSort} />
                     {/* Severity and scan ASR exist only on the Prisma corpus. */}
                     {!isCustom && (
@@ -581,7 +640,25 @@ export function RedTeamPage() {
                 </thead>
                 <tbody>
                   {rows.map((a, i) => (
-                    <tr key={a.id} className="border-t border-line align-top">
+                    <tr
+                      key={a.id}
+                      className={`border-t border-line align-top ${
+                        // Only tint rows once a subset exists; with nothing
+                        // ticked every row is in the run, so highlighting all
+                        // of them would carry no information.
+                        selected.size > 0 && selected.has(a.id) ? "bg-accent/5" : ""
+                      }`}
+                    >
+                      <td className="px-2.5 py-1.5">
+                        <input
+                          type="checkbox"
+                          className="h-3.5 w-3.5 cursor-pointer accent-cf-red align-middle"
+                          checked={selected.has(a.id)}
+                          disabled={running}
+                          onChange={() => toggleOne(a.id)}
+                          aria-label={`Select attack ${refOf(a, i)}`}
+                        />
+                      </td>
                       <td className="px-2.5 py-1.5 font-mono text-[11px] whitespace-nowrap text-subtle tabular-nums">
                         {refOf(a, i)}
                       </td>
