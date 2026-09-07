@@ -20,6 +20,7 @@ import {
   MAX_REPLY_TOKENS,
   MAX_SYSTEM_PROMPT_LEN,
   OVERAGE_USD_PER_1K_NEURONS,
+  promptLogEnabled,
   type GatewayBackoff,
 } from "./config";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
@@ -110,6 +111,12 @@ export async function handleModels(env: Env): Promise<Response> {
       maxAttempts: MAX_GATEWAY_ATTEMPTS,
       retryDelayMs: MAX_GATEWAY_RETRY_DELAY_MS,
     },
+    // Prompt-log feature flag, served so the client can hide the Analytics tab
+    // and the per-turn toggle rather than offering a control that silently does
+    // nothing. `enabled` needs BOTH the flag and a D1 binding: with the flag on
+    // and DB unbound there is nowhere to write, and the tab would only ever
+    // render its "not configured" hint.
+    promptLog: { enabled: promptLogEnabled(env) && !!env.DB },
   });
 }
 
@@ -450,16 +457,26 @@ async function logPrompt(
     reply: string | null;
     promptTokens?: number | null;
     completionTokens?: number | null;
+    // Worker-observed elapsed ms at the moment this row is written, and
+    // which of two different things it measures — see the migration's
+    // header comment (migrations/0002_latency.sql) for why these can never
+    // be averaged together. null when the caller has no elapsed time yet
+    // (there is no such case today, but keeps the field honest if one shows up).
+    latencyMs?: number | null;
+    streamed: boolean;
   },
 ): Promise<void> {
-  if (!env.DB || !fields.ray) return;
+  // Gated here as well as at the call site: this is the only function that
+  // writes a prompt row, so checking the flag at the write itself means no
+  // future caller can reintroduce logging by forgetting the guard upstream.
+  if (!env.DB || !promptLogEnabled(env) || !fields.ray) return;
   const p = redact(fields.prompt);
   const r = fields.reply != null ? redact(fields.reply) : { text: null, count: 0 };
   try {
     await env.DB.prepare(
       `INSERT OR REPLACE INTO prompt_log
-       (ray, ts, route, model, gateway_id, guarded, outcome, prompt, reply, redactions, prompt_tokens, completion_tokens)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+       (ray, ts, route, model, gateway_id, guarded, outcome, prompt, reply, redactions, prompt_tokens, completion_tokens, latency_ms, streamed)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(
         fields.ray,
@@ -474,6 +491,8 @@ async function logPrompt(
         p.count + r.count,
         fields.promptTokens ?? null,
         fields.completionTokens ?? null,
+        fields.latencyMs ?? null,
+        fields.streamed ? 1 : 0,
       )
       .run();
   } catch {
@@ -490,7 +509,7 @@ async function logPrompt(
 // trail covers streamed turns too. UPDATE rather than a deferred INSERT: the
 // row must exist immediately, even if the client disconnects mid-stream.
 async function updateLoggedReply(env: Env, ray: string, reply: string): Promise<void> {
-  if (!env.DB || !reply) return;
+  if (!env.DB || !promptLogEnabled(env) || !reply) return;
   const r = redact(reply);
   try {
     await env.DB.prepare(
@@ -517,7 +536,7 @@ function teeReplyToLog(
   inserted: Promise<void>,
   ctx?: ExecutionContext,
 ): ReadableStream {
-  if (!ray || excluded || !env.DB) return source;
+  if (!ray || excluded || !env.DB || !promptLogEnabled(env)) return source;
   const acc = createSseAccumulator();
   const decoder = new TextDecoder();
   return source.pipeThrough(
@@ -670,12 +689,24 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // only exists once the stream ends) can chain onto it. Both run under
   // waitUntil, which gives no ordering guarantee of its own — and an UPDATE
   // that lands before its INSERT silently matches no row.
+  //
+  // `streamed` is which of two different things `latencyMs` (computed here,
+  // once, from the `started` closed over above) ends up meaning: every call
+  // site that logs BEFORE a stream drains (reply not known yet) passes
+  // streamed:true and gets time-to-first-byte; every other call site — a full
+  // JSON reply in hand, or an error that ended the request outright — passes
+  // streamed:false and gets total generation time. See migrations/0002_latency.sql.
   const log = (
     outcome: PromptLogRow["outcome"],
-    extra: { reply: string | null; promptTokens?: number | null; completionTokens?: number | null },
+    extra: {
+      reply: string | null;
+      promptTokens?: number | null;
+      completionTokens?: number | null;
+      streamed: boolean;
+    },
   ): Promise<void> => {
     if (excludeFromLog) return Promise.resolve();
-    const done = logPrompt(env, { ...logBase, outcome, prompt, ...extra });
+    const done = logPrompt(env, { ...logBase, outcome, prompt, latencyMs: Date.now() - started, ...extra });
     ctx?.waitUntil(done);
     return done;
   };
@@ -703,7 +734,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       // A Guardrails block arrives as an HTTP error here rather than a binding
       // exception; the same 2016/2017 detector maps it to the purple card.
       const gr = guardrailsResponse(r.message, model, gatewayId, guarded);
-      log(gr ? "guardrails" : "error", { reply: null });
+      log(gr ? "guardrails" : "error", { reply: null, streamed: false });
       if (gr) return gr;
       return Response.json(
         { error: r.message, model, dynamicRoute: dynamicRoute || undefined },
@@ -714,7 +745,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     if (r.kind === "stream") {
       // Logged with a null reply first, then filled in by teeReplyToLog once
       // the stream ends — the row has to exist even if the client disconnects.
-      const inserted = log("reply", { reply: null });
+      // latency_ms recorded now is time-to-first-byte, not total generation time.
+      const inserted = log("reply", { reply: null, streamed: true });
       const withMeta = appendRestGatewayEvent(
         r.body,
         { gatewayId, cached: r.cached, logId: r.logId, guarded },
@@ -735,7 +767,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const promptTokens = r.promptTokens ?? Math.ceil((systemPrompt.length + prompt.length) / 4);
     const completionTokens = r.completionTokens ?? Math.ceil(r.reply.length / 4);
     const cost = r.cached === true ? 0 : price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
-    log("reply", { reply: r.reply, promptTokens, completionTokens });
+    log("reply", { reply: r.reply, promptTokens, completionTokens, streamed: false });
     return Response.json({
       reply: r.reply,
       model: ranModel,
@@ -758,12 +790,15 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       const sse = (await env.AI.run(model, { messages, max_tokens: MAX_REPLY_TOKENS, stream: true } as never)) as unknown as ReadableStream;
       // Row goes in now with a null reply; teeReplyToLog fills it in as the
       // stream drains, so a streamed turn is no longer a blank in the log.
-      const inserted = log("reply", { reply: null });
+      // latency_ms recorded now is time-to-first-byte, not total generation time.
+      const inserted = log("reply", { reply: null, streamed: true });
       return new Response(teeReplyToLog(sse, env, ray, excludeFromLog, inserted, ctx), {
         headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
       });
     } catch (err) {
-      log("error", { reply: null });
+      // The stream never started (env.AI.run threw before any bytes), so this
+      // is a completed call like any other error — not a TTFB measurement.
+      log("error", { reply: null, streamed: false });
       const message = err instanceof Error ? err.message : String(err);
       return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
     }
@@ -796,7 +831,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const price = MODEL_BY_ID.get(model);
     const cost = price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
 
-    log("reply", { reply, promptTokens, completionTokens });
+    log("reply", { reply, promptTokens, completionTokens, streamed: false });
     return Response.json({
       reply,
       model,
@@ -811,7 +846,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       gateway: undefined, // never set on the direct path
     });
   } catch (err) {
-    log("error", { reply: null });
+    log("error", { reply: null, streamed: false });
     const message = err instanceof Error ? err.message : String(err);
     return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
   }
@@ -917,6 +952,10 @@ function parseTimeWindow(url: URL): {
 // Rows join to the live edge verdict by ray in the UI; detections aren't stored
 // here (they ingest into GraphQL seconds later, after this row is written).
 export async function handlePromptLog(request: Request, url: URL, env: Env): Promise<Response> {
+  // `disabled` is reported separately from `configured` so the client can tell
+  // "the operator turned this feature off" apart from "D1 isn't bound yet" —
+  // the first needs no setup hint, the second is entirely a setup hint.
+  if (!promptLogEnabled(env)) return Response.json({ configured: false, disabled: true });
   if (!env.DB) return Response.json({ configured: false });
 
   if (request.method === "DELETE") {
@@ -955,7 +994,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
     const { results } = await env.DB.prepare(
       `SELECT ray, ts, route, model, gateway_id AS gatewayId, guarded, outcome,
               prompt, reply, redactions, prompt_tokens AS promptTokens,
-              completion_tokens AS completionTokens
+              completion_tokens AS completionTokens, latency_ms AS latencyMs, streamed
        FROM prompt_log ${clause} ${orderBy} LIMIT ? OFFSET ?`,
     )
       .bind(...binds, limit, offset)
@@ -988,6 +1027,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
 // Worker-side pass over capped rows), so the numbers stay correct however
 // large the table gets.
 export async function handlePromptAnalytics(url: URL, env: Env): Promise<Response> {
+  if (!promptLogEnabled(env)) return Response.json({ configured: false, disabled: true });
   if (!env.DB) return Response.json({ configured: false });
 
   const { since, until, spanHours } = parseTimeWindow(url);
@@ -1007,7 +1047,13 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
     const db = env.DB;
     const q = <T>(sql: string) => db.prepare(sql).bind(...binds).all<T>();
 
-    const [totals, byOutcome, byRoute, byModel, repeated, rows] = await Promise.all([
+    // The condition every latency rollup shares: same ts window as everything
+    // else, plus IS NOT NULL so old (pre-migration) rows — permanently NULL,
+    // per migrations/0002_latency.sql — don't get counted as zero and drag
+    // percentiles toward a number that was never actually measured.
+    const whereLatency = `WHERE ${[...whereParts, "latency_ms IS NOT NULL"].join(" AND ")}`;
+
+    const [totals, byOutcome, byRoute, byModel, repeated, rows, latency] = await Promise.all([
       db
         .prepare(
           `SELECT COUNT(*) AS total,
@@ -1015,14 +1061,15 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
                   COALESCE(SUM(redactions),0) AS redactions,
                   COALESCE(SUM(prompt_tokens),0) AS promptTokens,
                   COALESCE(SUM(completion_tokens),0) AS completionTokens,
-                  MIN(ts) AS firstTs, MAX(ts) AS lastTs
+                  MIN(ts) AS firstTs, MAX(ts) AS lastTs,
+                  SUM(CASE WHEN latency_ms IS NOT NULL THEN 1 ELSE 0 END) AS withLatency
            FROM prompt_log ${whereTs}`,
         )
         .bind(...binds)
         .first<{
           total: number; withPii: number; redactions: number;
           promptTokens: number; completionTokens: number;
-          firstTs: number | null; lastTs: number | null;
+          firstTs: number | null; lastTs: number | null; withLatency: number;
         }>(),
       q<{ outcome: string; count: number }>(
         `SELECT outcome, COUNT(*) AS count FROM prompt_log ${whereTs}
@@ -1046,6 +1093,29 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       q<{ ts: number; outcome: string }>(
         `SELECT ts, outcome FROM prompt_log ${whereTs} ORDER BY ts ASC`,
       ),
+      // p50/p95/max per (route, guarded, streamed), computed in SQL — see the
+      // doc comment above this function for why that's a hard requirement.
+      // Window functions (ROW_NUMBER/COUNT OVER) give each row its rank and
+      // its partition size; the outer query picks out the ranks that land on
+      // the 50th/95th percentile. MAX(1, ...) is SQLite's 2-arg scalar max,
+      // guarding the n=1 case where CAST(n2*0.50 AS INTEGER) would be 0.
+      db
+        .prepare(
+          `SELECT route, guarded, streamed,
+                  COUNT(*) AS n,
+                  MAX(CASE WHEN rn = MAX(1, CAST(n2*0.50 AS INTEGER)) THEN v END) AS p50,
+                  MAX(CASE WHEN rn = MAX(1, CAST(n2*0.95 AS INTEGER)) THEN v END) AS p95,
+                  MAX(v) AS pmax
+           FROM (
+             SELECT route, guarded, streamed, latency_ms AS v,
+                    ROW_NUMBER() OVER (PARTITION BY route, guarded, streamed ORDER BY latency_ms) AS rn,
+                    COUNT(*)     OVER (PARTITION BY route, guarded, streamed)                     AS n2
+             FROM prompt_log ${whereLatency}
+           )
+           GROUP BY route, guarded, streamed`,
+        )
+        .bind(...binds)
+        .all<{ route: string; guarded: number; streamed: number; n: number; p50: number | null; p95: number | null; pmax: number | null }>(),
     ]);
 
     // Time series bucket width, from the width the caller asked for. Only when
@@ -1102,6 +1172,16 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       bucket,
       firstTs: totals?.firstTs ?? null,
       lastTs: totals?.lastTs ?? null,
+      latency: (latency.results ?? []).map((r) => ({
+        route: r.route,
+        guarded: r.guarded,
+        streamed: r.streamed,
+        n: r.n,
+        p50: r.p50,
+        p95: r.p95,
+        max: r.pmax,
+      })),
+      latencyCoverage: { withLatency: totals?.withLatency ?? 0, total: totals?.total ?? 0 },
     };
     return Response.json({ configured: true, ...summary });
   } catch (err) {

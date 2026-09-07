@@ -19,6 +19,7 @@ export const PROMPT_LOG_SORTS = {
   model: "model",
   tokens: "(COALESCE(prompt_tokens,0) + COALESCE(completion_tokens,0))",
   redactions: "redactions",
+  latency: "latency_ms",
 } as const;
 
 export type PromptLogSort = keyof typeof PROMPT_LOG_SORTS;

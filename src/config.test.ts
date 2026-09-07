@@ -10,7 +10,7 @@
 // The contract now: accept either form, and return null (never a silently
 // wrong value) for anything unusable so the caller can reject the request.
 import { describe, expect, it } from "vitest";
-import { normalizeDynamicRoute } from "./config";
+import { normalizeDynamicRoute, promptLogEnabled } from "./config";
 
 describe("normalizeDynamicRoute", () => {
   it("accepts a bare route name", () => {
@@ -49,5 +49,33 @@ describe("normalizeDynamicRoute", () => {
   it("rejects a name longer than the 64-char id limit", () => {
     expect(normalizeDynamicRoute("a".repeat(64))).toBe("a".repeat(64));
     expect(normalizeDynamicRoute("a".repeat(65))).toBeNull();
+  });
+});
+
+// ── prompt log feature flag ─────────────────────────────────────────────────
+// The flag decides whether the Worker stores a redacted copy of every prompt,
+// so the direction it fails in is the whole point: anything that is not the
+// exact string "true" must read as OFF. Storing prompts nobody agreed to store
+// cannot be undone, whereas the opposite failure is a visibly empty tab.
+describe("promptLogEnabled", () => {
+  it("is on only for the exact string 'true'", () => {
+    expect(promptLogEnabled({ PROMPT_LOG_ENABLED: "true" })).toBe(true);
+  });
+
+  it("is off when the var is absent — the committed default", () => {
+    expect(promptLogEnabled({})).toBe(false);
+    expect(promptLogEnabled({ PROMPT_LOG_ENABLED: undefined })).toBe(false);
+  });
+
+  it("is off for an explicit 'false'", () => {
+    expect(promptLogEnabled({ PROMPT_LOG_ENABLED: "false" })).toBe(false);
+  });
+
+  // A half-configured or fat-fingered var must not enable prompt storage.
+  // These are exactly the values a `!== "false"` check would wrongly accept.
+  it("fails closed on typos, casing and truthy-looking junk", () => {
+    for (const v of ["True", "TRUE", " true", "true ", "1", "yes", "on", "", "enabled"]) {
+      expect(promptLogEnabled({ PROMPT_LOG_ENABLED: v })).toBe(false);
+    }
   });
 });

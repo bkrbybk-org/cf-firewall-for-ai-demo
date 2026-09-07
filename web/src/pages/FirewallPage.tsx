@@ -54,7 +54,16 @@ export function FirewallPage() {
   const [limits, setLimits] = useState<GatewayLimits | undefined>();
   // Skip writing a turn to the D1 prompt_log table (redacted prompt/reply
   // history) — independent of AI Gateway's own request log.
-  const [excludeFromLog, setExcludeFromLog] = useState(false);
+  //
+  // Defaults to TRUE, i.e. "do not log". Storing someone's prompt is a choice
+  // they should make deliberately, so the demo starts by not doing it even
+  // when the operator has enabled the feature; the toggle is right there for
+  // the moment the log is the thing being demonstrated. Nothing is written
+  // when PROMPT_LOG_ENABLED is off either way — the Worker enforces that.
+  const [excludeFromLog, setExcludeFromLog] = useState(true);
+  // Whether the prompt log exists at all for this deployment (flag + D1).
+  // Absent from an older Worker's response means off, matching the server.
+  const [promptLogEnabled, setPromptLogEnabled] = useState(false);
   const [input, setInput] = useState("");
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
@@ -92,6 +101,7 @@ export function FirewallPage() {
         setGateways(data.gateways ?? []);
         setGatewayId(data.defaultGateway ?? data.gateways?.[0]?.id ?? "");
         setLimits(data.limits);
+        setPromptLogEnabled(data.promptLog?.enabled ?? false);
       })
       .catch(() => {});
   }, []);
@@ -146,6 +156,7 @@ export function FirewallPage() {
           onMultiTurnChange={setMultiTurn}
           excludeFromLog={excludeFromLog}
           onExcludeFromLogChange={setExcludeFromLog}
+          promptLogEnabled={promptLogEnabled}
           route={route}
           onRouteChange={setRoute}
           gateways={gateways}

@@ -61,6 +61,12 @@ type Tab = "edge" | "gateway" | "promptlog";
 
 export function AnalyticsPage() {
   const [tab, setTab] = useState<Tab>("edge");
+  // Prompt log feature flag (PROMPT_LOG_ENABLED + a bound D1), served by
+  // /api/models. Off means the tab does not exist — not that it renders a
+  // setup hint — and the edge tab's drill-through has nowhere to land, so it
+  // is withheld too. Starts false so nothing flashes into view before the
+  // response arrives; the server refuses the data either way.
+  const [promptLogEnabled, setPromptLogEnabled] = useState(false);
   const [hours, setHours] = useState(24);
   const [data, setData] = useState<Analytics | null>(null);
   const [fetchedAt, setFetchedAt] = useState<string | null>(null);
@@ -102,12 +108,13 @@ export function AnalyticsPage() {
   // banner carries that caveat when the clicked slice was blocked.
   const onDrill = useCallback(
     (d: EdgeDrill) => {
+      if (!promptLogEnabled) return;
       setDrill(d);
       setPlogCustom(false);
       setPlogHours(hours);
       setTab("promptlog");
     },
-    [hours],
+    [hours, promptLogEnabled],
   );
   const [plogSince, setPlogSince] = useState(""); // datetime-local strings;
   const [plogUntil, setPlogUntil] = useState(""); // "" = open-ended on that side
@@ -147,12 +154,21 @@ export function AnalyticsPage() {
     }
   }, []);
 
-  // Gateway list is served by /api/models alongside the model menu.
+  // Gateway list and the prompt-log flag are both served by /api/models,
+  // alongside the model menu.
   useEffect(() => {
     getModels()
       .then((d) => {
         setGateways(d.gateways ?? []);
         setGatewayId((cur) => cur || d.defaultGateway || d.gateways?.[0]?.id || "");
+        const enabled = d.promptLog?.enabled ?? false;
+        setPromptLogEnabled(enabled);
+        // Deep links and a remembered tab can both point at a tab that no
+        // longer exists; fall back rather than rendering an empty shell.
+        if (!enabled) {
+          setTab((cur) => (cur === "promptlog" ? "edge" : cur));
+          setDrill(null);
+        }
       })
       .catch(() => {});
   }, []);
@@ -230,7 +246,8 @@ export function AnalyticsPage() {
               [
                 { id: "edge" as const, label: "AI Security (edge)" },
                 { id: "gateway" as const, label: "AI Gateway" },
-                { id: "promptlog" as const, label: "Prompt log" },
+                // Only offered when there is a log to look at.
+                ...(promptLogEnabled ? [{ id: "promptlog" as const, label: "Prompt log" }] : []),
               ]
             ).map((t) => (
               <button
@@ -459,7 +476,10 @@ export function AnalyticsPage() {
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />
           ) : (
-            <EdgeTab data={data} hours={hours} onDrill={onDrill} />
+            /* Withholding onDrill (rather than passing a no-op) also drops
+               EdgeTab's "click to inspect prompts" affordance, so the rows
+               stop advertising a destination that isn't there. */
+            <EdgeTab data={data} hours={hours} onDrill={promptLogEnabled ? onDrill : undefined} />
           )}
         </div>
       </main>

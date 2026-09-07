@@ -437,7 +437,7 @@ export function RedTeamPage() {
                   !isCustom ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
-                Prisma AIRS ({RT_CORPUS.length})
+                AI Red Team Sample ({RT_CORPUS.length})
               </button>
               <button
                 type="button"

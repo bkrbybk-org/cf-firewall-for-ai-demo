@@ -25,6 +25,20 @@
     // AI Gateway, then turn on Guardrails). Powers the Guardrails toggle on
     // the gateway page. Remove this var to hide the toggle.
     "CF_AI_GATEWAY_GUARDED_ID": "cf-ai-sec-demo-gw",
+    // Master switch for the prompt log (the D1 table holding a PII-redacted
+    // copy of every prompt and reply that reaches the Worker). OPT-IN: only
+    // the exact string "true" enables it — see promptLogEnabled() in
+    // src/config.ts for why it fails closed rather than open.
+    //
+    // Off: the Worker writes no prompt rows, /api/prompt-log and
+    // /api/prompt-analytics report the feature as disabled, and the client
+    // hides the Analytics → Prompt log tab and the per-turn "log prompt"
+    // toggle. Turning it on additionally needs the d1_databases binding
+    // below; with the flag on and no binding there is nowhere to write.
+    //
+    // Storing prompts is a decision someone should make on purpose, so the
+    // committed default is off even though this demo's own D1 is bound.
+    "PROMPT_LOG_ENABLED": "false",
   },
   "assets": {
     // Built React SPA (Vite → dist). Unknown routes serve index.html so the

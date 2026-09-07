@@ -156,6 +156,7 @@ export function Chat({
   multiTurn,
   onMultiTurnChange,
   excludeFromLog,
+  promptLogEnabled,
   onExcludeFromLogChange,
   route,
   onRouteChange,
@@ -181,6 +182,8 @@ export function Chat({
   multiTurn: boolean;
   onMultiTurnChange: (v: boolean) => void;
   excludeFromLog: boolean;
+  /** Prompt log turned on for this deployment (PROMPT_LOG_ENABLED + D1). */
+  promptLogEnabled: boolean;
   onExcludeFromLogChange: (v: boolean) => void;
   route: Route;
   onRouteChange: (r: Route) => void;
@@ -442,12 +445,18 @@ export function Chat({
           label="multi-turn"
           title="When off, each prompt is sent standalone — no history[], so the model can't recall earlier turns (multi-turn attacks like Crescendo won't build across messages)"
         />
-        <Switch
-          checked={!excludeFromLog}
-          onChange={(v) => onExcludeFromLogChange(!v)}
-          label="log prompt"
-          title="When off, this turn is not written to the D1 prompt_log table (redacted prompt/reply history) — separate from AI Gateway's own request log"
-        />
+        {/* Hidden outright when the feature is off, rather than shown
+            disabled: a greyed-out "log prompt" implies the log exists and
+            could be switched on from here, when in fact nothing in the UI
+            can turn it on — it is a deploy-time var. */}
+        {promptLogEnabled && (
+          <Switch
+            checked={!excludeFromLog}
+            onChange={(v) => onExcludeFromLogChange(!v)}
+            label="log prompt"
+            title="Off by default. When on, this turn is written to the D1 prompt_log table (redacted prompt/reply history) — separate from AI Gateway's own request log"
+          />
+        )}
         {gateway && (
           <>
             {gateways.length > 0 && (

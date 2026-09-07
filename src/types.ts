@@ -9,6 +9,13 @@ export interface Env {
   // unbound the feature degrades to a "not configured" state. Prompts are
   // PII-redacted before they are written here.
   DB?: D1Database;
+  // Master switch for the prompt log, OPT-IN: only the exact string "true"
+  // turns it on. Off means the Worker writes no prompt rows at all, both
+  // read endpoints report the feature as disabled, and the client hides the
+  // Analytics tab and the per-turn toggle entirely. Binding DB is therefore
+  // necessary but not sufficient — see promptLogEnabled() in config.ts for
+  // why this fails closed.
+  PROMPT_LOG_ENABLED?: string; // plain var in wrangler.jsonc
   // Optional: enables the live "edge verdict" lookup (GET /api/verdict).
   CF_ZONE_ID?: string; // set as a SECRET (and in .env for wrangler dev)
   // Optional: enables the Neuron usage monitor (GET /api/neurons).
@@ -119,6 +126,12 @@ export interface PromptLogRow {
   redactions: number; // PII spans masked in prompt+reply
   promptTokens: number | null;
   completionTokens: number | null;
+  // Worker-observed only (starts just before the model call, inside the
+  // Worker) — never includes the edge AI Security scan, and rows the WAF
+  // blocked never exist at all. null on rows written before this column
+  // existed. Meaning depends on `streamed` — see PromptAnalytics.latency.
+  latencyMs: number | null;
+  streamed: number; // 0/1 (SQLite has no bool) — see PromptAnalytics.latency
 }
 
 // Aggregated security analytics for the dashboard page (GET /api/analytics).
@@ -173,6 +186,28 @@ export interface PromptAnalytics {
   bucket: SeriesBucket;
   firstTs: number | null;
   lastTs: number | null;
+  // Worker-observed latency, grouped by (route, guarded, streamed) — never
+  // mixed across `streamed`, since a streamed row's latency_ms is
+  // time-to-first-byte and a non-streamed row's is total generation time
+  // (see migrations/0002_latency.sql). This measures direct vs gateway vs
+  // guarded-gateway model latency AS THE WORKER SEES IT — it starts inside
+  // the Worker, so it excludes the edge AI Security scan entirely, and rows
+  // the WAF blocked have no row here at all. It is not a measurement of what
+  // AI Security costs.
+  latency: {
+    route: string;
+    guarded: number; // 0/1
+    streamed: number; // 0/1
+    n: number;
+    p50: number | null;
+    p95: number | null;
+    max: number | null;
+  }[];
+  // How many rows in the window actually have a latency_ms value, out of the
+  // window's total — old rows (before this column existed) are NULL forever,
+  // so a rollup over a handful of covered rows must never read as covering
+  // the whole table.
+  latencyCoverage: { withLatency: number; total: number };
   error?: string;
 }
 

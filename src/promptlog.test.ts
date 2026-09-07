@@ -70,6 +70,12 @@ describe("buildPromptLogQuery — sorting", () => {
     );
   });
 
+  it("maps the latency column to latency_ms", () => {
+    expect(buildPromptLogQuery({ sort: "latency", dir: "desc" }).orderBy).toBe(
+      "ORDER BY latency_ms DESC, ts DESC",
+    );
+  });
+
   it("falls back to ts for a column that is not on the whitelist", () => {
     // This value reaches ORDER BY, where a bind parameter is not possible — so
     // anything off the whitelist must be discarded, never interpolated.

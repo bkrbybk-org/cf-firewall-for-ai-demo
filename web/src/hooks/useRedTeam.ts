@@ -10,8 +10,11 @@
 //                concurrency-capped so we don't hammer /api/verdict.
 //
 // The runner calls the API directly rather than going through useChat, so a run
-// never touches the chat transcript. Rows still land in D1 (excludeFromLog is
-// left false), so the Analytics → Prompt log tab is the persistent record.
+// never touches the chat transcript. It leaves excludeFromLog unset, so rows
+// land in D1 whenever the prompt log is enabled (PROMPT_LOG_ENABLED) and the
+// Analytics → Prompt log tab is the persistent record. With the flag off — the
+// default — the Worker writes nothing and a run's own scorecard, plus a saved
+// run in redteam_runs, are the only records it leaves.
 import { useCallback, useRef, useState } from "react";
 import { postChat } from "../lib/api";
 import { fetchVerdictOnce, verdictOutcome } from "../lib/verdict";

@@ -1,0 +1,25 @@
+-- Worker-observed latency per prompt. See src/handlers.ts (handleChat) for the
+-- exact measurement points — summarized here since this file has no code to
+-- comment inline:
+--   * non-streaming: elapsed is measured AFTER the full reply is in hand, so
+--     latency_ms is TOTAL GENERATION TIME.
+--   * streaming: elapsed is measured BEFORE the stream drains (the row must
+--     exist even if the client disconnects mid-stream), so latency_ms is
+--     TIME TO FIRST BYTE.
+-- These are different quantities by roughly an order of magnitude and must
+-- never be averaged together — `streamed` records which one a row holds, and
+-- every rollup groups by it.
+--
+-- This is Worker-observed latency only: the clock starts just before the
+-- model call, inside the Worker. It does NOT include the edge AI Security
+-- scan (which runs before the Worker is invoked) and it has no row at all for
+-- requests the WAF blocks (they never reach the Worker). So this column can
+-- answer "direct vs gateway vs guarded-gateway model latency", never "what
+-- does AI Security cost".
+--
+-- ALTER TABLE ... ADD COLUMN leaves every existing row NULL for latency_ms,
+-- and a `streamed` DEFAULT 0 would misrepresent historical streamed rows as
+-- non-streamed. Callers must filter on `latency_ms IS NOT NULL` and report
+-- the covered row count alongside any rollup.
+ALTER TABLE prompt_log ADD COLUMN latency_ms INTEGER;
+ALTER TABLE prompt_log ADD COLUMN streamed INTEGER NOT NULL DEFAULT 0;

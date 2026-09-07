@@ -26,6 +26,34 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
     (anchored + retention-aware, see below), `/api/neurons`, `/api/analytics` (zone),
     `/api/gateway-analytics` (account, per gateway), `/api/prompt-log` (GET list / DELETE clear —
     D1), `/api/prompt-analytics` (D1 rollups). Everything else → static assets (SPA fallback).
+- **The prompt log is behind a feature flag, off by default (2026-09-03).** `PROMPT_LOG_ENABLED`
+  in `wrangler.jsonc`; `promptLogEnabled()` in `src/config.ts` is the single check. Requested
+  deliberately — the log stores a redacted copy of every prompt that reaches the Worker, which is
+  good evidence for the compliance story and a liability everywhere else, so it became opt-in
+  rather than opt-out.
+  - **It fails closed, not open.** The check is `=== "true"`, not `!== "false"`. A typo, a
+    half-applied deploy or a var that never landed must read as OFF: the failure mode of "we
+    thought logging was off" is prompts stored that nobody agreed to store, and that cannot be
+    undone after the fact. The reverse failure surfaces immediately as an empty tab and costs
+    nothing. `src/config.test.ts` pins `"True"`, `"TRUE"`, `" true"`, `"1"`, `"yes"`, `"on"`, `""`
+    and `"enabled"` as all OFF.
+  - **Enforced in the Worker, not just hidden in the UI.** The gate sits inside `logPrompt`,
+    `updateLoggedReply` and `teeReplyToLog` — the three functions that can write — so a future
+    caller cannot reintroduce logging by forgetting a guard upstream. Both read endpoints answer
+    `{configured:false, disabled:true}`; `disabled` is separate from `configured` because only the
+    latter deserves a setup hint.
+  - `/api/models` serves the resolved flag (`promptLog.enabled`, which also requires the `DB`
+    binding) so the client can remove the Analytics → Prompt log tab, the edge tab's
+    drill-through affordance, and the per-turn toggle. Hidden rather than disabled: the flag is a
+    deploy-time var, so a greyed-out control would imply the UI could turn it on.
+  - **The per-turn "log prompt" switch now defaults to OFF** (`excludeFromLog` starts `true`).
+    The red-team runner still leaves it unset, so runs log while the feature is enabled — that is
+    the runner's designed evidence trail, and it writes nothing at all while the flag is off.
+  - Verified on `wrangler dev` both ways with a faked `cf-ray` (local dev sets none, and
+    `logPrompt` returns early without one — so a first test that "passed" with the flag off was
+    proving nothing): flag off → row count unchanged; flag on → row written; flag on plus
+    `excludeFromLog:true` → row count unchanged. Browser confirmed the tab, the drill hint and the
+    switch all disappear with the flag off.
 - **Prompt log store = D1** (`DB` binding, db `cf-ai-waf-demo-log`, `migrations/0001_prompt_log.sql`).
   `handleChat` writes one PII-**redacted** row per prompt that reaches the Worker, via
   `ctx.waitUntil` so it never blocks the reply; redaction is an independent regex pass in

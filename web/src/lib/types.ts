@@ -27,6 +27,12 @@ export interface ModelsResponse {
   gateways?: GatewayOption[]; // configured AI Gateways for the dropdown
   defaultGateway?: string; // id of the first configured gateway
   limits?: GatewayLimits;
+  // Prompt-log feature flag. `enabled` requires both the PROMPT_LOG_ENABLED
+  // var and a bound D1, so the client can treat it as "is there anywhere for
+  // a prompt to go" and hide the whole feature when there isn't. Optional
+  // because a cached or older Worker may not send it — treat absent as OFF,
+  // matching the server's own opt-in default.
+  promptLog?: { enabled: boolean };
 }
 
 // GET /api/zone-rules — the zone's WAF custom rules, read live from the
@@ -177,9 +183,16 @@ export interface PromptLogRow {
   redactions: number;
   promptTokens: number | null;
   completionTokens: number | null;
+  // Worker-observed only — see PromptAnalytics.latency for what that excludes.
+  // null on rows written before this column existed.
+  latencyMs: number | null;
+  streamed: number; // 0/1
 }
 export interface PromptLog {
   configured: boolean;
+  // The operator turned the feature off, as opposed to D1 not being bound.
+  // Distinct because only the latter deserves a setup hint.
+  disabled?: boolean;
   rows?: PromptLogRow[]; // one page, already filtered/sorted by SQL
   filtered?: number; // rows matching the filters — drives the page count
   total?: number; // rows in the whole table, regardless of filters
@@ -191,6 +204,8 @@ export interface PromptLog {
 // GET /api/prompt-analytics — rollups computed as SQL GROUP BY inside D1.
 export interface PromptAnalytics {
   configured: boolean;
+  disabled?: boolean; // see PromptLog.disabled
+
   total?: number;
   withPii?: number;
   redactions?: number;
@@ -204,6 +219,25 @@ export interface PromptAnalytics {
   bucket?: "5m" | "hour" | "day";
   firstTs?: number | null;
   lastTs?: number | null;
+  // Worker-observed latency, grouped by (route, guarded, streamed) — never mix
+  // rows across `streamed` (TTFB vs total generation time are different
+  // quantities). This is direct vs gateway vs guarded-gateway model latency
+  // AS THE WORKER SEES IT: it excludes the edge AI Security scan (which runs
+  // before the Worker is invoked) and has no rows for requests the WAF
+  // blocked. It is not a measurement of what AI Security costs.
+  latency?: {
+    route: string;
+    guarded: number;
+    streamed: number;
+    n: number;
+    p50: number | null;
+    p95: number | null;
+    max: number | null;
+  }[];
+  // How many rows in the window have a latency_ms value, out of the total —
+  // old rows are permanently NULL, so this guards against a rollup over a
+  // handful of rows reading as the whole table.
+  latencyCoverage?: { withLatency: number; total: number };
   error?: string;
 }
 

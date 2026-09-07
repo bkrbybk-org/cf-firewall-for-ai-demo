@@ -36,7 +36,7 @@ const OUTCOME_TONE: Record<string, string> = {
   error: "border-cf-red/50 text-cf-red",
 };
 
-type SortKey = "ts" | "outcome" | "route" | "model" | "tokens" | "redactions";
+type SortKey = "ts" | "outcome" | "route" | "model" | "tokens" | "redactions" | "latency";
 type SortDir = "asc" | "desc";
 
 // What the table is currently showing. Owned by AnalyticsPage because every
@@ -65,6 +65,7 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   model: "asc",
   tokens: "desc",
   redactions: "desc",
+  latency: "desc",
 };
 
 function SortHeader({
@@ -156,10 +157,19 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
             <span className="text-subtle">—</span>
           )}
         </td>
+        {/* null on rows written before the latency column existed, or a
+            streamed row whose reply (and thus the tee that would prove the
+            stream ever drained) never arrived — see PromptAnalytics.latency. */}
+        <td
+          className="px-2.5 py-1.5 text-right font-mono text-[11px] whitespace-nowrap text-muted tabular-nums"
+          title={r.latencyMs != null ? (r.streamed ? "time to first byte" : "total generation time") : undefined}
+        >
+          {r.latencyMs != null ? `${r.latencyMs} ms` : "—"}
+        </td>
       </tr>
       {open && (
         <tr className="border-t border-line bg-bg/40">
-          <td colSpan={8} className="px-3 py-2.5">
+          <td colSpan={9} className="px-3 py-2.5">
             <div className="flex flex-col gap-2.5 text-[12px]">
               <div>
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-subtle">
@@ -202,6 +212,91 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
         </tr>
       )}
     </>
+  );
+}
+
+// Worker-observed latency, split by (route, guarded, streamed) — p50/p95/max
+// computed in SQL, never in the browser. `streamed` rows and non-streamed
+// rows measure genuinely different things (time-to-first-byte vs total
+// generation time) and must stay visually separate, not just labeled —
+// otherwise this table invites exactly the average-across-them mistake it
+// exists to prevent. See migrations/0002_latency.sql for the full story.
+function LatencyTable({ a }: { a: PromptAnalytics }) {
+  const rows = a.latency ?? [];
+  const cov = a.latencyCoverage;
+  return (
+    <Card
+      title="Latency"
+      subtitle="Worker-observed only — measured from just before the model call to when the Worker has an answer"
+    >
+      <p className="mb-3 text-[11.5px] leading-relaxed text-subtle">
+        This excludes the edge AI Security scan entirely (it runs before the Worker is invoked, and is not exposed to
+        it), and requests the WAF blocks never reach the Worker at all — they have no row here. So this table answers{" "}
+        <b className="text-text">direct vs AI Gateway vs guarded-gateway model latency</b>, never "what AI Security
+        costs".
+        {cov && (
+          <>
+            {" "}
+            {cov.withLatency} of {cov.total} rows in this window have a recorded latency ({" "}
+            {cov.total > 0 ? Math.round((cov.withLatency / cov.total) * 100) : 0}%) — rows written before this
+            column existed stay blank forever, so a rollup over a handful of them is not the whole table.
+          </>
+        )}
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] text-left text-[12px]">
+          <thead className="text-[10px] uppercase tracking-wider text-subtle">
+            <tr>
+              <th scope="col" className="px-2.5 py-1.5 font-semibold">
+                Route
+              </th>
+              <th scope="col" className="px-2.5 py-1.5 font-semibold">
+                Measurement
+              </th>
+              <th scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                n
+              </th>
+              <th scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                p50
+              </th>
+              <th scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                p95
+              </th>
+              <th scope="col" className="px-2.5 py-1.5 text-right font-semibold">
+                max
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={`${r.route}-${r.guarded}-${r.streamed}`} className="border-t border-line">
+                <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">
+                  {r.route === "gateway" ? "AI Gateway" : "Workers AI"}
+                  {r.guarded === 1 && (
+                    <span className="ml-1.5 rounded-full border border-cf-purple/50 px-1.5 py-px text-[10px] font-semibold text-cf-purple">
+                      Guardrails
+                    </span>
+                  )}
+                </td>
+                <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">
+                  {r.streamed === 1 ? "streamed (time to first byte)" : "non-streamed (total generation)"}
+                </td>
+                <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-muted">{r.n}</td>
+                <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-text">
+                  {r.p50 != null ? `${r.p50} ms` : "—"}
+                </td>
+                <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-text">
+                  {r.p95 != null ? `${r.p95} ms` : "—"}
+                </td>
+                <td className="px-2.5 py-1.5 text-right font-mono tabular-nums text-text">
+                  {r.max != null ? `${r.max} ms` : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }
 
@@ -275,6 +370,8 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
           />
         </Card>
       </div>
+
+      {(a.latency ?? []).length > 0 && <LatencyTable a={a} />}
 
       {(a.repeated ?? []).length > 0 && (
         <Card
@@ -505,12 +602,20 @@ export function PromptLogTab({
                     onSort={onSort}
                     className="text-right"
                   />
+                  <SortHeader
+                    label="Latency"
+                    col="latency"
+                    sortKey={sortKey}
+                    sortDir={sortDir}
+                    onSort={onSort}
+                    className="text-right"
+                  />
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 ? (
                   <tr className="border-t border-line">
-                    <td colSpan={8} className="px-3 py-4 text-center text-[12px] text-subtle">
+                    <td colSpan={9} className="px-3 py-4 text-center text-[12px] text-subtle">
                       No rows match “{view.q}”.
                     </td>
                   </tr>

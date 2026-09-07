@@ -118,3 +118,20 @@ export const MAX_GATEWAY_ATTEMPTS = 5;
 export const MAX_GATEWAY_RETRY_DELAY_MS = 5000;
 export const GATEWAY_BACKOFF_VALUES = ["constant", "linear", "exponential"] as const;
 export type GatewayBackoff = (typeof GATEWAY_BACKOFF_VALUES)[number];
+
+// ── Prompt log feature flag ─────────────────────────────────────────────────
+// The prompt log stores a PII-redacted copy of every prompt and reply that
+// reaches the Worker. That is useful evidence for a compliance story and a
+// liability everywhere else, so it is OPT-IN: absent, empty or anything other
+// than the exact string "true" means off.
+//
+// Deliberately not `!== "false"`. A misspelled or half-deployed var must fail
+// CLOSED — the failure mode of "we thought logging was off" is storing prompts
+// nobody agreed to store, which cannot be undone after the fact. The reverse
+// (logging silently off when someone wanted it on) shows up immediately as an
+// empty tab, and costs nothing.
+//
+// Wrangler serialises vars as strings, so this compares a string, not a bool.
+export function promptLogEnabled(env: { PROMPT_LOG_ENABLED?: string }): boolean {
+  return env.PROMPT_LOG_ENABLED === "true";
+}

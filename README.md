@@ -21,7 +21,7 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 | Route | What it shows |
 |---|---|
 | `/` | Chat demo. System Prompt + AI Gateway settings (left) · chat (center) · Attack Library (right). Nav-tab label is "AI Guardrails Demo". |
-| `/analytics` | Three tabs: **edge** (zone WAF + AI Security), **AI Gateway** (account gateway logs), **prompt log** (D1). |
+| `/analytics` | **edge** (zone WAF + AI Security) and **AI Gateway** (account gateway logs), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
 | `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. |
 | `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
 
@@ -149,10 +149,13 @@ The REST gateway list carries **no** guardrails field, so which gateway is guard
 
 ## Prompt log (D1)
 
+> ⚠️ **Off by default.** The prompt log is behind the `PROMPT_LOG_ENABLED` var in `wrangler.jsonc` and only the exact string `"true"` turns it on. Everything in this section describes what happens **once you enable it**.
+
 `handleChat` writes one row per prompt that **reached the Worker** into D1 (`cf-ai-waf-demo-log`, schema in `migrations/0001_prompt_log.sql`), via `ctx.waitUntil` so it never blocks the reply. Edge-blocked 403s never invoke the Worker, so they are *not* here — the analytics edge tab covers those.
 
+- **Feature flag, enforced in the Worker.** `promptLogEnabled()` (`src/config.ts`) gates the write itself, plus `GET/DELETE /api/prompt-log` and `/api/prompt-analytics`, which report `{configured:false, disabled:true}` when off. `/api/models` serves the resolved flag so the client hides the Analytics → **Prompt log** tab, the edge tab's drill-through, and the per-turn toggle — a control that cannot be switched on from the UI is not shown greyed out. The check is `=== "true"`, deliberately **not** `!== "false"`: a misspelled or half-deployed var must fail *closed*, because storing prompts nobody agreed to store cannot be undone, while the opposite failure is a visibly empty tab. `enabled` also requires the D1 binding — with the flag on and no `DB` there is nowhere to write.
 - **PII-redacted at write time** by `src/redact.ts` — an independent regex pass (Thai national ID, IBAN, card, crypto wallet, email, IPv4, phone), deliberately over-masking. Firewall for AI reports PII *categories*, not offsets, so its output can't drive precise masking.
-- **Per-turn opt-out**: the "log prompt" switch sends `excludeFromLog: true` and the write is skipped. This is app-level and unrelated to AI Gateway's own `collect-log`.
+- **Per-turn opt-out, and it starts opted out**: the "log prompt" switch defaults to **off**, sending `excludeFromLog: true` so the write is skipped. Logging a prompt is a deliberate act, so the demo does not do it until someone asks — turn the switch on for the moment the log is the thing being shown. App-level and unrelated to AI Gateway's own `collect-log`. The red-team runner leaves the flag unset, so its runs *do* log while the feature is enabled.
 - ⚠️ **AI Gateway logs still store the raw prompt + response payload** (account-scoped, unredacted). The UI says so — it's a deliberate talking point.
 - **Streamed replies are captured too.** A streamed reply never exists server-side as a whole, so the row is written immediately with `reply = NULL` and filled in once the stream finishes passing through (`teeReplyToLog`, chained after the insert). Streaming is the default path, so without this the log's reply column was empty for most real traffic. Nothing is buffered — chunks are forwarded as they arrive.
 - Rows join to the live edge verdict by ray in the UI; detections are not stored (they ingest into GraphQL seconds *after* the row is written).
@@ -277,7 +280,7 @@ Then load it from **Corpus → Load CSV**. The script ([`scripts/thaisafety-csv.
 - `--n` defaults to **100** (≈8 min: sends are sequential at ~4 s each, plus the 90 s settle). 200 is the parser's cap and ≈15 min. Every prompt is a billable inference call against the daily Neuron allocation, so the full 1,889 is a load test and isn't offered.
 - **The generated CSV is gitignored on purpose.** The dataset card says the data is "intended for academic purposes only", which does not match the apache-2.0 licence it also carries — that discrepancy is worth a legal glance before this appears in a paid engagement, and it isn't resolved by committing a few hundred harmful Thai prompts into a customer-facing repo. Regenerate from the script instead.
 - Upstream **removed Monarchy-related content per Thai regulations** (1,954 → 1,889 rows). Don't re-add such prompts or author replacements — relevant to lèse-majesté exposure for a demo run in Thailand.
-- A run stores these prompts in the D1 prompt log (redacted) and, on the gateway route, in **AI Gateway logs raw**. Use the per-turn `log prompt` opt-out if that matters.
+- A run stores these prompts in the D1 prompt log (redacted) **only when `PROMPT_LOG_ENABLED` is on** — it is off by default — and, on the gateway route, in **AI Gateway logs raw** regardless.
 - `hyparquet` (MIT, zero dependencies) is a **devDependency** used only by this script — it never reaches the Worker or the SPA bundle.
 
 The companion `typhoon-ai/ThaiSafetyClassifier` is deliberately **not** wired in as a guardrail — see PROGRESS.md for why.
