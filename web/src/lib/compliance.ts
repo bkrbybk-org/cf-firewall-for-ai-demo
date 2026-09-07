@@ -16,6 +16,20 @@
 //    (Bank of Thailand AI Risk Management policy, NCSA AI Security Guidelines)
 //    are Thai-language documents — section/phase refs paraphrase their
 //    structure, they never reproduce the Thai text verbatim.
+//
+// Evidence chips (Control.evidence) — same honesty bar, applied to live data:
+//  - Evidence is optional and sparse on purpose. Most controls here are
+//    governance controls (policy, roles, process) that no traffic count can
+//    evidence, and attaching a number to one would be a false compliance
+//    claim. Only the controls that already carry `evidence` below have it —
+//    adding a fifth is an editorial call about what we assert to customers,
+//    not a formatting one, so don't extend the set on your own judgment.
+//  - `evidence` is a declarative pointer (which metric, from which live
+//    payload) — see ./complianceEvidence.ts for how it resolves into a
+//    rendered value and for the empty-state rules (unconfigured vs. no
+//    traffic in the window vs. a genuine zero vs. a truncated/floor count).
+//    This file never fetches or computes; it only says which control a
+//    metric belongs to.
 // ============================================================================
 
 export type Coverage = "full" | "partial" | "supporting" | "none";
@@ -42,6 +56,15 @@ export const PRODUCT_LABEL: Record<Product, string> = {
   neither: "Neither product",
 };
 
+// Which live metric evidences a control, and which payload it comes from.
+// Deliberately just a pointer — no thresholds, formatting or copy here, all
+// of that is ./complianceEvidence.ts's job so this file stays pure content.
+export type EvidenceMetric = "injection-scoring" | "pii-detection" | "unsafe-topics" | "risk-window";
+
+export interface Evidence {
+  metric: EvidenceMetric;
+}
+
 export interface Control {
   id: string; // real identifier, e.g. "MEASURE 2.7"
   title: string; // short control name, paraphrased
@@ -50,6 +73,10 @@ export interface Control {
   product: Product;
   refs?: string[]; // cross-framework identifiers, e.g. ["LLM01", "AML.T0051"]
   demo?: { label: string; to: string }; // internal route that shows it live
+  // Live audit evidence for this control, resolved from /api/analytics and
+  // /api/prompt-analytics at render time. Optional and rare — see the header
+  // comment and complianceEvidence.ts before adding one.
+  evidence?: Evidence;
 }
 
 export interface Framework {
@@ -179,6 +206,7 @@ export const FRAMEWORKS: Framework[] = [
         product: "ai-security",
         refs: ["LLM01", "AML.T0051"],
         demo: { label: "See it on the chat demo", to: "/" },
+        evidence: { metric: "injection-scoring" },
       },
       {
         id: "MEASURE 2.10",
@@ -188,6 +216,7 @@ export const FRAMEWORKS: Framework[] = [
         product: "ai-security",
         refs: ["LLM02", "AML.T0057"],
         demo: { label: "Send a PII prompt", to: "/" },
+        evidence: { metric: "pii-detection" },
       },
       {
         id: "MEASURE 2.6",
@@ -197,6 +226,7 @@ export const FRAMEWORKS: Framework[] = [
         product: "ai-security",
         refs: ["LLM01", "AML.T0054"],
         demo: { label: "Try an unsafe topic", to: "/" },
+        evidence: { metric: "unsafe-topics" },
       },
       {
         id: "MEASURE 2.8",
@@ -213,6 +243,7 @@ export const FRAMEWORKS: Framework[] = [
         coverage: "partial",
         product: "both",
         demo: { label: "Open analytics", to: "/analytics" },
+        evidence: { metric: "risk-window" },
       },
       {
         id: "MANAGE 2.2",

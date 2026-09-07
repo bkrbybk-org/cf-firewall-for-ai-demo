@@ -3,11 +3,21 @@
 // frameworks (Bank of Thailand AI risk policy, NCSA AI Security Guidelines).
 // Overview matrix on top, framework tabs with per-control detail below.
 // All content lives in ../lib/compliance.ts — no mappings inline here.
-import { useState } from "react";
+//
+// Evidence chips: a handful of controls (compliance.ts Control.evidence)
+// carry a live audit metric alongside their static prose, resolved by
+// ../lib/complianceEvidence.ts from the same two analytics payloads the
+// Analytics page uses. Fetched once here, for a fixed window (EVIDENCE_HOURS
+// below) — this page is not the place for a range picker, it just states
+// which window it used. A failed or unconfigured fetch degrades silently:
+// the controls themselves are static content and render regardless: only the
+// chip disappears.
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, ExternalLink, Info, ShieldCheck } from "lucide-react";
+import { Activity, ArrowRight, ExternalLink, Info, ShieldCheck } from "lucide-react";
 import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { getAnalytics, getPromptAnalytics } from "../lib/api";
 import {
   COVERAGE_HELP,
   COVERAGE_LABEL,
@@ -15,8 +25,16 @@ import {
   MATRIX,
   PRODUCT_LABEL,
   type Coverage,
+  type Evidence,
   type Product,
 } from "../lib/compliance";
+import { resolveEvidence } from "../lib/complianceEvidence";
+import type { Analytics, PromptAnalytics } from "../lib/types";
+
+// Fixed rather than user-picked: this page is an audit artifact, not a
+// dashboard, and a moving range would make "what did the reviewer see"
+// unreproducible. 24h matches the AnalyticsPage default.
+const EVIDENCE_HOURS = 24;
 
 const COVERAGE_TONE: Record<Coverage, string> = {
   full: "border-cf-green/50 bg-cf-green/10 text-cf-green",
@@ -66,8 +84,65 @@ function Ref({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Renders one of three states, deliberately distinct — see
+// complianceEvidence.ts's header for why collapsing any two of them would be
+// dishonest: "unconfigured" is nothing at all (the card falls back to its
+// static prose), "no-data" is a muted note that the control simply wasn't
+// exercised in this window, and "ok" is the real measured value.
+function EvidenceChip({
+  evidence,
+  analytics,
+  promptAnalytics,
+}: {
+  evidence: Evidence;
+  analytics: Analytics | null;
+  promptAnalytics: PromptAnalytics | null;
+}) {
+  const r = resolveEvidence(evidence, analytics, promptAnalytics, EVIDENCE_HOURS);
+  if (r.status === "unconfigured") return null;
+  if (r.status === "no-data") {
+    return (
+      <div className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[11px] text-subtle">
+        <Activity size={12} className="mt-0.5 shrink-0" />
+        <span>No traffic to measure in the {r.windowLabel} — not exercised yet, not a failed control.</span>
+      </div>
+    );
+  }
+  return (
+    <div
+      className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-cf-blue/30 bg-cf-blue/[0.06] px-2.5 py-1.5 text-[11px] text-cf-blue"
+      title={r.floor ? "Row cap reached in this window — counts are a floor, not an exact total." : undefined}
+    >
+      <Activity size={12} className="mt-0.5 shrink-0" />
+      <span>
+        <b className="font-semibold">{r.headline}</b> · {r.windowLabel}
+        {r.floor && " · floor (row cap reached)"}
+      </span>
+    </div>
+  );
+}
+
 export function CompliancePage() {
   const [active, setActive] = useState(FRAMEWORKS[0].id);
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [promptAnalytics, setPromptAnalytics] = useState<PromptAnalytics | null>(null);
+
+  // Fetched once, best-effort. Either call failing must not surface as an
+  // error state or a zero — it just leaves analytics/promptAnalytics null,
+  // which resolveEvidence already reads as "unconfigured" (render nothing).
+  useEffect(() => {
+    let cancelled = false;
+    getAnalytics(EVIDENCE_HOURS)
+      .then((d) => !cancelled && setAnalytics(d))
+      .catch(() => {});
+    getPromptAnalytics({ hours: EVIDENCE_HOURS })
+      .then((d) => !cancelled && setPromptAnalytics(d))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const fw = FRAMEWORKS.find((f) => f.id === active) ?? FRAMEWORKS[0];
   const sorted = [...fw.controls].sort(
     (a, b) => COVERAGE_ORDER.indexOf(a.coverage) - COVERAGE_ORDER.indexOf(b.coverage),
@@ -89,6 +164,8 @@ export function CompliancePage() {
               Cloudflare provides <b className="text-text">technical controls</b> that support these frameworks. Full
               compliance is an organizational program — governance, documentation and process — not a product. Coverage
               below is graded honestly, including controls these products do <b className="text-text">not</b> address.
+              A few controls also carry a live evidence chip — a measured count from this zone's own last{" "}
+              {EVIDENCE_HOURS}h of traffic, not a claim about traffic in general.
             </p>
           </div>
 
@@ -214,6 +291,9 @@ export function CompliancePage() {
                   <CoverageBadge c={c.coverage} />
                 </div>
                 <p className="mt-2 flex-1 text-[12.5px] leading-relaxed text-muted">{c.how}</p>
+                {c.evidence && (
+                  <EvidenceChip evidence={c.evidence} analytics={analytics} promptAnalytics={promptAnalytics} />
+                )}
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   <ProductBadge p={c.product} />
                   {c.refs?.map((r) => <Ref key={r}>{r}</Ref>)}
