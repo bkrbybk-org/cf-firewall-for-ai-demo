@@ -18,17 +18,10 @@ failure stops the chain, and the fix comes before moving on.
    console errors, the actual rendered result, both light and dark. Never ask the user to check
    something manually.
 
-   CI (`.github/workflows/ci.yml`) runs exactly these four commands on every PR
-   and every push to `main`, so a green local run is a green CI run. It does not
-   deploy — see step 3 for why.
+   CI (`.github/workflows/ci.yml`) runs exactly these commands on every PR and every push to
+   `main`, so a green local run is a green CI run. It does not deploy — see step 5 for why.
 
-2. **Commit locally.** Not pushed yet — see step 5. This is out of order relative to how the
-   workflow was first described, and deliberately so: `npm run deploy` ships the working tree, so
-   committing first is what guarantees prod is always running a revision that exists in git. A
-   local commit is free to undo (`git reset`), while an un-versioned prod deploy is not
-   reproducible. If a change should not survive, say so and it stays uncommitted.
-
-3. **Deploy to prod.**
+2. **Deploy to prod.**
    ```bash
    npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # only when migrations are pending
    npm run deploy
@@ -36,25 +29,42 @@ failure stops the chain, and the fix comes before moving on.
    Apply migrations **before** the Worker, so the new code never meets an old schema. Read any
    migration before applying it to prod and say plainly if it is not purely additive.
 
-4. **Test on prod.**
+   Note what this ordering means operationally: `npm run deploy` ships the **working tree**, so
+   between here and step 5 prod is running a revision that does not exist in git yet. Keep the
+   version id `wrangler` prints — with no commit to point at, that id and
+   `npx wrangler rollback` are the only way back. Do not start unrelated edits in this window.
+
+3. **Test on prod.**
    ```bash
    npm run smoke:prod
    ```
    All five checks must pass. Prod is behind Cloudflare Access, so use the service token in
    `.env`; a bare probe returns a 302 to the Access login, which is not a failure. Also curl
-   anything the smoke test does not cover that this change touched. A fresh deploy rolls out
-   gradually — a mixed result immediately after deploying is usually version propagation, so
-   re-run ~45s later before diagnosing it as a fault.
+   anything the smoke test does not cover that this change touched — the smoke test never sees
+   the SPA, so for front-end work fetch the deployed bundle and grep it for the change. A fresh
+   deploy rolls out gradually, so a mixed result immediately after deploying is usually version
+   propagation: re-run ~45s later before diagnosing it as a fault.
 
-5. **Push to origin** — only once prod is proven. Open or merge the PR when one is in play.
-   `npx wrangler rollback` restores the previous deployment.
+4. **Update the docs.** Only once prod has proven the change, so the docs describe what is
+   actually running rather than what was intended.
+   - `PROGRESS.md` — architecture decisions, open bugs, and what was verified *and how*. Record
+     the measurement, not the conclusion: a claim with no evidence behind it is what this file
+     exists to prevent.
+   - `README.md` — anything that changes setup, endpoints, rules, env vars or what a reader
+     would see on a page.
+   - This file — when the workflow, environment or house style itself changed.
+
+   A change with no doc impact is normal; say so rather than padding a file to look thorough.
+
+5. **Commit, then push to origin.** One commit covering the change and its docs, so the
+   repository never holds code whose documentation is a commit behind. `npx wrangler rollback`
+   restores the previous deployment if prod turns out to be wrong after all.
 
 ### When a change cannot reach prod
 
-Skip steps 3 and 4 for changes that cannot affect what the Worker serves — CI
-config, `.nvmrc`, docs, editor settings. Deploying those is churn, and a smoke
-test that exercises nothing new proves nothing. Say the steps were skipped and
-why; do not skip them silently.
+Skip steps 2 and 3 for changes that cannot affect what the Worker serves — CI config, `.nvmrc`,
+docs, editor settings. Deploying those is churn, and a smoke test that exercises nothing new
+proves nothing. Say the steps were skipped and why; do not skip them silently.
 
 ### When to stop and ask
 
