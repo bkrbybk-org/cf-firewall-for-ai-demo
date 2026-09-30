@@ -12,6 +12,7 @@ import {
   handleVerdict,
   handleZoneRules,
 } from "./handlers";
+import { openapi } from "./openapi";
 import type { Env } from "./types";
 
 export default {
@@ -19,6 +20,10 @@ export default {
     const url = new URL(request.url);
 
     switch (url.pathname) {
+      case "/api/openapi.json":
+        // Short cache: the document only changes on deploy, but a stale copy
+        // after one would make Swagger UI describe the previous API.
+        return Response.json(openapi, { headers: { "cache-control": "public, max-age=300" } });
       case "/api/models":
         return handleModels(env);
       case "/api/verdict":

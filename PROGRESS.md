@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-09-30 — doc resync against the code and a live prod check_
+_Last updated: 2026-09-30 — doc resync, prod gateway fixed, OpenAPI spec + Swagger UI added_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -16,7 +16,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 > **Implemented** run newest-first — **2026-09** (latency, saved runs, gap recommender, compliance
 > evidence, prompt-log flag, CI), then 2026-08-01 (Red Team page, analytics honesty pass, chart
 > rework), then 2026-07-31 (AI Gateway REST migration, verdict window, prompt-log rewrite).
-> **⚠️ Prod's AI Gateway route is failing as of 2026-09-30 — see Open bug #1 before demoing.**
+> The prod AI Gateway outage found on 2026-09-30 was **resolved the same day** (Open bug #1).
 
 ---
 
@@ -387,7 +387,8 @@ New in 2026-09: `src/redteamruns.ts` (validation + caps for the run-save endpoin
 `migrations/0002_latency.sql` · `0003_redteam_runs.sql` · `0004_redteam_dynamic_route.sql`,
 `web/src/lib/gapControls.ts` + `components/redteam/GapControls.tsx` (WAF-rule recommender — **not
 rendered by any page yet**), `web/src/lib/complianceEvidence.ts`, `scripts/prod-smoke.sh`,
-`.github/workflows/ci.yml`, `.nvmrc`, and `CLAUDE.md` (the ship workflow). `web/src/lib/redteam.ts`
+`.github/workflows/ci.yml`, `.nvmrc`, and `CLAUDE.md` (the ship workflow); then `src/openapi.ts` (+ `openapi.test.ts`,
+`raw-imports.d.ts`), `scripts/copy-swagger-ui.mjs` and `web/public/api-docs/` (the API reference). `web/src/lib/redteam.ts`
 gained `attackKey` / `corpusFingerprint` / `diffRuns`; `handlers.ts` gained `handleRedTeamRuns`.
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
@@ -398,8 +399,9 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-09-07 as version `99cbf558-5539-4ac6-b13c-a0c30eb2d6fa`, built from commit `ef68406`;
-the two commits since (`a3ee8c8` CI, `7e15eb6` workflow doc) cannot affect what the Worker serves.
+deployed 2026-09-30 as version `a49adbd0-d4c6-4a56-985f-e5e34f728a95` (the OpenAPI spec + Swagger UI); before
+that `99cbf558` (2026-09-07, built from `ef68406`). The token replacement the same day also created a version,
+from a secret change rather than a deploy.
 
 - **Pushing needed a credential fix.** `git push` returned 403 as `chatchai-wongdetsakul_nttltd`
   (read-only on the repo) even after `gh auth switch` to an account with write, because the
@@ -428,7 +430,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **229 across 15 files** (measured 2026-09-30; README's Tests table has the per-file counts).
+**Tests** — `npm test`, **235 across 16 files** (measured 2026-09-30; README's Tests table has the per-file counts).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
 (reintroduce the bug → red). The 2026-09 additions (`redteamruns`, `gapControls`, `complianceEvidence`, the
 latency sort, `promptLogEnabled`, and the `redteam.test.ts` growth 15 → 37) were written with their code and
@@ -475,7 +477,7 @@ Verified against real Cloudflare via `wrangler dev` + local D1 seeding unless no
 
 ### 2026-09 sessions
 
-Prod deployed 2026-09-07 (`99cbf558`). Migrations `0002`–`0004` applied to prod D1 (all additive).
+Prod deployed 2026-09-07 (`99cbf558`) and again 2026-09-30 (`a49adbd0`). Migrations `0002`–`0004` applied to prod D1 (all additive).
 What "verified" means is stated per item — a claim without its evidence is what this file is for.
 
 **Latency capture** (`0002_latency.sql`). `handleChat` already computed `Date.now() - started` and
@@ -587,6 +589,54 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+**API reference — OpenAPI 3.1 + Swagger UI** (`src/openapi.ts`, `/api/openapi.json`, `/api-docs/`; 2026-09-30).
+11 paths, 14 operations. Decisions:
+- **Hand-written, guarded against drift** rather than generated. Nothing in this codebase describes its own
+  shapes in a machine-readable way (handlers build `Response.json` ad hoc), so generation would have meant a
+  rewrite; a hand-written spec rots silently, so `src/openapi.test.ts` makes each kind of drift a red build:
+  paths vs the `case "/api/…"` routes in `index.ts`, `ChatRequest` fields vs `ChatRequestBody`, the
+  prompt-log `sort` enum vs `PROMPT_LOG_SORTS`, the `RtResultState` enum vs `RT_RESULT_STATES`, plus full
+  OpenAPI validity via `@readme/openapi-parser` (every `$ref` resolves). **Mutation-verified:** six planted
+  drifts each turned the suite red, re-run after the test was reworked to use `?raw` imports.
+- **Response schemas were checked against reality, not against the types.** 24 captured payloads (23
+  responses + 1 request body) from `wrangler dev` and prod-through-Access were validated with `ajv`
+  (2020-12), plus a scan for keys a payload carries that the schema does not declare — a plain validator
+  lets those through. The checker was itself control-tested: 6 planted defects (dropped property, wrong
+  type, extra `required`, dropped item property, narrowed enum), all caught. Its first run passed
+  everything, which is why it was tested — and inspecting the samples showed three were vacuous (0 rules,
+  0 runs, `found:false`), so real data was produced for them: a save → list → get → delete cycle locally,
+  and real found verdicts from prod for both an allowed and a WAF-blocked request.
+- **Not verified against live data:** the `/api/zone-rules` *item* shape (the token lacks
+  `Zone → WAF → Read`, Open bug #12, so no rules come back), the Guardrails-block body (written from
+  `guardrailsResponse()`'s source), SSE frame contents (described in prose) and 5xx bodies. There is no
+  handler-level contract test — it would need D1 and Workers AI mocks — so a schema and a handler can still
+  disagree.
+- **Self-hosted Swagger UI**, not a CDN: `swagger-ui-dist` is a devDependency and
+  `scripts/copy-swagger-ui.mjs` copies three files (~1.8 MB) into `dist/api-docs/` *after* `vite build`
+  (which empties `dist/`), so a customer-facing page has no runtime third-party dependency.
+  `swagger-ui-dist` pulls in `@scarf/scarf`, a telemetry package with a postinstall hook: local npm blocks
+  it (`allow-scripts`) and CI now sets `SCARF_ANALYTICS=false` explicitly.
+- **Things the spec says out loud** because they are easy to get wrong: `configured:false` is HTTP 200; a
+  WAF block is a 403 written by the zone's rule before the Worker runs (body operator-configured) while a
+  Guardrails block is a 200; *Try it out* is real and billable. Two known limitations are stated as such
+  (`dynamicRoute` not returned by GET — Open bug #16; the prune ordered by client `ts` — #18) without
+  internal bug numbers, since the audience is outside this repo.
+- **Caught by CI's typecheck, not by vitest:** the first version of the test imported `node:fs` and
+  `__dirname`, which the Worker's tsconfig (Workers types, no Node types) rejects. Vitest does not
+  typecheck, so `npm test` passed while `npm run check` failed — always run both. It now reads source with
+  Vite `?raw` imports (`src/raw-imports.d.ts` declares them).
+- *Verified:* browser DOM checks on `wrangler dev` — 14 operations under 5 tags, no console errors, a real
+  *Try it out* on `GET /api/models` returned live JSON, `POST /api/chat` renders all 7 status codes plus
+  `default`; `/api-docs` 307-redirects to `/api-docs/`; assets serve with correct content types; the SPA
+  fallback still serves `/redteam`. **Not visually inspected** — the Browser pane could not composite a
+  screenshot, so appearance (spacing, a light-only Swagger theme inside a dark app) is unchecked. On prod:
+  the docs page and all three vendor files serve through Access, the served spec is byte-identical to the
+  local one, and it validates against prod's own payloads including the prompt-log *disabled* shape. Prod's
+  `index.html` is larger than the built file because Cloudflare's edge injects its own inline script.
+- **Local Workers AI flake, not investigated:** `POST /api/chat` returned 502 (`Workers AI error: internal
+  error`, from miniflare's AI proxy) on `wrangler dev` twice in a row on 2026-09-30, after working earlier in
+  the month. Prod chat was fine throughout, so the chat samples came from prod.
 
 ### 2026-08-01 session
 
@@ -835,7 +885,14 @@ uncommitted.
 
 **Blocking / high severity**
 
-1. **PROD's AI Gateway route is failing — regression found 2026-09-30.** `npm run smoke:prod` check
+1. ~~**PROD's AI Gateway route is failing — regression found 2026-09-30.**~~ **RESOLVED 2026-09-30.** The token
+   was replaced (a human step) and the route recovered: `smoke:prod` passes all five checks, both gateways
+   (default and guarded) return 200, and the streaming gateway path returns its trailing `data: {gateway…}`
+   event. The cause of the rejection was never established (expired, revoked or rolled all look identical
+   from outside). What follows is the diagnosis as it stood when found, kept because the signature —
+   secret *present* but rejected, `code 10000` on both gateways, direct route fine — is how to recognise it.
+
+   `npm run smoke:prod` check
    3 returns **HTTP 401**, and a direct `curl` through Access shows the same body on **both** the
    default and the guarded gateway: `{"code":10000,"message":"Authentication error"}`. The direct
    Workers AI route is fine (200), as are `/api/models`, analytics, neurons, `/api/zone-rules` and the WAF block path (the smoke test does not exercise `/api/verdict`).
@@ -1013,7 +1070,7 @@ exercised):
 
 **Unblock (do first)**
 
-- [ ] **Replace prod's rejected `CF_AIG_TOKEN`** (Open bug #1, found 2026-09-30) — new API token with
+- [x] ~~**Replace prod's rejected `CF_AIG_TOKEN`**~~ (Open bug #1) — done 2026-09-30. Original entry: new API token with
       `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read`, then `wrangler secret put` and
       `npm run smoke:prod`. Until then the gateway route errors in prod. **Do this before any demo.**
 - [ ] **Wire `RedTeamPage` to saved runs and `GapControls`** (Open bug #21): save a finished run,

@@ -49,6 +49,8 @@ src/                    Worker (TypeScript)
   redact.ts             PII redaction for the prompt log (independent regex pass)
   promptlog.ts          prompt-log query builder (paging, search, whitelisted ORDER BY)
   redteamruns.ts        validation + caps for POST /api/redteam-runs (hostile-input boundary)
+  openapi.ts            the OpenAPI 3.1 document served at /api/openapi.json (hand-written)
+  raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
   *.test.ts             vitest — see Tests
 migrations/
@@ -59,11 +61,13 @@ migrations/
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
   prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod)
+  copy-swagger-ui.mjs   copies the Swagger UI vendor files into dist/api-docs/ after vite build
 .github/workflows/ci.yml   typecheck (Worker + web) · test · build on every PR and push to main
 .nvmrc                  Node version CI and `nvm use` both read
 CLAUDE.md               the ship workflow + environment traps (read by Claude Code each session)
 web/                    React app (Vite root)
   index.html            SPA entry + pre-paint theme script
+  public/api-docs/      the Swagger UI page (index.html + swagger-initializer.js); vendor files are copied in at build
   src/
     main.tsx            router: /, /analytics, /redteam, /compliance ( /gateway → / )
     index.css           Tailwind + CSS-var design tokens (light/dark, validated palette)
@@ -100,7 +104,7 @@ dist/                   Vite build output (gitignored) → wrangler assets
 
 ```sh
 npm install
-npm run build      # tsc -b web + vite build → dist/
+npm run build      # tsc -b web + vite build + copy Swagger UI → dist/
 npm run deploy     # build, then wrangler deploy
 npm run check      # worker typecheck
 npm test           # vitest (vitest.config.ts — separate from vite.config.ts, which sets root: "web")
@@ -130,9 +134,19 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1). Answers `{configured:false, disabled:true}` while `PROMPT_LOG_ENABLED` is off |
 | `DELETE /api/prompt-log` | Clears the prompt log |
 | `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log, incl. per-route/guarded/streamed latency percentiles |
+| `GET /api/openapi.json` | This API as an OpenAPI 3.1 document (see **API reference** below) |
 | `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
 
 Everything else falls through to the static assets (SPA fallback).
+
+### API reference (OpenAPI + Swagger UI)
+
+The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`** and rendered by **Swagger UI at `/api-docs/`** (`/api-docs` redirects). It documents all 11 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
+
+- **Try it out sends real requests.** `POST /api/chat` calls a live, billable model and is scanned by the real edge WAF; `DELETE /api/prompt-log` and `DELETE /api/redteam-runs` really delete. The page says so. In a browser you already hold the Access session; from a script use the service-token headers (the *Authorize* dialog).
+- **Self-hosted.** `swagger-ui-dist` is a devDependency; `scripts/copy-swagger-ui.mjs` copies three files (~1.8 MB, not committed) into `dist/api-docs/` after `vite build`, so the page has no runtime dependency on a CDN. The page itself (`web/public/api-docs/`) is committed. The build script runs the copy; if you build another way, run it.
+- **The spec is hand-written** (`src/openapi.ts`, with the reasoning in comments) and kept honest by `src/openapi.test.ts`: it must be valid OpenAPI (every `$ref` resolves), and it fails the build if the routes in `src/index.ts`, the fields of `ChatRequestBody`, the prompt-log `sort` whitelist or the red-team result states change without the spec changing. **When you add or change an endpoint, update `src/openapi.ts`.**
+- **What is and is not verified.** The response schemas were validated against 24 real payloads — 23 responses and one request body — captured from local `wrangler dev` and from prod through Access with a scan for keys a payload carries that the schema does not declare; the checker was control-tested (6 planted defects, all caught). **Not exercised against live data:** the `/api/zone-rules` item shape (the token lacks `Zone → WAF → Read`, so no rules come back), the Guardrails-block body (written from the handler source), SSE frame contents (described in prose, not schema-validated) and 5xx bodies. There is no handler-level contract test, so a schema and a handler can still disagree — fix whichever is wrong.
 
 ## AI Gateway routing (route selector on the chat page)
 
@@ -452,7 +466,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **229 tests across 15 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **235 tests across 16 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -470,6 +484,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
+| `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 

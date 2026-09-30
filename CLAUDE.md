@@ -89,6 +89,9 @@ failure stops the chain, and the fix comes before moving on.
      exists to prevent.
    - `README.md` — anything that changes setup, endpoints, rules, env vars or what a reader
      would see on a page.
+   - `src/openapi.ts` — when an endpoint, a request field or a response shape changed. The test
+     suite fails on added/removed routes and `ChatRequestBody` fields, but **not** on a changed
+     response shape, so that one is on you: re-check the affected schema against a real payload.
    - This file — when the workflow, environment or house style itself changed.
 
    A change with no doc impact is normal; say so rather than padding a file to look thorough.
@@ -118,6 +121,12 @@ alters what a customer sees in a demo. State it and let them choose.
 - `wrangler dev` reads `.env`, **not** `wrangler.jsonc` vars for secrets. A token that fails
   locally says nothing about the same-named secret in prod — that distinction has cost real time
   here twice.
+- `npm test` (vitest) does **not** typecheck; `npm run check` does, and it includes test files. A
+  test can pass under vitest and fail CI — this happened with `node:fs` in a test, which the
+  Worker's tsconfig (Workers types, no Node types) rejects. Run both, and read the whole output of
+  `npm run check` — piping it through `tail -1` once hid the error.
+- Local `wrangler dev` Workers AI can 502 (`internal error` from miniflare's AI proxy) while prod is
+  fine; take chat samples from prod when that happens.
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,
   never `d1 execute --file` — that bypasses the `d1_migrations` table, and a git worktree has its
   own `.wrangler` state, so a migration applied there never reaches this checkout. Both have

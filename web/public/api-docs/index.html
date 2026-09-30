@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>API — Cloudflare AI Security demo</title>
+    <!-- swagger-ui.css, swagger-ui-bundle.js and the favicon are copied from the
+         swagger-ui-dist package into dist/api-docs/ by scripts/copy-swagger-ui.mjs
+         after `vite build` (which empties dist/ first). They are not committed. -->
+    <link rel="icon" type="image/png" href="./favicon-32x32.png" />
+    <link rel="stylesheet" href="./swagger-ui.css" />
+    <style>
+      body { margin: 0; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="./swagger-ui-bundle.js"></script>
+    <!-- A separate file rather than inline, so OUR code needs no inline-script
+         allowance if a Content-Security-Policy is ever added. Cloudflare's edge
+         injects its own inline script into HTML responses regardless (visible in
+         the served page on prod), so a strict CSP would still have to account
+         for that. -->
+    <script src="./swagger-initializer.js"></script>
+  </body>
+</html>

@@ -20,6 +20,12 @@ concurrency:
 permissions:
   contents: read
 
+# swagger-ui-dist depends on @scarf/scarf, a telemetry package whose postinstall
+# phones home. Local npm blocks that script by default; this makes the opt-out
+# explicit for any runner whose npm does not.
+env:
+  SCARF_ANALYTICS: "false"
+
 jobs:
   verify:
     name: typecheck · test · build
