@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-08-03_
+_Last updated: 2026-09-30 — doc resync against the code and a live prod check_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -12,10 +12,11 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 --local` and faking a `cf-ray` header via curl where the edge-verdict / prompt-log join needs one
 (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
 
-> **Reading this doc**: "this session" below refers to the **2026-08-01** session (Red Team page,
-> analytics honesty pass, chart rework). The AI Gateway REST migration, verdict-window fix,
-> WAF-attribution fix and prompt-log rewrite landed in the **2026-07-31** session and are now
-> committed — see Version control.
+> **Reading this doc**: it is organised by topic, not chronologically. Dated sessions under
+> **Implemented** run newest-first — **2026-09** (latency, saved runs, gap recommender, compliance
+> evidence, prompt-log flag, CI), then 2026-08-01 (Red Team page, analytics honesty pass, chart
+> rework), then 2026-07-31 (AI Gateway REST migration, verdict window, prompt-log rewrite).
+> **⚠️ Prod's AI Gateway route is failing as of 2026-09-30 — see Open bug #1 before demoing.**
 
 ---
 
@@ -382,25 +383,40 @@ New since the layout above was written: `src/promptlog.ts` (prompt-log query bui
 `web/src/lib/attackCsv.ts` + `customCorpus.ts` (custom CSV corpus), `scripts/thaisafety-csv.mjs`
 (ThaiSafetyBench → CSV; dev tooling, `hyparquet` devDependency, never bundled).
 
+New in 2026-09: `src/redteamruns.ts` (validation + caps for the run-save endpoint),
+`migrations/0002_latency.sql` · `0003_redteam_runs.sql` · `0004_redteam_dynamic_route.sql`,
+`web/src/lib/gapControls.ts` + `components/redteam/GapControls.tsx` (WAF-rule recommender — **not
+rendered by any page yet**), `web/src/lib/complianceEvidence.ts`, `scripts/prod-smoke.sh`,
+`.github/workflows/ci.yml`, `.nvmrc`, and `CLAUDE.md` (the ship workflow). `web/src/lib/redteam.ts`
+gained `attackKey` / `corpusFingerprint` / `diffRuns`; `handlers.ts` gained `handleRedTeamRuns`.
+
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
-dev:worker` / `npm run dev:web`. `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
+dev:worker` / `npm run dev:web` · `npm run smoke:prod` (5 authenticated checks against prod through
+Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 
-**Version control**: **10 commits** (`ed669b6` … the doc resync). All work since `a4f78d2` sits on
-branch **`feat/gateway-rest-and-red-team`**; `main` is still at `a4f78d2`, so **prod runs none of
-the last two sessions' work**:
+**Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
+ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
+which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
+deployed 2026-09-07 as version `99cbf558-5539-4ac6-b13c-a0c30eb2d6fa`, built from commit `ef68406`;
+the two commits since (`a3ee8c8` CI, `7e15eb6` workflow doc) cannot affect what the Worker serves.
 
-- `14a71f6` — AI Gateway REST settings, anchored verdicts, analytics overhaul. One commit by
-  necessity: those areas share files (`cloudflare.ts`, `useChat.ts`, `AnalyticsPage.tsx`) and this
-  environment has no hunk-level staging, so a per-feature split wasn't possible without surgery.
-  Verified green in isolation before committing.
-- `f59a88e` — the Red Team feature, which *was* cleanly separable (its three wiring edits touch
-  nothing else).
-- `4f2079d` — the chart rework (`EventSeries.tsx` + `index.css`): measured viewBox, CVD-safe
-  light palette, table view, keyboard parity.
-- the doc resync (this file + `README.md`) — see Doc split below.
-
-⚠️ Working tree clean, but the branch is **unmerged and not redeployed**.
+- **Pushing needed a credential fix.** `git push` returned 403 as `chatchai-wongdetsakul_nttltd`
+  (read-only on the repo) even after `gh auth switch` to an account with write, because the
+  `osxkeychain` helper kept answering for `github.com`. `gh auth setup-git` adds a github.com-scoped
+  helper that delegates to `gh`, so git now follows whichever account `gh` is on. This is global git
+  config, so it applies to every repo on this machine.
+- **Leftovers, safe to delete, not deleted:** the merged local branches
+  (`feat/gateway-rest-and-red-team`, `fix/sonarqube-real-defects`, `feat/redteam-history-and-latency`),
+  the worktree branch `worktree-agent-ad608684247cf5544` and its directory `.claude/worktrees/` (a
+  subagent's isolated checkout; its work was committed as `f4d71ee` and merged).
+- **Untracked on purpose:** `.claude/hooks/`, `.claude/settings.json`, `.mcp.json` (the SonarQube
+  integration — its hooks execute shell scripts on every prompt/Read, so committing them is a
+  decision for the repo owner) and `.vscode/`.
+- **CI**: `.github/workflows/ci.yml` runs `npm ci` → Worker typecheck → web typecheck → test → build
+  on every PR and push to `main`. No deploy job, deliberately. Verified on a fresh clone with
+  `npm ci` (not the warm working tree), control-tested (a planted type error fails both typechecks
+  with exit 2 / 1, a planted assertion fails the tests with exit 1), and green on GitHub.
 
 **Doc split** (README rewritten 2026-08-01 against the code, having drifted several sessions):
 `README.md` = product + setup reference (pages, endpoints, gateway/verdict/prompt-log behaviour,
@@ -412,8 +428,11 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **150 across 12 files** (142 before the pacing control).
-Each exists because a real bug shipped, and each was mutation-verified (reintroduce the bug → red):
+**Tests** — `npm test`, **229 across 15 files** (measured 2026-09-30; README's Tests table has the per-file counts).
+The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
+(reintroduce the bug → red). The 2026-09 additions (`redteamruns`, `gapControls`, `complianceEvidence`, the
+latency sort, `promptLogEnabled`, and the `redteam.test.ts` growth 15 → 37) were written with their code and
+are **not** mutation-verified — regression tests, not proof that each assertion can fail:
 - `src/promptlog.test.ts` (17) — the prompt-log query builder. Offset reaching past the old 200-row
   ceiling, LIKE-wildcard escaping (searching `100%` used to match everything), and an `ORDER BY`
   whitelist that discards anything not on it — `sort` is the only user input in the app that reaches
@@ -453,6 +472,121 @@ Each exists because a real bug shipped, and each was mutation-verified (reintrod
 ## Implemented
 
 Verified against real Cloudflare via `wrangler dev` + local D1 seeding unless noted.
+
+### 2026-09 sessions
+
+Prod deployed 2026-09-07 (`99cbf558`). Migrations `0002`–`0004` applied to prod D1 (all additive).
+What "verified" means is stated per item — a claim without its evidence is what this file is for.
+
+**Latency capture** (`0002_latency.sql`). `handleChat` already computed `Date.now() - started` and
+discarded it. It is now stored with a `streamed` flag and rolled up as p50/p95/max per
+route × guarded × streamed by SQL window functions inside D1. **`streamed` is load-bearing:** `log()`
+runs after the full response on the non-streaming path but before the stream drains on the streaming
+one, so the column means total time on one and time-to-first-byte on the other — averaged together
+they would be meaningless. It is Worker-observed only (starts before the model call; excludes the edge
+scan; blocked requests create no row), and old rows are NULL, so every rollup gates on
+`latency_ms IS NOT NULL` and reports coverage. *Verified:* 19 seeded local rows across all six
+route/guarded/streamed combinations plus NULL rows — e.g. `direct, streamed=0: n=4 p50=900 p95=1200
+max=2500` vs `direct, streamed=1: n=3 p50=150 p95=180` — and the n=1 case (`MAX(1, …)` guard)
+returned the single value; `latencyCoverage` read 17 of 20; `/api/prompt-analytics` and `sort=latency`
+were confirmed through `wrangler dev`. The rendered panel was built by a subagent and **not**
+browser-checked separately. It is **invisible in prod** while the prompt log is off.
+
+**Prompt log flag, off by default** — see Architecture decisions (2026-09-03). Also defaulted the
+per-turn "log prompt" switch to off.
+
+**Saved red-team runs — server side only** (`0003_redteam_runs.sql`, `src/redteamruns.ts`,
+`handleRedTeamRuns`; `attackKey` / `corpusFingerprint` / `diffRuns` in `lib/redteam.ts`). The point:
+the scorecard used to die on reload, which made the feature's stated purpose — run, change a rule,
+re-run, prove the gap closed — impossible. Design decisions:
+- **Attacks join on a prompt hash, not `RedTeamAttack.id`.** `csv-12` means "row 12 of whatever file was
+  dropped in", so two uploads both have one and a re-export in a different order renumbers everything;
+  diffing on id would compare unrelated prompts and report flips that never happened. FNV-1a 32-bit,
+  synchronous — it is called from sync map/sort code and needs no cryptographic property.
+- **`diffRuns` scores over the attacks the two runs share**, and refuses to call two runs a
+  before/after when their corpus fingerprints differ. Otherwise ten already-blocked attacks added to
+  a corpus would read as an improvement.
+- **Scoring stays client-side** (the verdict lookup lives in the browser), so the client POSTs a
+  finished run and the endpoint treats it as **hostile input**: 500-attack cap, state whitelist,
+  length caps, totals clamped, pruned to the newest 50 runs, prompt previews passed through `redact()`.
+  Totals are trusted-and-clamped rather than recomputed — recomputing would be scoring in the Worker.
+- *Verified:* real `curl` against `wrangler dev` — POST 201; the stored preview read `contact me at
+  [email]` (redaction confirmed live); 500 results accepted, 501 → 400; bad `state` → 400; DELETE →
+  `deleted:true`. **Prod: only `GET` (empty list) was exercised; nothing was written there.** No UI
+  calls any of it — see Open bugs #16–#20.
+
+**Gap → rule recommender** (`lib/gapControls.ts`, `components/redteam/GapControls.tsx`; **built and
+tested, not rendered by any page**). Replaces the hardcoded five-row `CONTROLS` table (volumes copied
+from the scan PDF) with recommendations derived from the run just executed. Points that matter:
+- **Scores invert — low means attack — so thresholds are always `le`, never `ge`.** A flipped
+  comparator emits a rule that blocks everything or nothing, which a customer may paste into
+  production. Every builder hard-codes `le`; tests pin it for a block-shaped and a log-shaped threshold.
+- **Every `cf.llm.*` field is checked against Cloudflare's Ruleset Engine field reference, not
+  inferred from this repo.** The subagent that wrote it grepped the repo, found five fields, and
+  concluded no custom-topic field exists, so it emitted `expression: null` for the scan's largest gap.
+  Wrong: `cf.llm.prompt.custom_topic_categories` is a real `Map<Number>` (1–99, lower = stronger
+  match). The repo's artefacts mention only five fields and describe custom-topic rules in prose.
+  Corrected during the September build; the header of `gapControls.ts` records why.
+- A topic **key** is only emitted when knowable. For a topic *we propose creating* ("Self-Criticism")
+  it is; for an *existing* topic it is not — the zone reports a rule's description, not the label it
+  reads — so that case ships the placeholder `<your topic label>` rather than a guess that would
+  compile and silently match nothing. Labels containing `"` or `\` are rejected (they would break out
+  of the string literal).
+- Malicious-code categories point at AI Gateway Guardrails, not a WAF expression — no `cf.llm.*`
+  field covers them. Thresholds 30 / 65 are starting points: `RtRunResult` carries the verdict, never
+  the numeric score, so a data-driven cutoff is not computable here.
+- Coverage is labelled by provenance: an expression match against a live rule vs a name match against
+  the static mirror. Today it is always the mirror (Open bug #12), so it can only name-match.
+- *Verified:* unit tests only (22). Never rendered.
+
+**Compliance live evidence** (`lib/complianceEvidence.ts`, `CompliancePage`). Four NIST AI RMF
+controls only — MEASURE 2.7 / 2.10 / 2.6 / 3.1 — each showing a count over a stated 24 h window.
+Restraint is the design: most controls are governance and no traffic count evidences them, so a chip
+on every one would be a false compliance claim, and `compliance.ts`'s own header says naming what
+Cloudflare does *not* cover is the page's credibility. **No data ≠ zero; capped payloads read "at
+least N"; an unconfigured/failed fetch renders nothing.** *Verified in the browser against the real
+zone:* the 500-row cap was genuinely hit in the 24 h window, so the floor path ran on live data
+(`at least 137 prompts scored · at least 337 blocked`); the empty and unconfigured states were forced
+by overriding `window.fetch` and rendered distinctly. Extra candidates (ISO A.7, OWASP LLM01/02,
+ATLAS AML.T0051, BOT, NCSA) were proposed and deliberately **not** added — what the page asserts to
+customers is an editorial call.
+
+**Attack Library review + collapsed by default** (`data.ts`, `AttackLibrary.tsx`). Categories start
+collapsed with a preset count in each header; a search expands its matches. Four content defects
+fixed: eight of twelve categories had an empty `field` (the "which Cloudflare field catches this" line
+the demo is narrated from); seven presets had empty labels, hiding the direct → indirect → edge
+grading; *Specialized advice — S6* and *Elections — S13* fall outside rule 5's blocked set (S1–S5,
+S8–S12), so they reach the model and only log — unlabelled, that reads as the product failing; and
+"Other Unsafe / Harmful Topics" was malformed (no icon, no refs) and mixed duplicates with three
+malware prompts no `cf.llm.*` field covers, which became their own Malicious Code card. Added a
+Brand Tarnishing / Self-Criticism card so the scan's largest gap is demoable from the chat page (it is
+*expected* to reach the model until a topic exists). *Verified in the browser:* 12 categories, all
+`aria-expanded=false`, 0 preset buttons visible on load; search for `keylogger` expanded only its
+match; a hand-opened card survived clearing the query.
+
+**Red Team runner: subset selection, Dynamic Route, zero-scored guard** (`RedTeamPage`, `useRedTeam`,
+`Scorecard`, migration `0004`). Selection is keyed by attack id so re-sorting cannot move it; empty
+means all. The breakdowns are now scoped to attacks that produced a result (they were computed
+against the whole corpus, so a subset — or a *stopped* run — drew its miss rate as a fraction of
+prompts never sent). The Dynamic Route field is free text because nothing this app calls enumerates a
+gateway's routes. **A run where every send fails used to read "0% reached the model"**, identical to a
+perfect block rate; it now shows `—` and says nothing was measured. *Verified in the browser:* 3 ticked
+→ `Run 3 selected`, header box indeterminate, 3 rows tinted; sorting by Category kept the same two
+*prompts* ticked; the captured request body carried `"dynamicRoute":"demo-routes"` on the gateway route
+and only `prompt` + `stream` on direct; the zero-scored banner fired on a genuinely failed run (the
+known-bad local gateway token). Migration `0004` records the route per saved run because a route
+*chooses the model* — but see Open bug #16: it is written and never read.
+
+**Migration bookkeeping trap.** `wrangler d1 execute --file` does not touch `d1_migrations`, and a
+worktree has its own `.wrangler` state. A subagent applied `0002` by file and `0003` in its worktree,
+so `migrations apply --local` later failed on `duplicate column name` and then `no such table`. Local
+bookkeeping was repaired by hand; **remote was correct throughout.** Always use
+`wrangler d1 migrations apply`, never `execute --file`, for a migration that has a number.
+
+**CI and the ship workflow.** See Version control for CI. `CLAUDE.md` holds the workflow: test locally →
+deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
+deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
+and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
 ### 2026-08-01 session
 
@@ -701,15 +835,28 @@ uncommitted.
 
 **Blocking / high severity**
 
-1. **PROD `CF_AIG_TOKEN` is fine — verified 2026-08-03. Only the LOCAL one is broken.**
-   Settled by an authenticated prod smoke test (`npm run smoke:prod`): a plain AI Gateway send
-   against prod returns **200 with a real reply and gateway metadata**, not the `10000` auth error.
-   The whole "this gates the deploy" concern below turned out to apply only to local dev. Prod's
-   gateway route, Guardrails path and gateway-routed red-team runs all work.
+1. **PROD's AI Gateway route is failing — regression found 2026-09-30.** `npm run smoke:prod` check
+   3 returns **HTTP 401**, and a direct `curl` through Access shows the same body on **both** the
+   default and the guarded gateway: `{"code":10000,"message":"Authentication error"}`. The direct
+   Workers AI route is fine (200), as are `/api/models`, analytics, neurons, `/api/zone-rules` and the WAF block path (the smoke test does not exercise `/api/verdict`).
+   - **It is a fault, not rollout lag:** nothing has deployed since 2026-09-07 (`99cbf558`), and the
+     same check passed that day and on 2026-08-03. `wrangler secret list` shows `CF_AIG_TOKEN` *is
+     present* on the Worker, so the token is being **rejected**, not missing.
+   - **Cause not determinable from outside:** the secret's value cannot be read. Expired (API tokens
+     can carry a TTL), revoked, rolled, or its owner's access changed all produce this identical
+     error.
+   - **Impact:** every AI Gateway send returns an error — the route toggle, the guarded/Guardrails
+     path, gateway-routed red-team runs and Dynamic Routing. The chat bubble shows the raw Cloudflare
+     JSON rather than an actionable message (see Next tasks).
+   - **Fix (needs a human — a new token):** mint an API token with `AI Gateway - Read`, `AI Gateway -
+     Edit`, `Workers AI - Read`, then `npx wrangler secret put CF_AIG_TOKEN` and re-run
+     `npm run smoke:prod`.
+   - **Workflow consequence:** `CLAUDE.md` step 3 requires all five smoke checks to pass, so no code
+     change can complete the workflow until this is fixed. This is why the `dynamic_route` bug
+     (#16) was recorded rather than fixed in the same review.
 
-   Remaining: the token in `.env` is still invalid, so **`wrangler dev` cannot exercise the gateway
-   route locally**. Replace it with a normal API token (`AI Gateway - Read`, `AI Gateway - Edit`,
-   `Workers AI - Read`) to restore local gateway testing. Prod needs no change.
+   Separately, the token in `.env` was invalid on 2026-08-03 (not re-checked), so **`wrangler dev`
+   cannot exercise the gateway route locally** either. Replace it to restore local gateway testing.
 
    Historical detail, kept because the distinction cost real time:
    - **Local (`.env`, what `wrangler dev` uses — it logs "Using secrets defined in .env")**: a plain
@@ -827,20 +974,61 @@ uncommitted.
     successful), and several prompts are the report's truncated preview text. It exercises the edge
     scan faithfully but is not a reproduction of the full scan.
 
+**Found in the 2026-09-30 code review** (read from the code and grep; each states whether it was
+exercised):
+
+16. **`redteam_runs.dynamic_route` is written but never read.** Only the `INSERT` in `handleRedTeamRuns`
+    references the column; both `SELECT`s (list and single-run) omit it, while `RedTeamRunRow.dynamicRoute`
+    is typed as always present in `src/types.ts` and `web/src/lib/types.ts`. So the comparability data
+    migration `0004` exists to record can never come back out. No user impact today (no UI reads saved
+    runs). Fix: add `dynamic_route AS dynamicRoute` to both `SELECT`s, plus a test. *Found by grep,
+    confirmed by reading the handler; not exercised.* Blocked behind bug #1 only because of the workflow's
+    prod-smoke gate.
+17. **`RedTeamPage` still says "Runs land in the prompt log (D1) as evidence"** (with a link to
+    `/analytics`) and its file header says the same. The prompt log is off by default, so that tab does
+    not exist and the link lands on the edge tab. Copy should be conditional on the flag or reworded.
+    *Found by grep.*
+18. **The run-save endpoint orders its prune by a client-supplied `ts`.** `DELETE … NOT IN (SELECT id …
+    ORDER BY ts DESC LIMIT 50)` uses `body.ts`, which is validated only as a non-negative integer up to
+    `MAX_SAFE_INTEGER`. A run posted with a far-future `ts` is never pruned and, repeated 50 times,
+    evicts every real run; one posted with an old `ts` prunes *itself* and still returns 201 with an id
+    that no longer exists. Prod is Access-gated, but `wrangler dev` is not, and the endpoint's header
+    claims hostile-input hardening. Fix: order by server time, or clamp `ts` to now ± skew. *Found by
+    reading the code; not exercised.*
+19. **Two smaller integrity gaps in the same handler.** The run row is inserted *outside* the batch (its
+    id is needed first), so a failed batch leaves a run with zero results — the code comment claims a
+    crash cannot leave a half-written run. And `reached` and `stopped` each clamp to `scored`
+    independently, so `reached + stopped > scored` is storable. `diffRuns` reads results, not stored
+    totals, so a diff is unaffected; only the list view's totals could mislead for a lying client.
+    Low. *Found by reading.*
+20. **The Malicious Code card's framework refs are a loose fit.** It cites OWASP `LLM05:2025 Improper
+    Output Handling` (about unsafe *downstream handling* of model output, not the model generating
+    malware) and ATLAS `AML.T0048 External Harms`. Verify or drop before regulated-customer use — the
+    compliance page's own rule is not to overstate a mapping. The README table flags it ⚠️.
+21. **Built, deployed and unreachable:** `GapControls`, the saved-run API and `diffRuns` have no
+    consumer in any page (confirmed by grep for each symbol outside its own file and tests). Prod
+    carries dead code, and the feature they exist for still cannot be done in the app.
+
 ## Next tasks
 
 **Unblock (do first)**
 
-- [ ] Verify/fix `CF_AIG_TOKEN`'s permission scope in prod (Open bug #1) — this now gates the whole
-      AI Gateway route, not just Dynamic Routing. Self-check: a plain gateway send (no Dynamic
-      Route) should succeed, not 10000.
+- [ ] **Replace prod's rejected `CF_AIG_TOKEN`** (Open bug #1, found 2026-09-30) — new API token with
+      `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read`, then `wrangler secret put` and
+      `npm run smoke:prod`. Until then the gateway route errors in prod. **Do this before any demo.**
+- [ ] **Wire `RedTeamPage` to saved runs and `GapControls`** (Open bug #21): save a finished run,
+      list/pick two, render `diffRuns` with its comparability warning, drop
+      `<GapControls corpus={corpus} results={results} />` where the hardcoded `CONTROLS` table is, and
+      fix the stale prompt-log copy (#17). Outstanding since the features were built in early September.
+- [ ] Fix bug #16 (add `dynamic_route` to both `SELECT`s) and #18 (server-side ordering for the
+      prune) together with a test each, once #1 lets the prod gate pass.
 - [ ] Apply the recommended Zero Trust Access restructuring for the AI red-team service (Open bug
       #2): path-scoped `/api/chat` app, `Service Auth` + service token, `Allow` policy alongside it
       for human logins. Re-verify the app still works for a normal browser session afterward.
 - [x] ~~Commit the chart rework~~ — done, `4f2079d` (signed fine non-interactively; gpg-agent had
       the passphrase cached from an earlier session).
 - [x] ~~Merge `feat/gateway-rest-and-red-team` into `main`~~ — done 2026-08-03, fast-forward to
-      `b30da22` (8 commits). Repo has no remote, so nothing to push.
+      `b30da22` (8 commits). (The repo had no remote then; `origin` exists now — see Version control.)
 - [x] ~~**Deploy**~~ — **DONE 2026-08-03, verified.** Prod runs the merged `main`
       (`/api/zone-rules` answers with JSON, which only exists in the new code); no commit touching
       `src/` or `web/` postdates the deployment. `npm run smoke:prod` passes all five checks
@@ -862,7 +1050,7 @@ uncommitted.
       the Brand-Tarnishing / Political rows come back `reached the model`, reproducing the scan's
       finding; then add the Self-criticism custom topic and re-run to prove the gap closed. That
       before/after is the entire point of the feature.
-- [ ] Set WAF block-rule responses to Custom JSON (dashboard).
+- [x] ~~Set WAF block-rule responses to Custom JSON (dashboard)~~ — done, see Open bug #4.
 
 **Improvements**
 

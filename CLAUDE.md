@@ -43,7 +43,9 @@ failure stops the chain, and the fix comes before moving on.
    anything the smoke test does not cover that this change touched — the smoke test never sees
    the SPA, so for front-end work fetch the deployed bundle and grep it for the change. A fresh
    deploy rolls out gradually, so a mixed result immediately after deploying is usually version
-   propagation: re-run ~45s later before diagnosing it as a fault.
+   propagation: re-run ~45s later before diagnosing it as a fault. A failure that **predates** the
+   change (nothing deployed since it last passed) still fails this gate — record it in
+   `PROGRESS.md` Open bugs and stop, rather than deploying on top of it or waving it through.
 
 4. **Update the docs.** Only once prod has proven the change, so the docs describe what is
    actually running rather than what was intended.
@@ -81,6 +83,15 @@ alters what a customer sees in a demo. State it and let them choose.
 - `wrangler dev` reads `.env`, **not** `wrangler.jsonc` vars for secrets. A token that fails
   locally says nothing about the same-named secret in prod — that distinction has cost real time
   here twice.
+- Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,
+  never `d1 execute --file` — that bypasses the `d1_migrations` table, and a git worktree has its
+  own `.wrangler` state, so a migration applied there never reaches this checkout. Both have
+  produced `duplicate column name` / `no such table` here.
+- `git push` authenticates through `gh` (`gh auth setup-git` installs the helper), so `gh auth
+  switch` decides which account pushes. A 403 with `permissions.push: false` from
+  `gh api repos/bkrbybk-org/cf-firewall-for-ai-demo` means the active account has read-only access.
+- In this zsh, an unquoted `--include=*.tsx` fails with `no such match` *and the pipeline carries
+  on*, so a grep-based "no consumers" check silently reports zero. Quote the glob.
 - Local D1: `npx wrangler d1 execute cf-ai-waf-demo-log --local --command "…"`. Local dev sets no
   `cf-ray`, so any test of the prompt-log write path must fake one or it proves nothing.
 

@@ -24,7 +24,7 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 |---|---|
 | `/` | Chat demo. System Prompt + AI Gateway settings (left) · chat (center) · Attack Library (right). Nav-tab label is "AI Guardrails Demo". |
 | `/analytics` | **edge** (zone WAF + AI Security) and **AI Gateway** (account gateway logs), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
-| `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. |
+| `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. Tick rows to run just a subset; choose the route, gateway and an optional Dynamic Route. |
 | `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
 
 `/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
@@ -47,11 +47,21 @@ src/                    Worker (TypeScript)
                         appendRestGatewayEvent, parseTimeWindow, extractReply/stripThink,
                         sanitizeHistory, logPrompt, gateway registry helpers
   redact.ts             PII redaction for the prompt log (independent regex pass)
-  *.test.ts             vitest — redaction, dynamic-route parsing, verdict window
+  promptlog.ts          prompt-log query builder (paging, search, whitelisted ORDER BY)
+  redteamruns.ts        validation + caps for POST /api/redteam-runs (hostile-input boundary)
+  sse.ts                Worker-side SSE reader that recovers streamed replies for the log
+  *.test.ts             vitest — see Tests
 migrations/
   0001_prompt_log.sql   D1 schema for the prompt log
+  0002_latency.sql      latency_ms + streamed columns on prompt_log
+  0003_redteam_runs.sql redteam_runs + redteam_results (saved runs)
+  0004_redteam_dynamic_route.sql   dynamic_route column on redteam_runs
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
+  prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod)
+.github/workflows/ci.yml   typecheck (Worker + web) · test · build on every PR and push to main
+.nvmrc                  Node version CI and `nvm use` both read
+CLAUDE.md               the ship workflow + environment traps (read by Claude Code each session)
 web/                    React app (Vite root)
   index.html            SPA entry + pre-paint theme script
   src/
@@ -61,7 +71,10 @@ web/                    React app (Vite root)
       data.ts           *** EDIT THIS for demo content: CATEGORIES, PRESET_SYSTEM_PROMPTS,
                         ZONE_RULES, DEMO_SCRIPT, UNSAFE_TOPICS, isLlmRule ***
       compliance.ts     *** EDIT THIS for the compliance page: MATRIX, FRAMEWORKS ***
-      redteam.ts        Prisma AIRS attack corpus + scoring helpers
+      redteam.ts        Prisma AIRS attack corpus + scoring, plus attackKey / corpusFingerprint /
+                        diffRuns for comparing saved runs
+      gapControls.ts    turns a run's reached-model categories into WAF-rule recommendations
+      complianceEvidence.ts   resolves the four NIST evidence chips from analytics payloads
       attackCsv.ts      custom-corpus CSV parser (prompt,goal) + template
       customCorpus.ts   the uploaded corpus, held for the page-load lifetime
       api.ts            typed fetch wrappers (incl. TimeWindow + SSE stream parsing)
@@ -71,13 +84,14 @@ web/                    React app (Vite root)
       metadata.ts       AI Gateway custom-metadata parser
       sessionStore.ts   module-level chat store (survives tab switch, cleared on reload)
       format.ts icons.ts
-    hooks/              useTheme, useNeurons, useChat (send pipeline), useRedTeam (3-phase runner)
+    hooks/              useTheme, useNeurons, useChat (send pipeline), useRedTeam (3-phase runner),
+                        useZoneRules (live rules + static-mirror fallback)
     components/         Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel,
                         GatewaySettingsPanel, Switch, AttackLibrary, Chat, Verdict,
                         FlowTrace, DemoMode, ExportButton
       analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
                         GatewayTab, PromptLogTab
-      redteam/          Scorecard
+      redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
     pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
 dist/                   Vite build output (gitignored) → wrangler assets
 ```
@@ -91,6 +105,7 @@ npm run deploy     # build, then wrangler deploy
 npm run check      # worker typecheck
 npm test           # vitest (vitest.config.ts — separate from vite.config.ts, which sets root: "web")
 npm run corpus:thai -- --n=100 --out=thai-corpus.csv   # build a Thai red-team corpus (see /redteam)
+npm run smoke:prod # 5 checks against prod through Cloudflare Access (needs the service token in .env)
 
 # Local dev (two terminals): Vite HMR proxies /api → wrangler dev
 npm run dev:worker # wrangler dev  (port 8787, serves API + built dist)
@@ -105,16 +120,17 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default |
+| `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default, the numeric gateway `limits`, and the resolved `promptLog.enabled` flag |
 | `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE |
 | `GET /api/verdict?ray=&ts=` | What the edge did to one request (GraphQL). `ts` anchors the lookup window |
 | `GET /api/zone-rules` | The zone's real WAF custom rules (Rulesets API), for the flow trace and the rule split |
 | `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
 | `GET /api/analytics?hours=` | Aggregated zone security events + AI scores (edge tab) |
 | `GET /api/gateway-analytics?gatewayId=&hours=` | Aggregated AI Gateway logs (gateway tab) |
-| `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1) |
+| `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1). Answers `{configured:false, disabled:true}` while `PROMPT_LOG_ENABLED` is off |
 | `DELETE /api/prompt-log` | Clears the prompt log |
-| `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log |
+| `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log, incl. per-route/guarded/streamed latency percentiles |
+| `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
 
 Everything else falls through to the static assets (SPA fallback).
 
@@ -161,6 +177,8 @@ The REST gateway list carries **no** guardrails field, so which gateway is guard
 - ⚠️ **AI Gateway logs still store the raw prompt + response payload** (account-scoped, unredacted). The UI says so — it's a deliberate talking point.
 - **Streamed replies are captured too.** A streamed reply never exists server-side as a whole, so the row is written immediately with `reply = NULL` and filled in once the stream finishes passing through (`teeReplyToLog`, chained after the insert). Streaming is the default path, so without this the log's reply column was empty for most real traffic. Nothing is buffered — chunks are forwarded as they arrive.
 - Rows join to the live edge verdict by ray in the UI; detections are not stored (they ingest into GraphQL seconds *after* the row is written).
+- **Latency is stored per row, split by `streamed`.** `latency_ms` is written when `log()` runs, which is *after* the full response on the non-streaming path but *before* the stream drains on the streaming one (the row must exist even if the client disconnects). So the same column means **total generation time** for one and **time to first byte** for the other — an order of magnitude apart — and every rollup groups by `streamed` rather than blending them. Percentiles (p50/p95/max per route × guarded × streamed) are SQL window functions inside D1, gated on `latency_ms IS NOT NULL`, with the covered-row count reported next to them because rows written before migration `0002` have none.
+- **What that latency does and does not measure.** It starts inside the Worker, just before the model call. It excludes the edge AI Security scan (which runs before the Worker is invoked and is not exposed to it), and requests the WAF blocks never create a row at all. So it compares direct vs gateway vs guarded-gateway model latency as the Worker sees it — it **cannot** say what AI Security costs, and the UI says so.
 - `DB` is optional — unbinding it degrades the tab to a setup hint.
 
 ```sh
@@ -235,13 +253,13 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 
 **Gateway tab** — `GET /api/gateway-analytics`. AI Gateway has no GraphQL dataset, so this pages the logs REST API (50/page, up to 500 rows) and sums Worker-side: requests, cache hits, cost, tokens, avg/p50/p95 latency, status codes, per-model rows, hit/miss/error series. These logs are **account-scoped** — they include any other app using the same gateway, which the UI states.
 
-**Prompt log tab** — sortable, paginated table (10/25/50/100 rows, default 25) over D1, with a text search and a multi-select outcome filter. It has its **own** time range (1h/24h/7d/all/custom picker, default 1h) since it's reviewed differently from the edge tabs. Filtering, search, sorting and paging **all resolve in SQL**, so a page is a true window onto the whole table — an earlier version fetched the newest 200 rows and sliced them in the browser, which made everything older unreachable no matter how you filtered.
+**Prompt log tab** — sortable, paginated table (10/25/50/100 rows, default 25) over D1, with a text search and a multi-select outcome filter. It has its **own** time range (1h/24h/7d/all/custom picker, default 1h) since it's reviewed differently from the edge tabs. Filtering, search, sorting and paging **all resolve in SQL**, so a page is a true window onto the whole table — an earlier version fetched the newest 200 rows and sliced them in the browser, which made everything older unreachable no matter how you filtered. This tab exists only while `PROMPT_LOG_ENABLED` is on; it also carries the latency table described under Prompt log.
 
-**Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the prompt log with the window matched and a context banner. For a *blocking* rule the banner says outright that those prompts never reached the Worker and cannot appear in the log.
+**Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the prompt log with the window matched and a context banner. For a *blocking* rule the banner says outright that those prompts never reached the Worker and cannot appear in the log. Drill-through is withheld entirely while the prompt log is disabled, since it would have nowhere to land.
 
 **Bucket width** is picked server-side by `bucketFor()` (`src/config.ts`) from the requested window: **5 minutes at 1h**, hourly to 48h, daily beyond — the subtitle says which ("per 5 min"). Series are zero-filled across the whole window so a quiet stretch reads as zero instead of the line interpolating across the gap.
 
-All three tabs auto-refresh every 60 s. The chart (`EventSeries`) measures its own box with a `ResizeObserver` so 1 SVG unit = 1 CSS px and text doesn't scale with container width; it also offers a **"Show data" table view** and full keyboard parity (`←`/`→`/Home/End drive the crosshair with an `aria-live` announcement).
+Every tab auto-refreshes every 60 s. The chart (`EventSeries`) measures its own box with a `ResizeObserver` so 1 SVG unit = 1 CSS px and text doesn't scale with container width; it also offers a **"Show data" table view** and full keyboard parity (`←`/`→`/Home/End drive the crosshair with an `aria-live` announcement).
 
 ## Red Team page (`/redteam`)
 
@@ -249,9 +267,13 @@ Replays a curated **36 of the 116** enumerated attacks from a Prisma AIRS scan (
 
 - **The headline metric is deliberately not the scan's ASR.** Prisma's ASR means *the model complied*; there is no LLM judge here, so the app only claims **whether the edge stopped the request** ("reached the model"). The scan's own per-prompt ASR sits in a separate, attributed column.
 - **Scoring contract** (pinned by tests): `log` counts as *reached the model* — a detection is not a defense; `block`/`challenge` do not; `denied`/`guardrails`/`pending`/`error` are shown but **excluded from the denominator**, so the percentage never credits the WAF for an Access refusal nor punishes it for ingestion lag.
-- **Runner is 3-phase**, not one poll per attack (which would cost ~36 min): send all prompts → wait once ~90 s for ingestion → batch-resolve every ray through `fetchVerdictOnce` under a concurrency cap. ≈4 min for 36 attacks. It calls the API directly, so a run never enters the chat transcript, and leaves `excludeFromLog` false so rows land in D1 as the evidence trail.
+- **Runner is 3-phase**, not one poll per attack (which would cost ~36 min): send all prompts → wait once ~90 s for ingestion → batch-resolve every ray through `fetchVerdictOnce` under a concurrency cap. ≈4 min for 36 attacks. It calls the API directly, so a run never enters the chat transcript, and leaves `excludeFromLog` unset, so rows land in the D1 prompt log as an evidence trail **only while `PROMPT_LOG_ENABLED` is on** (off by default — with it off a run leaves no record beyond its own scorecard).
 - Route selector (Workers AI ↔ any account gateway), locked mid-run so a batch never mixes routes.
 - **Delay between prompts** (none / 0.5s / 1s / 2s / 5s / 10s / 30s, default none), also locked mid-run. Sends are sequential, so an unpaced run is a burst: rate limiting (a WAF rate-limiting rule, or AI Gateway's) starts returning 429s that score as `error` and quietly shrink the denominator, and the whole batch lands in a single analytics bucket. Pacing spreads it across the 5-minute buckets so the run is legible on the chart. The estimate next to the controls updates with the delay (`estimateRunSeconds`, applied n−1 times since there's no gap after the last send), and the phase line counts down — `sent 12/100 · next in 4.6s`. Stop stays responsive during a gap rather than blocking for its full length.
+- **Run a subset.** Every row has a tick box and Run sends the ticked attacks; **nothing ticked means all**, so there is no "0 selected" dead end. Selection is keyed by attack id, not row index, so re-sorting cannot move it onto different attacks. The button label, time estimate and send/resolve progress all read the subset. The severity/category breakdowns are scoped to attacks that actually produced a result — `Bars` fills each group by `reached/total`, so scoring a 5-attack subset against the full 36 would have drawn the miss rate as a fraction of prompts never sent (this was already wrong for a *stopped* run).
+- **Dynamic Route** (gateway route only). Free text, because nothing this app calls enumerates a gateway's routes; the Worker accepts `demo-routes` or the dashboard's `dynamic/demo-routes`. Dropped entirely on the direct route — verified on the wire: gateway sends `dynamicRoute`, direct sends only `prompt` + `stream`. A route **chooses the model**, so a run through one is not measuring the default model.
+- **A run that scored nothing is not "0%".** If every send fails (a mistyped route, a gateway token without the right scopes, rate limiting) `scored` is 0 and `reachedPct` would read "0% reached the model" — indistinguishable from a perfect block rate. The scorecard shows `—` and says nothing was measured, naming the likely causes.
+- ⚠️ **Built and deployed but not reachable from the UI yet:** saved runs (`/api/redteam-runs`, `attackKey`/`corpusFingerprint`/`diffRuns` in `lib/redteam.ts`) and the gap-to-rule recommender (`lib/gapControls.ts`, `components/redteam/GapControls.tsx`). Nothing in `RedTeamPage` saves, lists or compares a run or renders the recommender, so today a scorecard still disappears on reload and the before/after comparison the feature exists for cannot be done in the app. The design is in PROGRESS.md; the page wiring is the open task.
 - Corpus caveat, stated in the UI: it is a curated subset, and several prompts are the report's truncated preview text.
 
 ### Bring your own attacks (CSV)
@@ -310,6 +332,7 @@ Design decisions worth preserving if you edit it:
 - **ISO/IEC 42001 is a paid standard**, so the page cites **top-level Annex A groups only** (`A.2`–`A.10`) in Cloudflare's own words and never reproduces ISO text. NIST, OWASP and ATLAS are public and cited by real identifiers.
 - The **BOT** and **NCSA** documents are Thai-language; the page paraphrases their structure (BOT: Part 1/2 §n; NCSA: lifecycle phases 0–6 + §n) and reproduces no Thai text. The BOT tab carries a "confirm against the official document for a regulated engagement" note. BOT Part 2 §3.1 maps especially cleanly — it splits the cyber control into *prompt filtering* + *response filtering*, exactly Firewall for AI + Gateway Guardrails.
 - A banner states that Cloudflare supplies *technical controls* and that full compliance is an organizational program.
+- **Live evidence on exactly four NIST AI RMF controls** — MEASURE 2.7 (injection scoring), 2.10 (PII), 2.6 (unsafe topics) and 3.1 (risk tracking) — read from `/api/analytics` and `/api/prompt-analytics` over a stated 24 h window (`lib/complianceEvidence.ts`). Deliberately *not* every control: most are governance (policy, roles, process) and no traffic count evidences those, so a chip on each would be a false compliance claim. Three ways it could lie are handled and tested: **no data ≠ zero** (an empty window renders "not exercised yet, not a failed control", visually distinct from a measured `0 blocked`); a payload that hit the 500-row cap renders **"at least N"**; and an unconfigured or failed fetch renders nothing, degrading to the static page. MEASURE 2.10 has two sources (edge detections and prompt-log redactions) and each only appears when it has its own denominator — with the prompt log disabled, only the edge half shows. Further candidates (ISO A.7, OWASP LLM01/LLM02, ATLAS AML.T0051, BOT, NCSA) were proposed and **not** added: what the page asserts to customers is an editorial call.
 - Control cards cross-link to the live demo that exercises them (OWASP LLM01 and MITRE AML.T0051 link to `/redteam`).
 - ⚠️ Open item: a GRC reviewer should sanity-check the subcategory titles and section descriptions before regulated-customer use.
 
@@ -386,6 +409,8 @@ npm install
 npm run deploy    # build + wrangler deploy; requires Node >= 22 (nvm use 24)
 ```
 
+Apply any pending D1 migration to prod **before** deploying, so new code never meets an old schema: `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote`. GitHub Actions (`.github/workflows/ci.yml`) typechecks, tests and builds every PR and push to `main`; it deliberately does **not** deploy — shipping is gated on `npm run smoke:prod` and a human decision.
+
 `wrangler.jsonc` pins the custom domain, so deploy creates/updates the proxied DNS record and cert for `cf-ai-waf-demo.nttlab.org`.
 
 > ⚠️ AI Security for Apps is a *zone* feature — detections only fire on the proxied zone hostname on an **Enterprise zone with the AI Security add-on**, never on `workers.dev`.
@@ -401,10 +426,14 @@ The right panel groups demo prompts into the categories below (`CATEGORIES` in `
 | Multi-turn Jailbreak (Crescendo) | LLM01:2025 Prompt Injection | AML.T0054 LLM Jailbreak | `cf.llm.prompt.injection_score` (per request; context builds model-side) |
 | System Prompt Leakage | LLM07:2025 System Prompt Leakage | AML.T0056 LLM Meta Prompt Extraction | `cf.llm.prompt.injection_score` |
 | PII — Sensitive Info Disclosure | LLM02:2025 Sensitive Information Disclosure | AML.T0057 LLM Data Leakage | `cf.llm.prompt.pii_detected` → `pii_categories` |
-| Unsafe / Harmful Topics · Other Unsafe / Harmful Topics | LLM01:2025 (content safety) | AML.T0054 LLM Jailbreak | `cf.llm.prompt.unsafe_topic_categories` (S1–S14) |
+| Unsafe / Harmful Topics | LLM01:2025 (content safety) | AML.T0054 LLM Jailbreak | `cf.llm.prompt.unsafe_topic_categories` (S1–S14) — rule 5 **blocks** S1–S5 and S8–S12; S6 and S13 only match the log rule |
+| Malicious Code Generation | LLM05:2025 Improper Output Handling ⚠️ loose fit | AML.T0048 External Harms | **none** — no `cf.llm.*` field covers it; the control is AI Gateway Guardrails → Malicious Code Detection |
+| Brand Tarnishing / Self-Criticism | — | — | **none today** — the scan's largest gap (53); needs a Custom Topic, then a rule on `cf.llm.prompt.custom_topic_categories["<topic>"]` |
 | Custom Topic — Sensitive Data / Financial Advice / Politics & Election / Telco Use Cases | — | — | custom-topic score (lower = stronger match) |
 
-The demo prompts are mostly Thai-language and telco-flavoured (SIM swap, OTP bypass, subscriber location, customer records). Custom-topic prompts are labelled **Direct** or **Indirect** (asks *about* the subject rather than for it) — send both and compare the custom-topic scores in the verdict to pick a threshold live.
+The demo prompts are mostly Thai-language and telco-flavoured (SIM swap, OTP bypass, subscriber location, customer records). Custom-topic prompts are labelled **Direct**, **Indirect** or **Edge** (asks *about* the subject rather than for it) — send both and compare the custom-topic scores in the verdict to pick a threshold live.
+
+The panel **starts collapsed** — each header shows its preset count, and a search expands whatever it matched for as long as the query stands. Two presets carry a suffix because they behave differently from what clicking them suggests: *Specialized advice — S6* and *Elections — S13* sit outside rule 5's blocked set, so they reach the model and are only logged. The Malicious Code card is separate from the WAF categories on purpose — it marks where AI Security for Apps ends and AI Gateway Guardrails begins.
 
 References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) · [MITRE ATLAS AML.T0054](https://atlas.mitre.org/techniques/AML.T0054) · [ATLAS matrix](https://atlas.mitre.org/matrices/ATLAS)
 
@@ -423,18 +452,24 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **150 tests across 12 files**. Each exists because a real bug shipped, and each was mutation-verified.
+`npm test` — **229 tests across 15 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+
+The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
 | File | Covers |
 |---|---|
 | `src/redact.test.ts` (18) | PII redaction against the real Attack Library prompts; asserts the identifier is *absent* rather than matching an exact mask (the shipped bug leaked part of an IBAN); no false positives; idempotency |
-| `src/config.test.ts` (8) | `normalizeDynamicRoute` — accepts both `demo-routes` and `dynamic/demo-routes`, returns `null` (never a silently wrong value) for traversal or junk |
+| `src/config.test.ts` (12) | `normalizeDynamicRoute` — accepts both `demo-routes` and `dynamic/demo-routes`, returns `null` (never a silently wrong value) for traversal or junk · `promptLogEnabled` — only the exact string `"true"` enables it; `"True"`, `"1"`, `"yes"`, `""` etc. all read as off (fails closed) |
 | `src/verdict-window.test.ts` (9) | `verdictWindow()` anchored vs. live bracketing (incl. the regression itself) and `isBeyondRetention()` — an unknown timestamp must never read as expired |
 | `web/src/lib/verdict.test.ts` (8) | Built from a real incident's payload: a 403 with only log-only rules classifies as `denied`, not `log` |
-| `web/src/lib/redteam.test.ts` (15) | The red-team scoring contract, corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns |
+| `web/src/lib/redteam.test.ts` (37) | The red-team scoring contract, corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns · `attackKey` (same prompt ⇒ same key across uploads and reorderings), `corpusFingerprint`, and `diffRuns` (refuses cross-corpus comparison; scores only the shared attacks so an added already-blocked attack cannot read as an improvement) |
 | `web/src/lib/metadata.test.ts` (6) | The 5-entry metadata cap and malformed-pair handling |
 | `web/src/lib/attackCsv.test.ts` (22) | Custom-corpus CSV parsing — quoted fields, embedded newlines, doubled quotes, BOM, CRLF, the 200-row cap, and rejecting a file with no `prompt` column instead of guessing |
-| `src/promptlog.test.ts` (17) | The prompt-log query builder — offset clamping past the old 200-row ceiling, LIKE-wildcard escaping, and an ORDER BY whitelist that discards anything not on it (the one place a column name reaches SQL) |
+| `src/promptlog.test.ts` (18) | The prompt-log query builder — offset clamping past the old 200-row ceiling, LIKE-wildcard escaping, and an ORDER BY whitelist that discards anything not on it (the one place a column name reaches SQL) |
+| `src/redteamruns.test.ts` (19) | Validation of the unauthenticated run-save endpoint: attack cap, state whitelist, clamped totals, redacted + truncated previews, adversarial input |
+| `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
+| `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
+| `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 
