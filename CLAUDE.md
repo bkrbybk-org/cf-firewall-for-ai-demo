@@ -5,6 +5,41 @@ Cloudflare AI Security for Apps demo — Worker (API + React SPA) on `cf-ai-waf-
 `PROGRESS.md` and `README.md` are the source of truth for architecture, open bugs and setup.
 Read them before answering questions about how this app works.
 
+## Default implementation approach
+
+For any change bigger than a one-line edit, **draft a plan before touching code**, then implement
+it, then run the workflow below. Delegation to subagents is authorised by default for the tasks
+the plan marks delegable — no need to ask each time.
+
+**The plan lists, per task:** what changes and which files; dependencies; who does it (**self**,
+**sonnet** or **haiku**) and why; and how the result will be verified. Tasks that touch the same
+file are serialised; only tasks with disjoint file sets run in parallel. Say which files are hot
+(`src/handlers.ts`, `src/types.ts`, `web/src/lib/types.ts`, `RedTeamPage.tsx`) — those are edited
+by one party at a time.
+
+**Who takes a task** — decided by the cost of a wrong judgment, not by size:
+
+- **Self** when a mistake would be costly *or invisible*: anything handling hostile input or
+  producing text a customer will paste into production (WAF expressions); scoring and honesty
+  semantics; design decisions with tradeoffs; edits to a hot file; deploys, credentials and
+  anything on prod; facts about Cloudflare or a standard that must be checked against its own
+  docs; writing the docs; and **reviewing whatever a subagent returns**.
+- **Sonnet** when the semantics can be pinned in a brief and the work is a well-specified
+  feature: multi-file implementation, components from a fixed props contract, test writing,
+  mechanical-but-broad refactors. The brief states the non-negotiable semantics (with the *why*),
+  the files it may and may not edit, "no formatter", "do not commit or deploy", and asks for real
+  command output rather than "should work".
+- **Haiku** when the task is mechanical, low-judgment and verifiable by a tool: inventories and
+  greps, stale-string sweeps, applying an exact before/after edit, running a command and reporting
+  its output. If writing the brief costs more than doing the edit, do the edit.
+
+**Delegated work is a claim, not a result.** Re-run the gates yourself, grep the facts, and check
+anything about the outside world against its source. A subagent once concluded a real Cloudflare
+field did not exist because this repo never mentioned it; another applied a migration by file into
+its own worktree so this checkout's database never got it. Subagents leave their work uncommitted:
+commit or merge it deliberately. Prefer disjoint files in the same tree over `isolation: worktree`,
+whose separate `.wrangler` state has already caused one bug.
+
 ## Default workflow for any change
 
 Run this end to end without being asked. **Each gate must pass before the next step** — a
