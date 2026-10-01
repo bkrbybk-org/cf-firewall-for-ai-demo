@@ -33,6 +33,7 @@ import type { PromptAnalytics, PromptLog, PromptLogRow as PromptLogRowData } fro
 const OUTCOME_TONE: Record<string, string> = {
   reply: "border-cf-green/50 text-cf-green",
   guardrails: "border-cf-purple/50 text-cf-purple",
+  external: "border-cf-amber/50 text-cf-amber",
   error: "border-cf-red/50 text-cf-red",
 };
 

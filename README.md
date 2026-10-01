@@ -26,6 +26,7 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 | `/analytics` | **edge** (zone WAF + AI Security) and **AI Gateway** (account gateway logs), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
 | `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. Tick rows to run just a subset; choose the route, gateway and an optional Dynamic Route. |
 | `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
+| `/guardrails` | Configure an **external guardrail** each prompt is forwarded to before the model runs — Palo Alto Networks **Prisma AIRS** today (CrowdStrike AIDR listed, not yet supported). |
 
 `/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
 
@@ -50,6 +51,8 @@ src/                    Worker (TypeScript)
   promptlog.ts          prompt-log query builder (paging, search, whitelisted ORDER BY)
   redteamruns.ts        validation + caps for POST /api/redteam-runs (hostile-input boundary)
   openapi.ts            the OpenAPI 3.1 document served at /api/openapi.json (hand-written)
+  prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
+  externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, forwardPrompt
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
   *.test.ts             vitest — see Tests
@@ -58,6 +61,7 @@ migrations/
   0002_latency.sql      latency_ms + streamed columns on prompt_log
   0003_redteam_runs.sql redteam_runs + redteam_results (saved runs)
   0004_redteam_dynamic_route.sql   dynamic_route column on redteam_runs
+  0005_external_guardrails.sql     external_guardrails (one enabled at a time) + redteam_runs.external
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
   prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod)
@@ -96,6 +100,7 @@ web/                    React app (Vite root)
       analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
                         GatewayTab, PromptLogTab
       redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
+      ExternalGuardrailCard.tsx   blocked/unavailable card + reply chip for an external guardrail
     pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
 dist/                   Vite build output (gitignored) → wrangler assets
 ```
@@ -135,6 +140,8 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `DELETE /api/prompt-log` | Clears the prompt log |
 | `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log, incl. per-route/guarded/streamed latency percentiles |
 | `GET /api/openapi.json` | This API as an OpenAPI 3.1 document (see **API reference** below) |
+| `GET/PUT /api/external-guardrails` | External-guardrail configuration; API keys are write-only and never returned |
+| `POST /api/external-guardrails/test` | Scan a fixed benign prompt with the **saved** configuration |
 | `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
 
 Everything else falls through to the static assets (SPA fallback).
@@ -198,6 +205,35 @@ The REST gateway list carries **no** guardrails field, so which gateway is guard
 ```sh
 npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for wrangler dev
 ```
+
+## External guardrails (Prisma AIRS)
+
+`/guardrails` configures a third-party guardrail that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) is implemented; CrowdStrike AIDR is listed as not yet supported. **Only one provider can be enabled at a time** — enforced by a unique partial index in D1, not just by the UI.
+
+**What you configure:** region (the endpoint), API key, AI security profile name, the fail mode, and the enable toggle. *Test connection* scans a fixed benign prompt with the **saved** settings.
+
+**How a prompt flows:**
+
+| Prisma AIRS says | What happens | Shown as |
+|---|---|---|
+| `allow` | model runs | green chip on the reply: `Prisma AIRS · allow · benign · 312 ms` (amber "incomplete scan" if a detection service timed out) |
+| `block` | model does **not** run; HTTP **200** `externalGuardrailBlocked` | amber card "Blocked by Prisma AIRS" with the detections, profile, `scan_id` / `report_id` for Strata Cloud Manager |
+| unreachable / error, fail mode **block** (default) | model does not run | amber card "Prisma AIRS unavailable — prompt not sent", stating it is **not a verdict** |
+| unreachable / error, fail mode **allow** | model runs **unscanned** | amber chip "sent unscanned" |
+
+A block is deliberately a **200**, never a 403: 403 on this route means the edge WAF, and both the chat and the red-team runner attribute it that way. External blocks are their own outcome everywhere — `external` in the prompt log, the red-team state `external` (excluded from the "reached the model" denominator like AI Gateway Guardrails), the amber chart series — so no control is credited with another's block. The verdict rides in the `x-external-guardrail` response header (URI-encoded JSON) as well, because a streamed reply has no JSON body.
+
+**Security decisions:**
+
+- **No free-text endpoint.** You pick a region and the Worker calls only PANW's four official hosts (US, EU/Germany, India, Singapore — from PANW's own OpenAPI spec). The API key travels in the `x-pan-token` header, and `/api/external-guardrails` is reachable by anything that passes Access — including a scanner's service token — so a typed URL would let such a caller send the stored key to their own server. The allowlist closes that and SSRF together.
+- **The API key is write-only.** It is encrypted with AES-256-GCM (the `GUARDRAIL_SECRET_KEY` Worker secret, provider id bound in as additional data) before it reaches D1, and no endpoint returns it — only `••••last4`. Without the secret the page shows a setup hint and refuses to store a key rather than storing it in plaintext.
+- **No end-user identity is sent.** The request carries the prompt, the AI profile, `app_name` and the model — not `app_user` or `user_ip`. `tr_id` is the Cloudflare ray, so the two consoles can be correlated.
+- **Prompts leave Cloudflare** for Palo Alto Networks when this is enabled. The page says so.
+- **Latency stays honest:** the model-latency clock restarts after the guardrail, and a blocked turn is logged with no latency at all, so a guardrail round trip is never averaged in with model latencies.
+
+**Setup** (one time): `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (migration `0005`), then `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (and add `GUARDRAIL_SECRET_KEY=…` to `.env` for `wrangler dev`). Rotating that secret makes the stored key undecryptable — the chat then reports the guardrail as unavailable and you re-enter the key.
+
+**Limits worth knowing:** *Test connection* and every forwarded prompt use a 5 s timeout. **Local `wrangler dev` cannot reach PANW's hosts** (local workerd throws `internal error` on that fetch — reproduced with a minimal worker containing none of this code, while `curl` from the same machine works), so locally the guardrail always errors; verify against prod.
 
 ## Live edge verdict
 
@@ -466,7 +502,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **235 tests across 16 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **270 tests across 18 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -485,6 +521,8 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
+| `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
+| `src/externalGuardrails.test.ts` (20) | Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 

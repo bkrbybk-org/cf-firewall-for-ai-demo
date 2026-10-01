@@ -49,6 +49,7 @@ const RANGES = [
 const OUTCOME_FILTERS = [
   { value: "reply", label: "replied", tone: "border-cf-green/50 text-cf-green" },
   { value: "guardrails", label: "guardrails-blocked", tone: "border-cf-purple/50 text-cf-purple" },
+  { value: "external", label: "external-guardrail-blocked", tone: "border-cf-amber/50 text-cf-amber" },
   { value: "error", label: "error", tone: "border-cf-red/50 text-cf-red" },
 ];
 // The prompt log is deliberately small and often reviewed as "the whole demo

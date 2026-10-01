@@ -10,7 +10,7 @@ import { postChat, type GatewayBackoff } from "../lib/api";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
-import type { ChatTurn, GatewayMeta, Model, Usage } from "../lib/types";
+import type { ChatTurn, ExternalGuardrailResult, GatewayMeta, Model, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
@@ -67,6 +67,7 @@ export type Msg =
         cost?: number | null;
         gateway?: GatewayMeta; // set when this reply was routed via AI Gateway
         dynamicRoute?: string; // set when a dynamic route chose the model
+        externalGuardrail?: ExternalGuardrailResult; // the external guardrail's verdict that let it through
       };
       ray?: string;
     }
@@ -91,6 +92,17 @@ export type Msg =
       detail?: string;
       guarded?: boolean;
       gateway?: GatewayMeta; // which gateway blocked (for the flow trace)
+    }
+  | {
+      id: number;
+      // Stopped by an external guardrail (Prisma AIRS) inside the Worker — its
+      // own kind, never folded into "blocked" (the edge WAF) or "guardrails"
+      // (AI Gateway), so each control is credited only with what it did.
+      kind: "external";
+      ts: string;
+      tsMs: number;
+      ray?: string;
+      result: ExternalGuardrailResult;
     }
   | { id: number; kind: "error"; text: string; ts: string; tsMs: number }
 
@@ -252,7 +264,20 @@ export function useChat(cfg: {
           }
           patch(asstId, (m) =>
             m.kind === "assistant"
-              ? { ...m, streaming: false, ray, meta: { model: ranModel, ray, usage, cost, gateway: gwMeta, dynamicRoute: routeMeta } }
+              ? {
+                  ...m,
+                  streaming: false,
+                  ray,
+                  meta: {
+                    model: ranModel,
+                    ray,
+                    usage,
+                    cost,
+                    gateway: gwMeta,
+                    dynamicRoute: routeMeta,
+                    externalGuardrail: result.externalGuardrail ?? undefined,
+                  },
+                }
               : m,
           );
           outcome = { kind: "reply", ray };
@@ -277,6 +302,9 @@ export function useChat(cfg: {
             reason: data?.reason,
           });
           outcome = { kind: "blocked", ray };
+        } else if (data?.externalGuardrailBlocked && data.externalGuardrail) {
+          push({ id: nextId(), kind: "external", ...stamp(), ray, result: data.externalGuardrail });
+          outcome = { kind: "blocked", ray };
         } else if (data?.guardrailsBlocked) {
           push({
             id: nextId(),
@@ -297,7 +325,15 @@ export function useChat(cfg: {
             kind: "assistant",
             text: data.reply,
             ...stamp(),
-            meta: { model: data.model, ray, usage: data.usage, cost, gateway: gwMeta, dynamicRoute: data.dynamicRoute },
+            meta: {
+              model: data.model,
+              ray,
+              usage: data.usage,
+              cost,
+              gateway: gwMeta,
+              dynamicRoute: data.dynamicRoute,
+              externalGuardrail: data.externalGuardrail,
+            },
             ray,
           });
           outcome = { kind: "reply", ray };

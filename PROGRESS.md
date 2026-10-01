@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-10-01 — code review: three honesty defects found (Open bugs #22–#24), one live in prod_
+_Last updated: 2026-10-01 — external guardrails (Prisma AIRS) shipped; code review found Open bugs #22–#24, one live in prod_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -401,7 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-09-30 as version `a49adbd0-d4c6-4a56-985f-e5e34f728a95` (the OpenAPI spec + Swagger UI); before
+deployed 2026-10-01 as version `4a7e311c-be39-49fc-8710-53b16dfcd21e` (external guardrails); before that
+`a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
 that `99cbf558` (2026-09-07, built from `ef68406`). The token replacement the same day also created a version,
 from a secret change rather than a deploy.
 
@@ -432,7 +433,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **235 across 16 files** (measured 2026-09-30; README's Tests table has the per-file counts).
+**Tests** — `npm test`, **270 across 18 files** (measured 2026-10-01; README's Tests table has the per-file counts).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
 (reintroduce the bug → red). The 2026-09 additions (`redteamruns`, `gapControls`, `complianceEvidence`, the
 latency sort, `promptLogEnabled`, and the `redteam.test.ts` growth 15 → 37) were written with their code and
@@ -596,6 +597,70 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-01 — external guardrails (Prisma AIRS)
+
+**Forward each prompt to a third-party guardrail before the model** (`/guardrails`, `src/prismaAirs.ts`,
+`src/externalGuardrails.ts`, migration `0005`). Palo Alto Networks Prisma AIRS (AI Runtime Security, API
+intercept) is implemented; CrowdStrike AIDR is listed but unsupported. Runs after the edge scan and before
+the model, on both routes; one provider enabled at a time (unique partial index in D1). Built with the
+default implementation approach: the client contract was frozen first, the config page and chat card were
+delegated to a Sonnet subagent against it, and everything touching secrets, outbound auth, `handleChat`,
+scoring semantics and the spec stayed with the main thread.
+
+- **The API facts came from PANW's own OpenAPI spec, not the docs page.** The reference page renders its
+  schema client-side and returned only an outline, so the spec was pulled from the public
+  `PaloAltoNetworks/pan.dev` repo (`openapi-specs/prisma-airs/scan/scan-service_latest.yaml`):
+  `POST /v1/scan/sync/request`, `x-pan-token`, `ai_profile` + `contents` required, `action`
+  `allow`/`block`, `category`, seven `prompt_detected` booleans, four regional hosts. **The live endpoint
+  then contradicted the spec on errors:** it answers `{"error":{"message":"Invalid API Key or OAuth Token"}}`
+  (403) and `{"error":{"message":"Not Authenticated"}}` (401), not the declared `{status_code, message}`.
+  Both shapes are parsed.
+- **No free-text endpoint — the region picks one of PANW's four hosts.** The key travels in a header, and
+  `/api/external-guardrails` is reachable by anything that passes Access, including the red-team scanner's
+  service token. A typed URL would let such a caller redirect the stored key to their own server (and is an
+  SSRF primitive). The user asked for an "API endpoint" setting; the region picker is that setting, and the
+  page explains why it is not free text.
+- **The key is write-only and encrypted at rest** (AES-256-GCM, `GUARDRAIL_SECRET_KEY` secret, provider id
+  bound as AAD). Only `••••last4` is ever returned; `toPublicConfig` builds the response field by field so a
+  later column cannot leak through a spread. No secret → the page refuses to store a key.
+- **An error is never a verdict.** Fail mode is the operator's: `block` (default, fail closed) stops the turn
+  and the card says the guardrail was *unavailable*, not that the prompt was malicious; `allow` lets it
+  through marked `failedOpen`. A 200 from PANW with no usable `action` is an error, never an allow.
+- **A block is HTTP 200 `externalGuardrailBlocked`, never 403**, because 403 on `/api/chat` means the edge
+  WAF to the chat and the red-team runner. It is its own outcome throughout: prompt-log `external`, red-team
+  state `external` (excluded from the scored denominator; new `redteam_runs.external` column), its own amber
+  chart series. The prompt-analytics series previously ended in `else row.reply++`, which would have counted
+  an external block as a model reply — now explicit per outcome.
+- **Latency stays model-only:** the clock restarts after the guardrail, and a blocked turn logs
+  `latency_ms = NULL` so a guardrail round trip is never averaged into model percentiles.
+- **Privacy:** no `app_user` / `user_ip` is sent (the prompt already leaves Cloudflare); `tr_id` is the ray.
+- **Fixed Open bug #16 in passing** — the `external` column had to be added to the same two `SELECT`s.
+- *Verified:*
+  - **Unit tests (35 new, 270 total)** against PANW's real shapes; the security tests were
+    **mutation-verified** — six planted regressions (leak the stored row, allow on a missing `action`, drop
+    the region check, ignore the fail mode, unbind the ciphertext from its provider, enable without a key),
+    all caught. One test was itself wrong at first: passing `undefined` to a parameter with a default applied
+    the default, so the "secret missing" case never removed the secret.
+  - **Locally on `wrangler dev`:** free-text endpoint → 400; enable without key → 400; unsupported provider →
+    400; the key appears in no response and only as ciphertext in D1. **Fail-closed:** chat → 200 blocked,
+    `outcome: error`, no `failedOpen`, prompt-log row `external` with `latency_ms NULL`. **Fail-open:** the
+    turn proceeds with `failedOpen: true` and a model-only latency. Header present on JSON and streamed
+    responses. In the browser (DOM-checked; the pane could not screenshot): the page shows the masked key, the
+    four regions, the derived endpoint, fail-mode controls, the third-party disclosure and "Not yet supported"
+    for CrowdStrike; *Test connection* shows the error verbatim in an `aria-live` region; the chat renders the
+    fail-closed card with "This is not a verdict", no detection pills, no "malicious".
+  - **On prod (deployed Worker → real PANW):** with a deliberately invalid key saved but **not enabled**,
+    *Test connection* returned **403 "Invalid API Key or OAuth Token" from the US, EU and SG hosts**. A 403
+    rather than a 401 "Not Authenticated" proves the encrypted key was decrypted and delivered in
+    `x-pan-token`. The key was then cleared; chat carried no guardrail header throughout; smoke passed.
+- **Not verified — needs a real Prisma AIRS key:** a genuine `allow` or `block` verdict end to end, the
+  "Blocked by Prisma AIRS" card and the green allow chip (both read, not rendered), the `incomplete` path, and
+  real latency. The red-team runner's `external` classification has no unit test (the hook is untested
+  generally). **Local `wrangler dev` cannot reach PANW's hosts at all:** a minimal worker with none of this
+  code throws workerd `internal error` on that fetch with or without an abort signal, while `curl` from the
+  same machine and Worker fetches to `api.cloudflare.com` both work — so local runs always see the guardrail
+  as unavailable. (Same opaque error local Workers AI returned on 2026-09-30.)
+
 **API reference — OpenAPI 3.1 + Swagger UI** (`src/openapi.ts`, `/api/openapi.json`, `/api-docs/`; 2026-09-30).
 11 paths, 14 operations. Decisions:
 - **Hand-written, guarded against drift** rather than generated. Nothing in this codebase describes its own
@@ -626,7 +691,7 @@ and push — so the version id `wrangler` prints is the only handle on a rollbac
 - **Things the spec says out loud** because they are easy to get wrong: `configured:false` is HTTP 200; a
   WAF block is a 403 written by the zone's rule before the Worker runs (body operator-configured) while a
   Guardrails block is a 200; *Try it out* is real and billable. Two known limitations are stated as such
-  (`dynamicRoute` not returned by GET — Open bug #16; the prune ordered by client `ts` — #18) without
+  (`dynamicRoute` not returned by GET — Open bug #16, since fixed; the prune ordered by client `ts` — #18) without
   internal bug numbers, since the audience is outside this repo.
 - **Caught by CI's typecheck, not by vitest:** the first version of the test imported `node:fs` and
   `__dirname`, which the Worker's tsconfig (Workers types, no Node types) rejects. Vitest does not
@@ -1040,7 +1105,8 @@ uncommitted.
 **Found in the 2026-09-30 code review** (read from the code and grep; each states whether it was
 exercised):
 
-16. **`redteam_runs.dynamic_route` is written but never read.** Only the `INSERT` in `handleRedTeamRuns`
+16. ~~**`redteam_runs.dynamic_route` is written but never read.**~~ **FIXED 2026-10-01** while adding the
+    `external` column to the same two `SELECT`s; the OpenAPI schema now lists `dynamicRoute` as returned. Original entry: Only the `INSERT` in `handleRedTeamRuns`
     references the column; both `SELECT`s (list and single-run) omit it, while `RedTeamRunRow.dynamicRoute`
     is typed as always present in `src/types.ts` and `web/src/lib/types.ts`. So the comparability data
     migration `0004` exists to record can never come back out. No user impact today (no UI reads saved
@@ -1112,6 +1178,17 @@ exercised):
     itself. And 13 handler sites return raw upstream/exception text to the client — on local dev one
     carried a stack trace with an absolute file path. Prod is behind Access, so low risk; worth a generic
     message plus the detail in logs if this is ever exposed.
+
+**External-guardrail caveats** (2026-10-01):
+
+26. **Anything that passes Access can reconfigure the guardrail** — enable or disable it, change region, fail
+    mode or profile, or replace the key — because `/api/external-guardrails` cannot tell a human from the
+    red-team scanner's service token. It **cannot read or redirect the key** (write-only; allowlisted hosts),
+    so the worst case is a guardrail switched off or set to fail open. If that matters, restrict the path in
+    Access to human identities, or check the `Cf-Access-Jwt-Assertion` identity in the Worker.
+27. **A real verdict has never been exercised** — no valid Prisma AIRS key was available. First thing to do
+    with one: save it, *Test connection*, enable, and send one benign and one injection prompt from the
+    Attack Library; confirm the green chip and the "Blocked by Prisma AIRS" card with detections and `scan_id`.
 
 ## Next tasks
 

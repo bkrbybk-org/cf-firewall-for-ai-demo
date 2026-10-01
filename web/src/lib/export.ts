@@ -89,6 +89,23 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
             ? "response blocked by AI Gateway Guardrails (2017)"
             : "prompt blocked by AI Gateway Guardrails (2016)",
       });
+    } else if (next.kind === "external") {
+      const r = next.result;
+      // A fail-closed provider error stopped the turn too, but it is not a
+      // verdict — export it as an error so the report never claims a detection.
+      if (r.outcome === "block") {
+        turns.push({
+          ts: next.ts,
+          tsMs: next.tsMs,
+          prompt: m.text,
+          outcome: "blocked",
+          ray: next.ray,
+          detection: `external-guardrail:${r.provider}`,
+          reason: `blocked by ${r.provider} (${r.category ?? "no category"}${r.detected?.length ? `: ${r.detected.join(", ")}` : ""})${r.scanId ? ` · scan ${r.scanId}` : ""}`,
+        });
+      } else {
+        turns.push({ ts: next.ts, tsMs: next.tsMs, prompt: m.text, outcome: "error", errorText: `${r.provider} unavailable: ${r.error ?? "unknown error"}` });
+      }
     } else if (next.kind === "error") {
       turns.push({ ts: next.ts, tsMs: next.tsMs, prompt: m.text, outcome: "error", errorText: next.text });
     }

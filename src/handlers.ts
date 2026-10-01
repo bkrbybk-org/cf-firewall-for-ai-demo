@@ -23,6 +23,20 @@ import {
   promptLogEnabled,
   type GatewayBackoff,
 } from "./config";
+import {
+  decryptSecret,
+  defaultConfig,
+  encryptSecret,
+  forwardPrompt,
+  loadAll,
+  PROVIDER_IDS,
+  PROVIDERS,
+  save,
+  stopsTurn,
+  toPublicConfig,
+  validateUpdate,
+} from "./externalGuardrails";
+import { scanPromptWithPrismaAirs } from "./prismaAirs";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
 import {
   listAiGateways,
@@ -681,7 +695,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     ...history,
     { role: "user", content: prompt },
   ];
-  const started = Date.now();
+  let started = Date.now();
   const ray = request.headers.get("cf-ray");
   const route: "direct" | "gateway" = gateway ? "gateway" : "direct";
   const logBase = { ray, route, model, gatewayId: gateway ? gatewayId : null, guarded };
@@ -703,6 +717,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       promptTokens?: number | null;
       completionTokens?: number | null;
       streamed: boolean;
+      latencyMs?: number | null; // override: null when no model ran at all
     },
   ): Promise<void> => {
     if (excludeFromLog) return Promise.resolve();
@@ -710,6 +725,29 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     ctx?.waitUntil(done);
     return done;
   };
+
+  // External guardrail (Prisma AIRS first — see src/externalGuardrails.ts).
+  // Runs AFTER the edge scan (which happened before this Worker was invoked)
+  // and BEFORE the model, on both routes. null when none is enabled, in which
+  // case nothing below changes.
+  const external = await forwardPrompt(env, { prompt, model, ray });
+  // Carried on every response from here on, so the client can show the verdict
+  // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
+  // because a header value must stay within Latin-1.
+  const extHeaders: Record<string, string> = external
+    ? { "x-external-guardrail": encodeURIComponent(JSON.stringify(external)) }
+    : {};
+  if (external && stopsTurn(external)) {
+    // A 200, deliberately not a 403: 403 on this route means the edge WAF, and
+    // the client and the red-team runner attribute it that way. latencyMs null —
+    // no model ran, and a guardrail round trip in the latency column would be
+    // averaged in with model latencies.
+    log("external", { reply: null, streamed: false, latencyMs: null });
+    return Response.json({ externalGuardrailBlocked: true, externalGuardrail: external, model, ray }, { headers: extHeaders });
+  }
+  // latency_ms is documented as the model's latency, so the clock restarts
+  // after the guardrail rather than charging its round trip to the model.
+  started = Date.now();
 
   // AI Gateway path — always REST (see runGatewayRest doc comment for why).
   if (gateway) {
@@ -735,10 +773,13 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       // exception; the same 2016/2017 detector maps it to the purple card.
       const gr = guardrailsResponse(r.message, model, gatewayId, guarded);
       log(gr ? "guardrails" : "error", { reply: null, streamed: false });
-      if (gr) return gr;
+      if (gr) {
+        for (const [k, v] of Object.entries(extHeaders)) gr.headers.set(k, v);
+        return gr;
+      }
       return Response.json(
         { error: r.message, model, dynamicRoute: dynamicRoute || undefined },
-        { status: r.status },
+        { status: r.status, headers: extHeaders },
       );
     }
 
@@ -756,7 +797,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       // token, so the accumulator ignores it either way.
       const body = teeReplyToLog(withMeta, env, ray, excludeFromLog, inserted, ctx);
       return new Response(body, {
-        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", ...extHeaders },
       });
     }
 
@@ -781,7 +822,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       cost,
       gateway: { gatewayId, cached: r.cached, latencyMs: Date.now() - started, logId: r.logId, guarded },
       dynamicRoute: dynamicRoute || undefined,
-    });
+      externalGuardrail: external ?? undefined,
+    }, { headers: extHeaders });
   }
 
   // Direct Workers AI path — plain binding call, no gateway involved at all.
@@ -793,14 +835,14 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       // latency_ms recorded now is time-to-first-byte, not total generation time.
       const inserted = log("reply", { reply: null, streamed: true });
       return new Response(teeReplyToLog(sse, env, ray, excludeFromLog, inserted, ctx), {
-        headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", ...extHeaders },
       });
     } catch (err) {
       // The stream never started (env.AI.run threw before any bytes), so this
       // is a completed call like any other error — not a TTFB measurement.
       log("error", { reply: null, streamed: false });
       const message = err instanceof Error ? err.message : String(err);
-      return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
+      return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502, headers: extHeaders });
     }
   }
 
@@ -844,11 +886,12 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       },
       cost, // USD, estimated from published unit pricing
       gateway: undefined, // never set on the direct path
-    });
+      externalGuardrail: external ?? undefined,
+    }, { headers: extHeaders });
   } catch (err) {
     log("error", { reply: null, streamed: false });
     const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502 });
+    return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502, headers: extHeaders });
   }
 }
 
@@ -1125,7 +1168,7 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
     // be rounded up into hourly ones.
     const dataSpanHours = Math.max(0, (totals?.lastTs ?? 0) - (totals?.firstTs ?? 0)) / 3_600_000;
     const { bucket, stepMs } = bucketFor(spanHours ?? dataSpanHours);
-    type SeriesRow = { t: string; reply: number; guardrails: number; error: number };
+    type SeriesRow = { t: string; reply: number; guardrails: number; external: number; error: number };
     const series = new Map<string, SeriesRow>();
 
     // Pre-fill every bucket across the window so a quiet stretch renders as
@@ -1144,15 +1187,18 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       if (count <= MAX_PREFILL_BUCKETS) {
         for (let t = first; t <= rangeEnd; t += stepMs) {
           const key = new Date(t).toISOString();
-          series.set(key, { t: key, reply: 0, guardrails: 0, error: 0 });
+          series.set(key, { t: key, reply: 0, guardrails: 0, external: 0, error: 0 });
         }
       }
     }
 
     for (const r of rows.results ?? []) {
       const key = new Date(Math.floor(r.ts / stepMs) * stepMs).toISOString();
-      const row = series.get(key) ?? { t: key, reply: 0, guardrails: 0, error: 0 };
+      const row = series.get(key) ?? { t: key, reply: 0, guardrails: 0, external: 0, error: 0 };
+      // Explicit per outcome: the old `else row.reply++` would have counted an
+      // external-guardrail block as a reply the model gave.
       if (r.outcome === "guardrails") row.guardrails++;
+      else if (r.outcome === "external") row.external++;
       else if (r.outcome === "error") row.error++;
       else row.reply++;
       series.set(key, row);
@@ -1245,8 +1291,8 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
         `INSERT INTO redteam_runs
            (ts, label, route, gateway_id, guarded, model, dynamic_route, corpus_name,
             corpus_size, corpus_fingerprint, delay_ms, total, scored, reached, stopped,
-            denied, guardrails, pending, error, reached_pct)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            denied, guardrails, external, pending, error, reached_pct)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
         .bind(
           run.ts,
@@ -1266,6 +1312,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
           run.stopped,
           run.denied,
           run.guardrails,
+          run.external,
           run.pending,
           run.error,
           run.reachedPct,
@@ -1313,9 +1360,10 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       if (id == null) return Response.json({ configured: true, error: "id must be a positive integer" }, { status: 400 });
       const run = await env.DB.prepare(
         `SELECT id, ts, label, route, gateway_id AS gatewayId, guarded, model,
+                dynamic_route AS dynamicRoute,
                 corpus_name AS corpusName, corpus_size AS corpusSize,
                 corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
-                total, scored, reached, stopped, denied, guardrails, pending, error,
+                total, scored, reached, stopped, denied, guardrails, external, pending, error,
                 reached_pct AS reachedPct
          FROM redteam_runs WHERE id = ?`,
       )
@@ -1337,9 +1385,10 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
     // detail — must never pull results just to render a table of totals.
     const { results } = await env.DB.prepare(
       `SELECT id, ts, label, route, gateway_id AS gatewayId, guarded, model,
+              dynamic_route AS dynamicRoute,
               corpus_name AS corpusName, corpus_size AS corpusSize,
               corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
-              total, scored, reached, stopped, denied, guardrails, pending, error,
+              total, scored, reached, stopped, denied, guardrails, external, pending, error,
               reached_pct AS reachedPct
        FROM redteam_runs ORDER BY ts DESC LIMIT ?`,
     )
@@ -1350,5 +1399,118 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return Response.json({ configured: false });
     return Response.json({ configured: true, error: message }, { status: 502 });
+  }
+}
+
+// ── External guardrails: configuration ──────────────────────────────────────
+// GET  /api/external-guardrails — every provider's config, API keys redacted.
+// PUT  /api/external-guardrails — update one provider (see validateUpdate).
+//
+// Not-set-up states are 200 with `configured: false` and a `setupHint`, like the
+// rest of the API: the page shows the hint instead of a form that cannot save.
+function guardrailSetupHint(env: Env): string | null {
+  if (!env.DB) return "Bind the D1 database (`DB` in wrangler.jsonc) — external guardrail settings are stored there.";
+  if (!env.GUARDRAIL_SECRET_KEY) {
+    return "Set the GUARDRAIL_SECRET_KEY secret, which encrypts provider API keys at rest: `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (and add it to .env for wrangler dev).";
+  }
+  return null;
+}
+
+async function guardrailState(env: Env): Promise<Response> {
+  const hint = guardrailSetupHint(env);
+  if (hint) {
+    return Response.json({ configured: false, setupHint: hint, providers: PROVIDER_IDS.map((id) => toPublicConfig(defaultConfig(id))) });
+  }
+  try {
+    const all = await loadAll(env.DB!);
+    return Response.json({ configured: true, providers: all.map(toPublicConfig) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(message)) {
+      return Response.json({
+        configured: false,
+        setupHint: "Apply D1 migration 0005: `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (or --local).",
+        providers: PROVIDER_IDS.map((id) => toPublicConfig(defaultConfig(id))),
+      });
+    }
+    return Response.json({ configured: true, error: message, providers: [] }, { status: 502 });
+  }
+}
+
+export async function handleExternalGuardrails(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") return guardrailState(env);
+  if (request.method !== "PUT") return Response.json({ error: "Use GET or PUT" }, { status: 405 });
+
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ configured: true, error: "Invalid JSON body" }, { status: 400 });
+  }
+  const provider = (body as { provider?: unknown } | null)?.provider;
+  if (typeof provider !== "string" || !(PROVIDER_IDS as string[]).includes(provider)) {
+    return Response.json({ configured: true, error: `provider must be one of: ${PROVIDER_IDS.join(", ")}` }, { status: 400 });
+  }
+  try {
+    const all = await loadAll(env.DB!);
+    const current = all.find((c) => c.provider === provider)!;
+    const v = validateUpdate(body, current);
+    if (!v.ok) return Response.json({ configured: true, error: v.error }, { status: 400 });
+    const next = { ...v.next, updatedAt: Date.now() };
+    if (v.newApiKey != null) {
+      // The plaintext key exists only for this line; it is never logged, stored
+      // or returned.
+      next.apiKeyEnc = await encryptSecret(v.newApiKey, env.GUARDRAIL_SECRET_KEY!, next.provider);
+    }
+    await save(env.DB!, next);
+    return guardrailState(env);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(message)) return guardrailState(env);
+    return Response.json({ configured: true, error: message }, { status: 502 });
+  }
+}
+
+// POST /api/external-guardrails/test — one scan of a fixed benign prompt with
+// the SAVED configuration. It never accepts a key in the request, so it cannot
+// be used to probe the provider with arbitrary credentials, and it works whether
+// or not the provider is enabled (so a key can be checked before switching on).
+const GUARDRAIL_TEST_PROMPT = "Hello! What can you help me with today?";
+
+export async function handleExternalGuardrailsTest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return Response.json({ error: "Use POST" }, { status: 405 });
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ error: hint }, { status: 400 });
+  let provider: unknown;
+  try {
+    provider = ((await request.json()) as { provider?: unknown } | null)?.provider;
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  if (provider !== "prisma-airs") {
+    return Response.json({ error: "Only prisma-airs can be tested" }, { status: 400 });
+  }
+  try {
+    const c = (await loadAll(env.DB!)).find((x) => x.provider === provider)!;
+    if (!c.apiKeyEnc) return Response.json({ error: "No API key saved" }, { status: 400 });
+    if (!c.profileName) return Response.json({ error: "No AI security profile name saved" }, { status: 400 });
+    let apiKey: string;
+    try {
+      apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
+    } catch {
+      return Response.json({
+        ok: false,
+        result: { provider: c.provider, outcome: "error", latencyMs: 0, error: "Stored API key could not be decrypted — re-enter it." },
+      });
+    }
+    const baseUrl = PROVIDERS[c.provider].regions.find((r) => r.id === c.region)!.url;
+    const result = await scanPromptWithPrismaAirs({ baseUrl, apiKey, profileName: c.profileName, prompt: GUARDRAIL_TEST_PROMPT });
+    return Response.json({ ok: result.outcome !== "error", result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return Response.json({ error: message }, { status: 502 });
   }
 }

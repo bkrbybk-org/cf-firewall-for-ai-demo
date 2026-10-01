@@ -5,6 +5,7 @@ import { NavLink } from 'react-router-dom';
 import {
   BarChart3,
   ClipboardCheck,
+  ShieldPlus,
   ShieldCheck,
   Swords,
   type LucideIcon,
@@ -15,6 +16,7 @@ const TABS: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/redteam', label: 'Red Team', icon: Swords },
   { to: '/compliance', label: 'Compliance', icon: ClipboardCheck },
+  { to: '/guardrails', label: 'Guardrails', icon: ShieldPlus },
 ];
 
 export function NavTabs() {

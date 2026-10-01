@@ -53,6 +53,9 @@ const STATE_PILL: Record<string, { label: string; cls: string }> = {
   challenge: { label: "challenged", cls: "border-cf-green/50 text-cf-green" },
   denied: { label: "denied (non-WAF)", cls: "border-line text-muted" },
   guardrails: { label: "guardrails", cls: "border-cf-purple/50 text-cf-purple" },
+  // Amber, matching the chat's external-guardrail card — never the WAF's red or
+  // AI Gateway Guardrails' purple, so the three controls cannot be confused.
+  external: { label: "external guardrail", cls: "border-cf-amber/50 text-cf-amber" },
   pending: { label: "no verdict", cls: "border-line text-subtle" },
   error: { label: "failed", cls: "border-line text-subtle" },
 };
@@ -94,7 +97,7 @@ const DEFAULT_DIR: Record<SortKey, SortDir> = {
   reportedAsr: "desc",
   state: "asc",
 };
-const STATE_ORDER: Record<string, number> = { allow: 0, log: 1, denied: 2, guardrails: 3, pending: 4, error: 5, block: 6, challenge: 7 };
+const STATE_ORDER: Record<string, number> = { allow: 0, log: 1, denied: 2, guardrails: 3, external: 4, pending: 5, error: 6, block: 7, challenge: 8 };
 
 // Row label: the scan's reference number, or the CSV line the prompt came from.
 function refOf(a: RedTeamAttack, index: number): number {

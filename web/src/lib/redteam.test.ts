@@ -290,6 +290,7 @@ function savedRun(overrides: Partial<RtSavedRun> & { results: RtStoredResult[] }
     stopped: 0,
     denied: 0,
     guardrails: 0,
+    external: 0,
     pending: 0,
     error: 0,
     reachedPct: 0,

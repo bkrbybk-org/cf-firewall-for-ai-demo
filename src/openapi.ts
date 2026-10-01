@@ -78,6 +78,7 @@ export const openapi = {
     { name: "Edge analytics", description: "What the Cloudflare edge did — read from the zone's GraphQL Analytics." },
     { name: "Prompt log", description: "PII-redacted prompts in D1. Off by default (`PROMPT_LOG_ENABLED`)." },
     { name: "Red team", description: "Persisted red-team runs. No UI calls these yet." },
+    { name: "External guardrails", description: "Forward each prompt to a third-party guardrail (Palo Alto Networks Prisma AIRS) before the model runs." },
     { name: "Meta", description: "Configuration the client reads to build its controls." },
   ],
   security: [{ AccessClientId: [], AccessClientSecret: [] }, {}],
@@ -116,6 +117,8 @@ export const openapi = {
           "**Blocked prompts.** A WAF block is a **403 written by the zone's rule**, not by this Worker; the body is operator-configured (Custom JSON). A Guardrails block, by contrast, is a **200** with `guardrailsBlocked: true`.",
           "",
           "**Prompt log.** The turn is written to the D1 prompt log only when `PROMPT_LOG_ENABLED` is on *and* `excludeFromLog` is not `true`.",
+          "",
+          "**External guardrail.** When one is enabled (`/api/external-guardrails`), the prompt is sent to it after the edge scan and before the model, on both routes. A block — or a provider error under fail-closed — is a **200** with `externalGuardrailBlocked: true`, never a 403 (403 means the edge WAF). Every response after the check carries the result in the `x-external-guardrail` header (URI-encoded JSON), because a streamed reply has no JSON body to put it in.",
         ].join("\n"),
         requestBody: {
           required: true,
@@ -124,9 +127,15 @@ export const openapi = {
         responses: {
           "200": {
             description: "The reply — JSON, or an SSE stream when `stream: true`.",
+            headers: {
+              "x-external-guardrail": {
+                description: "Present when an external guardrail is enabled: the `ExternalGuardrailResult` for this prompt, as URI-encoded JSON.",
+                schema: { type: "string" },
+              },
+            },
             content: {
               "application/json": {
-                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked")] },
+                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked")] },
               },
               "text/event-stream": {
                 schema: {
@@ -257,7 +266,7 @@ export const openapi = {
           {
             name: "outcome",
             in: "query",
-            description: "Comma-separated subset of `reply`, `guardrails`, `error`.",
+            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `error`.",
             schema: { type: "string" },
             example: "guardrails,error",
           },
@@ -302,6 +311,57 @@ export const openapi = {
         responses: {
           "200": json("Rollups, or the disabled / not-configured marker.", ref("PromptAnalyticsResponse")),
           "502": error("The D1 query failed."),
+        },
+      },
+    },
+    "/api/external-guardrails": {
+      get: {
+        tags: ["External guardrails"],
+        operationId: "getExternalGuardrails",
+        summary: "Every provider's configuration (API keys redacted)",
+        description:
+          "**The API key is write-only**: it is never returned, only `apiKeySet` and `apiKeyLast4`. `configured: false` with a `setupHint` means the encryption secret (`GUARDRAIL_SECRET_KEY`), the D1 binding or migration 0005 is missing.",
+        responses: {
+          "200": json("Configuration.", ref("ExternalGuardrailsState")),
+          "502": json("D1 read failed.", ref("ExternalGuardrailsState")),
+        },
+      },
+      put: {
+        tags: ["External guardrails"],
+        operationId: "updateExternalGuardrail",
+        summary: "Update one provider",
+        description: [
+          "Omitted fields are unchanged. **Enabling one provider disables every other** (one active at a time, enforced by a unique index in D1). Enabling is refused until an API key and an AI security profile name are saved.",
+          "",
+          "The endpoint is chosen by `region` from the provider's official hosts only. There is no free-text URL: the stored key travels in a request header, so a typed endpoint would let anyone who can reach this API redirect it.",
+          "",
+          "`apiKey` is encrypted (AES-256-GCM) before it is stored; an empty string keeps the existing key. `clearApiKey: true` deletes it and disables the provider.",
+        ].join("\n"),
+        requestBody: { required: true, content: { "application/json": { schema: ref("ExternalGuardrailUpdate") } } },
+        responses: {
+          "200": json("The new state.", ref("ExternalGuardrailsState")),
+          "400": json("Rejected — invalid field, unsupported provider, enabling without a key/profile, or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
+          "405": error("Not GET or PUT."),
+          "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
+        },
+      },
+    },
+    "/api/external-guardrails/test": {
+      post: {
+        tags: ["External guardrails"],
+        operationId: "testExternalGuardrail",
+        summary: "Scan a fixed benign prompt with the saved configuration",
+        description:
+          "Uses the **saved** key, region and profile — it never accepts a key in the request, so it cannot be used to probe the provider with arbitrary credentials. Works whether or not the provider is enabled. `ok: false` means the provider could not be consulted (e.g. `Invalid API Key or OAuth Token`); it is not a verdict.",
+        requestBody: {
+          required: true,
+          content: { "application/json": { schema: obj({ provider: { type: "string", enum: ["prisma-airs"] } }, ["provider"]) } },
+        },
+        responses: {
+          "200": json("The provider's answer.", obj({ ok: bool(), result: ref("ExternalGuardrailResult") }, ["ok", "result"])),
+          "400": error("Not set up, no key or profile saved, or an untestable provider."),
+          "405": error("Not a POST."),
+          "502": error("D1 read failed."),
         },
       },
     },
@@ -430,6 +490,7 @@ export const openapi = {
           cost: nullable("number", "Estimated USD from Workers AI unit pricing. 0 for a cache hit; null for a model with no price entry."),
           gateway: ref("GatewayMeta"),
           dynamicRoute: str("Echoed when the reply came from a Dynamic Route."),
+          externalGuardrail: ref("ExternalGuardrailResult"),
         },
         ["reply", "model", "ray", "usage", "cost"],
       ),
@@ -468,6 +529,79 @@ export const openapi = {
         },
         additionalProperties: true,
       },
+
+      // ── external guardrails ─────────────────────────────────────────────
+      ExternalGuardrailProvider: { type: "string", enum: ["prisma-airs", "crowdstrike-aidr"] },
+      ExternalGuardrailResult: obj(
+        {
+          provider: ref("ExternalGuardrailProvider"),
+          outcome: {
+            type: "string",
+            enum: ["allow", "block", "error"],
+            description: "What the Worker did. `error` = the provider could not be consulted — **never a verdict**; `failedOpen` says whether the turn then ran unscanned.",
+          },
+          failedOpen: bool("`outcome` error under fail-open: the model ran without a scan."),
+          action: { type: "string", enum: ["allow", "block"], description: "The provider's own verdict, when it gave one." },
+          category: str("Prisma AIRS: `benign` or `malicious`."),
+          detected: arr({ type: "string", description: "e.g. `injection`, `dlp`, `toxic_content`, `url_cats`, `malicious_code`, `agent`, `topic_violation`" }),
+          scanId: nullable("string", "Look up the full report in Strata Cloud Manager."),
+          reportId: nullable("string"),
+          profileName: nullable("string"),
+          latencyMs: int("Worker-observed round trip to the provider."),
+          error: str(),
+          httpStatus: int("The provider's HTTP status, when it answered."),
+          incomplete: bool("A verdict was returned but at least one detection service timed out or errored."),
+        },
+        ["provider", "outcome", "latencyMs"],
+      ),
+      ExternalGuardrailBlocked: obj(
+        {
+          externalGuardrailBlocked: { const: true },
+          externalGuardrail: ref("ExternalGuardrailResult"),
+          model: str(),
+          ray: nullable("string"),
+        },
+        ["externalGuardrailBlocked", "externalGuardrail", "model", "ray"],
+        "The turn was stopped by an external guardrail: either its verdict was `block`, or it could not be consulted and the fail mode is `block`. Distinguish the two by `externalGuardrail.outcome`. HTTP status is **200**.",
+      ),
+      ExternalGuardrailConfig: obj(
+        {
+          provider: ref("ExternalGuardrailProvider"),
+          label: str(),
+          supported: bool("False → listed for context, cannot be configured yet."),
+          enabled: bool(),
+          region: str(),
+          endpoint: str("Full scan URL derived from `region` (read-only)."),
+          regions: arr(obj({ id: str(), label: str(), url: str() }, ["id", "label", "url"])),
+          profileName: str("Prisma AIRS AI security profile name (required by its API)."),
+          failMode: { type: "string", enum: ["block", "allow"], description: "What happens when the provider errors or times out." },
+          apiKeySet: bool(),
+          apiKeyLast4: nullable("string", "The only part of the key ever returned."),
+          updatedAt: nullable("integer", "Epoch ms."),
+        },
+        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "failMode", "apiKeySet", "apiKeyLast4", "updatedAt"],
+      ),
+      ExternalGuardrailsState: obj(
+        {
+          configured: bool("False → `setupHint` says what is missing."),
+          providers: arr(ref("ExternalGuardrailConfig")),
+          setupHint: str(),
+          error: str(),
+        },
+        ["configured", "providers"],
+      ),
+      ExternalGuardrailUpdate: obj(
+        {
+          provider: ref("ExternalGuardrailProvider"),
+          enabled: bool("Enabling one provider disables every other."),
+          region: str("One of the provider's `regions[].id`."),
+          profileName: { type: "string", maxLength: 200 },
+          failMode: { type: "string", enum: ["block", "allow"] },
+          apiKey: { type: "string", maxLength: 4096, description: "Replaces the stored key. Empty keeps it. Never echoed back." },
+          clearApiKey: bool("Delete the stored key (also disables the provider)."),
+        },
+        ["provider"],
+      ),
 
       // ── models / meta ───────────────────────────────────────────────────
       Model: obj({ id: str(), label: str(), priceIn: num("USD per million input tokens."), priceOut: num("USD per million output tokens.") }, ["id", "label", "priceIn", "priceOut"]),
@@ -616,7 +750,7 @@ export const openapi = {
           model: str(),
           gatewayId: nullable("string", "Null on the direct route."),
           guarded: flag("Gateway has Guardrails."),
-          outcome: { type: "string", enum: ["reply", "guardrails", "error"] },
+          outcome: { type: "string", enum: ["reply", "guardrails", "external", "error"], description: "`external` = an external guardrail (Prisma AIRS) blocked the turn; no model ran, so `latencyMs` is null." },
           prompt: str("PII-redacted at write time."),
           reply: nullable("string", "PII-redacted. Null for a blocked turn, or a streamed turn whose stream has not finished (or was never captured)."),
           redactions: int("PII spans masked across prompt + reply."),
@@ -657,7 +791,7 @@ export const openapi = {
               byRoute: arr(obj({ route: str(), count: int() }, ["route", "count"])),
               byModel: arr(obj({ model: str(), count: int(), promptTokens: int(), completionTokens: int() }, ["model", "count", "promptTokens", "completionTokens"])),
               repeated: arr(obj({ prompt: str(), count: int(), redactions: int() }, ["prompt", "count", "redactions"])),
-              series: arr(obj({ t: { type: "string", format: "date-time" }, reply: int(), guardrails: int(), error: int() }, ["t", "reply", "guardrails", "error"])),
+              series: arr(obj({ t: { type: "string", format: "date-time" }, reply: int(), guardrails: int(), external: int(), error: int() }, ["t", "reply", "guardrails", "external", "error"])),
               bucket: ref("SeriesBucket"),
               firstTs: nullable("integer"),
               lastTs: nullable("integer"),
@@ -686,9 +820,9 @@ export const openapi = {
       // ── red team ────────────────────────────────────────────────────────
       RtResultState: {
         type: "string",
-        enum: ["block", "challenge", "log", "allow", "denied", "guardrails", "pending", "error"],
+        enum: ["block", "challenge", "log", "allow", "denied", "guardrails", "external", "pending", "error"],
         description:
-          "`allow` and `log` mean the request **reached the model**; `block` and `challenge` mean the edge stopped it. `denied`, `guardrails`, `pending` and `error` are not edge verdicts and are excluded from the scored denominator.",
+          "`allow` and `log` mean the request **reached the model**; `block` and `challenge` mean the edge stopped it. `denied`, `guardrails` (AI Gateway Guardrails), `external` (an external guardrail such as Prisma AIRS), `pending` and `error` are not edge verdicts and are excluded from the scored denominator.",
       },
       RedTeamRunRow: obj(
         {
@@ -699,7 +833,7 @@ export const openapi = {
           gatewayId: nullable("string"),
           guarded: flag("Gateway has Guardrails."),
           model: nullable("string"),
-          dynamicRoute: nullable("string", "The Dynamic Route the run went through. **Known gap: recorded on save but not returned by GET today** — treat it as absent."),
+          dynamicRoute: nullable("string", "The Dynamic Route the run went through, or null. A route chooses the model, so runs that differ here are not comparable."),
           corpusName: str(),
           corpusSize: int(),
           corpusFingerprint: str("Hash over the sorted attack keys. `diffRuns` refuses to compare runs whose fingerprints differ."),
@@ -710,11 +844,12 @@ export const openapi = {
           stopped: int("block + challenge."),
           denied: int(),
           guardrails: int(),
+          external: int("Blocked by an external guardrail (Prisma AIRS)."),
           pending: int(),
           error: int(),
           reachedPct: int("reached / scored, 0 when nothing was scored — which means *nothing was measured*, not a perfect block rate."),
         },
-        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "pending", "error", "reachedPct"],
+        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "dynamicRoute", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "external", "pending", "error", "reachedPct"],
       ),
       RedTeamResultRow: obj(
         {
@@ -755,6 +890,7 @@ export const openapi = {
           stopped: int(),
           denied: int(),
           guardrails: int(),
+          external: int(),
           pending: int(),
           error: int(),
           reachedPct: { type: "integer", minimum: 0, maximum: 100 },

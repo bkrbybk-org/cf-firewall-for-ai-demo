@@ -4,6 +4,7 @@ import { fmtCost } from "../lib/format";
 import type { GatewayOption, Model } from "../lib/types";
 import type { Msg, Route, RequestConfig } from "../hooks/useChat";
 import { ExportButton } from "./ExportButton";
+import { ExternalGuardrailBadge, ExternalGuardrailBlockedCard } from "./ExternalGuardrailCard";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 
@@ -312,6 +313,7 @@ export function Chat({
                           ROUTE {m.meta.dynamicRoute}
                         </span>
                       )}
+                      {m.meta.externalGuardrail && <ExternalGuardrailBadge result={m.meta.externalGuardrail} />}
                       {m.meta.model && <span>via {modelLabels[m.meta.model] || m.meta.model}</span>}
                       {m.meta.gateway?.latencyMs != null && (
                         <span>
@@ -347,6 +349,16 @@ export function Chat({
               <div key={m.id} className="contents">
                 <BlockedCard m={m} />
                 <Stamp side="assistant" ts={m.ts} />
+                {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
+              </div>
+            );
+          if (m.kind === "external")
+            return (
+              <div key={m.id} className="contents">
+                <ExternalGuardrailBlockedCard result={m.result} />
+                <Stamp side="assistant" ts={m.ts} />
+                {/* The edge scan ran before the Worker, so its verdict exists
+                    for this request too — both layers stay visible. */}
                 {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
               </div>
             );

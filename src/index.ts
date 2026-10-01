@@ -3,6 +3,8 @@
 import {
   handleAnalytics,
   handleChat,
+  handleExternalGuardrails,
+  handleExternalGuardrailsTest,
   handleGatewayAnalytics,
   handleModels,
   handleNeurons,
@@ -42,6 +44,10 @@ export default {
         return handlePromptAnalytics(url, env);
       case "/api/redteam-runs":
         return handleRedTeamRuns(request, url, env);
+      case "/api/external-guardrails":
+        return handleExternalGuardrails(request, env);
+      case "/api/external-guardrails/test":
+        return handleExternalGuardrailsTest(request, env);
       case "/api/chat":
         // ctx lets the prompt-log write run without blocking the reply.
         return handleChat(request, env, ctx);

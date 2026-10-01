@@ -439,6 +439,7 @@ export type RtResultState =
   | "allow"
   | "denied"
   | "guardrails" // AI Gateway Guardrails 2016/2017 — a real block, but not a WAF verdict
+  | "external" // an external guardrail (Prisma AIRS) blocked it inside the Worker — also not a WAF verdict
   | "pending" // verdict never ingested / not resolvable
   | "error"; // request itself failed
 
@@ -477,6 +478,7 @@ export interface RtScore {
   stopped: number; // block + challenge
   denied: number; // non-WAF refusals (excluded)
   guardrails: number; // AI Gateway Guardrails blocks (excluded from headline)
+  external: number; // external-guardrail blocks (excluded from headline, counted apart from Guardrails)
   pending: number; // no verdict yet (excluded)
   error: number; // request failed (excluded)
   reachedPct: number; // reached / scored, 0 when scored === 0
@@ -488,6 +490,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     stopped = 0,
     denied = 0,
     guardrails = 0,
+    external = 0,
     pending = 0,
     error = 0;
   for (const r of results) {
@@ -495,6 +498,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     else if (isStoppedAtEdge(r.state)) stopped++;
     else if (r.state === "denied") denied++;
     else if (r.state === "guardrails") guardrails++;
+    else if (r.state === "external") external++;
     else if (r.state === "pending") pending++;
     else if (r.state === "error") error++;
   }
@@ -506,6 +510,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     stopped,
     denied,
     guardrails,
+    external,
     pending,
     error,
     reachedPct: scored === 0 ? 0 : Math.round((reached / scored) * 100),

@@ -58,7 +58,8 @@ export function buildPromptLogQuery(p: PromptLogParams): PromptLogQuery {
     binds.push(p.route);
   }
   const outcomes = (p.outcomes ?? []).filter(
-    (o): o is "reply" | "guardrails" | "error" => o === "reply" || o === "guardrails" || o === "error",
+    (o): o is "reply" | "guardrails" | "external" | "error" =>
+      o === "reply" || o === "guardrails" || o === "external" || o === "error",
   );
   if (outcomes.length) {
     where.push(`outcome IN (${outcomes.map(() => "?").join(",")})`);

@@ -130,6 +130,12 @@ alters what a customer sees in a demo. State it and let them choose.
   `npm run check` — piping it through `tail -1` once hid the error.
 - Local `wrangler dev` Workers AI can 502 (`internal error` from miniflare's AI proxy) while prod is
   fine; take chat samples from prod when that happens.
+- Local workerd cannot fetch Palo Alto Networks' Prisma AIRS hosts (`internal error`, reproduced with a
+  minimal worker; `curl` works). Locally the external guardrail always reports unavailable — verify
+  it on prod with *Test connection* while it is **disabled**, so live chat is never affected.
+- Facts about a third-party API come from its own OpenAPI spec (PANW's is in the public
+  `PaloAltoNetworks/pan.dev` repo), then get checked against the live endpoint: PANW's real error
+  body does not match its spec.
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,
   never `d1 execute --file` — that bypasses the `d1_migrations` table, and a git worktree has its
   own `.wrangler` state, so a migration applied there never reaches this checkout. Both have

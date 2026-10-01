@@ -23,6 +23,9 @@ export const GW_SERIES: SeriesDef[] = [
 // Prompt log: what happened to each logged prompt.
 export const PLOG_SERIES: SeriesDef[] = [
   { key: "reply", label: "replied", cls: "fill-cf-green", stroke: "stroke-cf-green", dot: "bg-cf-green" },
+  // Its own series, never folded into "replied" or "guardrails-blocked": an
+  // external-guardrail block is a third control, and the chat card uses amber.
+  { key: "external", label: "external-guardrail-blocked", cls: "fill-cf-amber", stroke: "stroke-cf-amber", dot: "bg-cf-amber" },
   {
     key: "guardrails",
     label: "guardrails-blocked",

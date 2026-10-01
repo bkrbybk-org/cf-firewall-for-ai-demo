@@ -93,6 +93,91 @@ export interface ChatResponse {
   direction?: "prompt" | "response";
   detail?: string;
   dynamicRoute?: string; // echoed back when the reply came from a dynamic route
+  // External guardrail (e.g. Palo Alto Networks Prisma AIRS). When it blocked the
+  // turn the response is a 200 with `externalGuardrailBlocked: true` — never a
+  // 403, which is reserved for the edge WAF so the two are never confused. On a
+  // reply it carries the verdict that let the prompt through.
+  externalGuardrailBlocked?: boolean;
+  externalGuardrail?: ExternalGuardrailResult;
+}
+
+// ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
+// A third-party guardrail the Worker forwards each prompt to before calling the
+// model. At most one provider is enabled at a time (enforced in D1).
+export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
+
+// What one forwarded prompt produced. `outcome` is what the Worker DID:
+//   allow — the provider said allow; the model ran.
+//   block — the provider said block; the model did not run.
+//   error — the provider could not be reached or rejected the request (bad key,
+//           timeout, 4xx/5xx). Whether the turn then ran depends on `failMode`:
+//           `failedOpen: true` means the model ran unscanned.
+// An error is NEVER a verdict: it must not be rendered as "malicious".
+export interface ExternalGuardrailResult {
+  provider: ExternalGuardrailProvider;
+  outcome: "allow" | "block" | "error";
+  failedOpen?: boolean; // outcome "error" + failMode "allow" → the turn ran unscanned
+  action?: "allow" | "block"; // the provider's own verdict, when there was one
+  category?: string; // Prisma AIRS: "benign" | "malicious"
+  detected?: string[]; // which detections fired, e.g. ["injection", "dlp", "toxic_content"]
+  scanId?: string | null; // look up the full report in Strata Cloud Manager
+  reportId?: string | null;
+  profileName?: string | null;
+  latencyMs: number; // Worker-observed round trip to the provider
+  error?: string; // set when outcome is "error"
+  httpStatus?: number; // provider's HTTP status, when it answered
+  // The provider returned a verdict, but at least one of its detection services
+  // timed out or errored (Prisma AIRS `timeout` / `error`). The verdict covers
+  // only what did run, so an "allow" here is weaker than a complete one.
+  incomplete?: boolean;
+}
+
+export interface ExternalGuardrailRegion {
+  id: string; // e.g. "us"
+  label: string; // e.g. "United States"
+  url: string; // the official API host — the only endpoints the Worker will call
+}
+
+export interface ExternalGuardrailConfig {
+  provider: ExternalGuardrailProvider;
+  label: string; // "Palo Alto Networks Prisma AIRS"
+  supported: boolean; // false → shown for context, cannot be configured yet
+  enabled: boolean;
+  region: string; // ExternalGuardrailRegion.id
+  endpoint: string; // full scan URL derived from the region (read-only)
+  regions: ExternalGuardrailRegion[];
+  profileName: string; // Prisma AIRS AI security profile name (required by the API)
+  failMode: "block" | "allow"; // what to do when the provider errors or times out
+  apiKeySet: boolean;
+  apiKeyLast4: string | null; // the key itself is write-only and never returned
+  updatedAt: number | null; // epoch ms
+}
+
+export interface ExternalGuardrailsState {
+  // false → the encryption secret or D1 binding is missing; `setupHint` says what to do
+  configured: boolean;
+  providers: ExternalGuardrailConfig[];
+  setupHint?: string;
+  error?: string;
+}
+
+// PUT body. Omitted fields are left unchanged. `apiKey` replaces the stored key
+// (never echoed back); `clearApiKey: true` deletes it (and disables the provider).
+export interface ExternalGuardrailUpdate {
+  provider: ExternalGuardrailProvider;
+  enabled?: boolean; // enabling one provider disables every other
+  region?: string;
+  profileName?: string;
+  failMode?: "block" | "allow";
+  apiKey?: string;
+  clearApiKey?: boolean;
+}
+
+// POST /api/external-guardrails/test — scans a fixed benign prompt with the
+// SAVED configuration (it never sends an unsaved key).
+export interface ExternalGuardrailTestResult {
+  ok: boolean; // the provider answered with a verdict
+  result: ExternalGuardrailResult;
 }
 
 export interface VerdictRule {
@@ -177,7 +262,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number;
-  outcome: "reply" | "guardrails" | "error";
+  outcome: "reply" | "guardrails" | "external" | "error"; // external = an external guardrail (Prisma AIRS) blocked it
   prompt: string;
   reply: string | null;
   redactions: number;
@@ -215,7 +300,7 @@ export interface PromptAnalytics {
   byRoute?: { route: string; count: number }[];
   byModel?: { model: string; count: number; promptTokens: number; completionTokens: number }[];
   repeated?: { prompt: string; count: number; redactions: number }[];
-  series?: { t: string; reply: number; guardrails: number; error: number }[];
+  series?: { t: string; reply: number; guardrails: number; external: number; error: number }[];
   bucket?: "5m" | "hour" | "day";
   firstTs?: number | null;
   lastTs?: number | null;
@@ -269,6 +354,7 @@ export interface RedTeamRunRow {
   stopped: number;
   denied: number;
   guardrails: number;
+  external: number; // blocked by an external guardrail (Prisma AIRS)
   pending: number;
   error: number;
   reachedPct: number;

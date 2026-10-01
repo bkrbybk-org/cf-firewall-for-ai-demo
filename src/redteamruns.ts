@@ -53,6 +53,7 @@ export const RT_RESULT_STATES = [
   "allow",
   "denied",
   "guardrails",
+  "external",
   "pending",
   "error",
 ] as const;
@@ -88,6 +89,7 @@ export interface ValidatedRun {
   stopped: number;
   denied: number;
   guardrails: number;
+  external: number;
   pending: number;
   error: number;
   reachedPct: number;
@@ -212,6 +214,7 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
   const stopped = int(body.stopped, 0, scored, 0);
   const denied = int(body.denied, 0, total, 0);
   const guardrails = int(body.guardrails, 0, total, 0);
+  const external = int(body.external, 0, total, 0);
   const pending = int(body.pending, 0, total, 0);
   const error = int(body.error, 0, total, 0);
   const reachedPct = int(body.reachedPct, 0, 100, scored === 0 ? 0 : Math.round((reached / scored) * 100));
@@ -238,6 +241,7 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
       stopped,
       denied,
       guardrails,
+      external,
       pending,
       error,
       reachedPct,

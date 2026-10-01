@@ -96,8 +96,8 @@ export function Scorecard({
           tone="border-cf-amber/40 bg-cf-amber/10"
         />
         <Tile
-          label="excluded (denied / pending / error)"
-          value={score.denied + score.pending + score.error + score.guardrails}
+          label="excluded (denied / guardrails / external / pending / error)"
+          value={score.denied + score.pending + score.error + score.guardrails + score.external}
           icon={<CircleSlash size={16} className="text-subtle" />}
           tone="border-line bg-surface-2"
         />

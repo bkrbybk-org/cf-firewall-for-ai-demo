@@ -35,6 +35,11 @@ export interface Env {
   // endpoint — a direct Workers AI call never needs it. Kept apart from
   // CF_ANALYTICS_TOKEN deliberately — the two have different blast radii.
   CF_AIG_TOKEN?: string; // set as a secret
+  // Encrypts external-guardrail API keys at rest in D1 (AES-256-GCM). Base64 of
+  // 32 random bytes: `openssl rand -base64 32 | npx wrangler secret put
+  // GUARDRAIL_SECRET_KEY`. Without it the external-guardrail config refuses to
+  // store a key rather than storing it in plaintext.
+  GUARDRAIL_SECRET_KEY?: string; // set as a secret
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.
@@ -120,7 +125,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number; // 0/1 (SQLite has no bool)
-  outcome: "reply" | "guardrails" | "error";
+  outcome: "reply" | "guardrails" | "external" | "error"; // external = an external guardrail (Prisma AIRS) blocked it
   prompt: string;
   reply: string | null; // null for streamed replies (not captured) or blocks
   redactions: number; // PII spans masked in prompt+reply
@@ -182,7 +187,7 @@ export interface PromptAnalytics {
   byModel: { model: string; count: number; promptTokens: number; completionTokens: number }[];
   // Same prompt text seen more than once — attack replay / autopilot reruns.
   repeated: { prompt: string; count: number; redactions: number }[];
-  series: { t: string; reply: number; guardrails: number; error: number }[];
+  series: { t: string; reply: number; guardrails: number; external: number; error: number }[];
   bucket: SeriesBucket;
   firstTs: number | null;
   lastTs: number | null;
@@ -238,6 +243,7 @@ export interface RedTeamRunRow {
   stopped: number;
   denied: number;
   guardrails: number;
+  external: number; // blocked by an external guardrail (Prisma AIRS)
   pending: number;
   error: number;
   reachedPct: number;
@@ -283,4 +289,25 @@ export interface GatewayAnalytics {
   bucket: SeriesBucket;
   truncated: boolean; // hit the row cap — totals are a floor, not exact
   error?: string;
+}
+
+// ── External guardrails ────────────────────────────────────────────────────
+// Hand-mirrored in web/src/lib/types.ts — read the comments there for the
+// semantics. Kept identical on purpose: the client renders these verbatim.
+export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
+
+export interface ExternalGuardrailResult {
+  provider: ExternalGuardrailProvider;
+  outcome: "allow" | "block" | "error";
+  failedOpen?: boolean;
+  action?: "allow" | "block";
+  category?: string;
+  detected?: string[];
+  scanId?: string | null;
+  reportId?: string | null;
+  profileName?: string | null;
+  latencyMs: number;
+  error?: string;
+  httpStatus?: number;
+  incomplete?: boolean;
 }

@@ -52,7 +52,7 @@ export interface RtRouteConfig {
 async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
-): Promise<{ ray?: string; kind: "reply" | "blocked" | "guardrails" | "error" }> {
+): Promise<{ ray?: string; kind: "reply" | "blocked" | "guardrails" | "external" | "error" }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
@@ -74,6 +74,14 @@ async function sendOne(
     const ray = data?.ray?.split("-")[0] || undefined;
     if (status === 403) return { ray, kind: "blocked" };
     if (data?.guardrailsBlocked) return { ray, kind: "guardrails" };
+    // Checked before the generic "no reply → error" fall-through: a 200 with no
+    // reply is what an external-guardrail block looks like, and scoring it as a
+    // failed request would hide every prompt Prisma AIRS stopped. A fail-closed
+    // ERROR (provider unreachable) is also a 200 here; it is not a verdict, so
+    // it scores as an error rather than as a block.
+    if (data?.externalGuardrailBlocked) {
+      return { ray, kind: data.externalGuardrail?.outcome === "block" ? "external" : "error" };
+    }
     if (status >= 200 && status < 300 && data?.reply) return { ray, kind: "reply" };
     return { ray, kind: "error" };
   } catch {
@@ -85,9 +93,10 @@ async function sendOne(
 async function resolveState(
   ray: string | undefined,
   ts: number,
-  kind: "reply" | "blocked" | "guardrails" | "error",
+  kind: "reply" | "blocked" | "guardrails" | "external" | "error",
 ): Promise<RtResultState> {
   if (kind === "guardrails") return "guardrails";
+  if (kind === "external") return "external";
   if (kind === "error") return "error";
   // A 200 reply is ground truth that the request reached the model; a 403 is
   // ground truth that something at the edge stopped it. The verdict lookup
@@ -192,7 +201,7 @@ export function useRedTeam(): RedTeamRun {
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
-    const sent: { id: string; ray?: string; ts: number; kind: "reply" | "blocked" | "guardrails" | "error" }[] = [];
+    const sent: { id: string; ray?: string; ts: number; kind: "reply" | "blocked" | "guardrails" | "external" | "error" }[] = [];
     const delayMs = Math.max(0, cfg.delayMs ?? 0);
     for (let i = 0; i < corpus.length; i++) {
       const a = corpus[i];

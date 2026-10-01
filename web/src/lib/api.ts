@@ -3,6 +3,11 @@ import type {
   Analytics,
   ChatResponse,
   ChatTurn,
+  ExternalGuardrailProvider,
+  ExternalGuardrailResult,
+  ExternalGuardrailsState,
+  ExternalGuardrailTestResult,
+  ExternalGuardrailUpdate,
   GatewayAnalytics,
   GatewayMeta,
   ModelsResponse,
@@ -262,9 +267,51 @@ export interface ChatStreamResult {
   // `model` field (OpenAI-shape chunks only — e.g. a Dynamic Route response).
   // null for the plain Workers AI binding stream, whose chunks carry no model.
   model: string | null;
+  // External guardrail verdict for a streamed reply. A stream has no JSON body
+  // to carry it, so the Worker sends it in the `x-external-guardrail` response
+  // header (URI-encoded JSON). null when no external guardrail is enabled.
+  externalGuardrail: ExternalGuardrailResult | null;
 }
 
 export type ChatResult = ChatJsonResult | ChatStreamResult;
+
+function readExternalGuardrailHeader(h: Headers): ExternalGuardrailResult | null {
+  const raw = h.get("x-external-guardrail");
+  if (!raw) return null;
+  try {
+    return JSON.parse(decodeURIComponent(raw)) as ExternalGuardrailResult;
+  } catch {
+    return null;
+  }
+}
+
+// ── External guardrails ────────────────────────────────────────────────────
+export async function getExternalGuardrails(): Promise<ExternalGuardrailsState> {
+  const r = await fetch("/api/external-guardrails");
+  return r.json();
+}
+
+// Returns the new state on success; `{ error }` (HTTP 400) when the update is
+// rejected, e.g. enabling a provider that has no API key or profile yet.
+export async function saveExternalGuardrail(
+  update: ExternalGuardrailUpdate,
+): Promise<ExternalGuardrailsState & { error?: string }> {
+  const r = await fetch("/api/external-guardrails", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  return r.json();
+}
+
+export async function testExternalGuardrail(provider: ExternalGuardrailProvider): Promise<ExternalGuardrailTestResult> {
+  const r = await fetch("/api/external-guardrails/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ provider }),
+  });
+  return r.json();
+}
 
 // POST /api/chat. With stream:true the server passes through the model's SSE
 // stream; tokens are delivered via onToken as they arrive. Blocked requests
@@ -281,6 +328,7 @@ export async function postChat(
   });
   const contentType = res.headers.get("content-type") || "";
   const rayHeader = res.headers.get("cf-ray");
+  const externalGuardrail = readExternalGuardrailHeader(res.headers);
 
   if (!contentType.includes("text/event-stream")) {
     const raw = await res.text();
@@ -291,6 +339,7 @@ export async function postChat(
       /* not JSON (block page) */
     }
     if (data && rayHeader && !data.ray) data.ray = rayHeader;
+    if (data && externalGuardrail && !data.externalGuardrail) data.externalGuardrail = externalGuardrail;
     return {
       mode: "json",
       status: res.status,
@@ -359,6 +408,6 @@ export async function postChat(
   }
   if (buffer) handleLine(buffer);
 
-  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway, model };
+  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway, model, externalGuardrail };
 }
 
