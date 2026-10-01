@@ -51,6 +51,7 @@ src/                    Worker (TypeScript)
   promptlog.ts          prompt-log query builder (paging, search, whitelisted ORDER BY)
   redteamruns.ts        validation + caps for POST /api/redteam-runs (hostile-input boundary)
   openapi.ts            the OpenAPI 3.1 document served at /api/openapi.json (hand-written)
+  openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, forwardPrompt
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
@@ -64,7 +65,7 @@ migrations/
   0005_external_guardrails.sql     external_guardrails (one enabled at a time) + redteam_runs.external
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
-  prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod)
+  prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod); [4] passes on a WAF 403 or a real external-guardrail block
   copy-swagger-ui.mjs   copies the Swagger UI vendor files into dist/api-docs/ after vite build
 .github/workflows/ci.yml   typecheck (Worker + web) · test · build on every PR and push to main
 .nvmrc                  Node version CI and `nvm use` both read
@@ -139,7 +140,8 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1). Answers `{configured:false, disabled:true}` while `PROMPT_LOG_ENABLED` is off |
 | `DELETE /api/prompt-log` | Clears the prompt log |
 | `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log, incl. per-route/guarded/streamed latency percentiles |
-| `GET /api/openapi.json` | This API as an OpenAPI 3.1 document (see **API reference** below) |
+| `GET /api/openapi.json` | This API as an OpenAPI 3.1 document — the hand-written source (see **API reference** below) |
+| `GET /api/openapi-3.0.json` | The same document as OpenAPI 3.0.3, `servers` = the requesting origin. **Upload this one to API Shield**; Swagger UI renders it |
 | `GET/PUT /api/external-guardrails` | External-guardrail configuration; API keys are write-only and never returned |
 | `POST /api/external-guardrails/test` | Scan a fixed benign prompt with the **saved** configuration |
 | `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
@@ -148,8 +150,10 @@ Everything else falls through to the static assets (SPA fallback).
 
 ### API reference (OpenAPI + Swagger UI)
 
-The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`** and rendered by **Swagger UI at `/api-docs/`** (`/api-docs` redirects). It documents all 11 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
+The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, down-converted to **OpenAPI 3.0.3** at **`/api/openapi-3.0.json`**, which **Swagger UI at `/api-docs/`** renders (`/api-docs` redirects; every page links it as **API docs ↗** at the right end of the tab strip). It documents all 14 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
 
+- **Why a 3.0 copy.** Cloudflare API Shield Schema Validation parses uploads with OAS 3.0 semantics only and rejects relative server URLs; the 3.1 file fails at upload with `cannot unmarshal 'number' in field 'components.schemas.properties.exclusiveMinimum' of type 'bool'`. `src/openapi30.ts` rewrites only the 3.1-only forms, each preserving what the schema accepts: `type: [T, "null"]` → `nullable`, `const` → one-value `enum`, numeric `exclusiveMinimum` → `minimum` + `exclusiveMinimum: true`, `examples` → `example`, `servers` → the absolute origin. It walks schemas only (never example payloads or property *names*) and refuses a union 3.0 cannot express; `src/openapi30.test.ts` checks the result is valid 3.0, holds no 3.1-only keyword, and leaves every `ChatRequest` field equivalent. **Before enforcing** Schema Validation: some request bounds are stricter than the Worker, which clamps instead (`systemPrompt` over 2000 chars, `maxAttempts` outside 1–5), so such requests would be flagged. Watch `cf.schema_validation.uploaded.violated` first.
+- **Swagger targets its own origin.** The initializer replaces `servers` with `window.location.origin` before rendering: under `wrangler dev` the Worker sees the *route's* hostname over http, so an unpatched Try it out on localhost would send real requests to prod.
 - **Try it out sends real requests.** `POST /api/chat` calls a live, billable model and is scanned by the real edge WAF; `DELETE /api/prompt-log` and `DELETE /api/redteam-runs` really delete. The page says so. In a browser you already hold the Access session; from a script use the service-token headers (the *Authorize* dialog).
 - **Self-hosted.** `swagger-ui-dist` is a devDependency; `scripts/copy-swagger-ui.mjs` copies three files (~1.8 MB, not committed) into `dist/api-docs/` after `vite build`, so the page has no runtime dependency on a CDN. The page itself (`web/public/api-docs/`) is committed. The build script runs the copy; if you build another way, run it.
 - **The spec is hand-written** (`src/openapi.ts`, with the reasoning in comments) and kept honest by `src/openapi.test.ts`: it must be valid OpenAPI (every `$ref` resolves), and it fails the build if the routes in `src/index.ts`, the fields of `ChatRequestBody`, the prompt-log `sort` whitelist or the red-team result states change without the spec changing. **When you add or change an endpoint, update `src/openapi.ts`.**

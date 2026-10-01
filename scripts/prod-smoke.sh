@@ -101,14 +101,28 @@ if grep -q '"code":10000' /tmp/smoke3.txt 2>/dev/null; then
   FAIL=1
 fi
 
-# 4. A prompt the WAF should stop. 403 is the PASS here — a 200 means the edge
-#    let PII through, which is the demo's whole claim failing.
+# 4. A prompt something must stop before the model answers it. Two passes, and
+#    the output names which layer did it:
+#      - 403: the edge WAF blocked it (the demo's default claim);
+#      - 200 + externalGuardrailBlocked with outcome "block": the zone's PII rule
+#        is set to Log on purpose (to exercise the external guardrail) and Prisma
+#        AIRS issued a real block verdict.
+#    A fail-closed external-guardrail ERROR also returns externalGuardrailBlocked,
+#    but it is not a verdict — it fails here, as does a plain 200 (PII answered).
 echo
-echo "[4] Edge WAF still blocks PII (403 expected)"
+echo "[4] PII is blocked before the model — by the edge WAF (403) or an external guardrail verdict"
 CODE=$(curl -s -o /tmp/smoke4.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
   -d '{"prompt":"my credit card is 4111 1111 1111 1111","stream":false,"excludeFromLog":true}' --max-time 60)
-check "POST /api/chat (PII → blocked)" 403 /tmp/smoke4.txt "$CODE"
+if [[ "$CODE" == "200" ]] && node -e '
+  const b = JSON.parse(require("fs").readFileSync("/tmp/smoke4.txt", "utf8"));
+  process.exit(b.externalGuardrailBlocked === true && b.externalGuardrail?.outcome === "block" ? 0 : 1);
+' 2>/dev/null; then
+  check "POST /api/chat (PII → ext. guardrail)" 200 /tmp/smoke4.txt "$CODE"
+  echo "      ↳ blocked by the EXTERNAL guardrail, not the edge WAF — the zone's PII rule is not blocking"
+else
+  check "POST /api/chat (PII → WAF blocked)" 403 /tmp/smoke4.txt "$CODE"
+fi
 
 # 5. Read-only endpoints that back the analytics page.
 echo

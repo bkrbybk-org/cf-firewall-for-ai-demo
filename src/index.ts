@@ -15,6 +15,7 @@ import {
   handleZoneRules,
 } from "./handlers";
 import { openapi } from "./openapi";
+import { openapi30For } from "./openapi30";
 import type { Env } from "./types";
 
 export default {
@@ -26,6 +27,10 @@ export default {
         // Short cache: the document only changes on deploy, but a stale copy
         // after one would make Swagger UI describe the previous API.
         return Response.json(openapi, { headers: { "cache-control": "public, max-age=300" } });
+      case "/api/openapi-3.0.json":
+        // For Cloudflare API Shield Schema Validation, which only parses OAS 3.0
+        // and rejects relative server URLs — so the server is this request's origin.
+        return Response.json(openapi30For(url.origin), { headers: { "cache-control": "public, max-age=300" } });
       case "/api/models":
         return handleModels(env);
       case "/api/verdict":

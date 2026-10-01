@@ -401,7 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-01 as version `4a7e311c-be39-49fc-8710-53b16dfcd21e` (external guardrails); before that
+deployed 2026-10-01 as version `f293eccc-9931-47be-b44a-c2292c4e8e27` (OpenAPI 3.0 rendering, Swagger on
+3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
 that `99cbf558` (2026-09-07, built from `ef68406`). The token replacement the same day also created a version,
 from a secret change rather than a deploy.
@@ -596,6 +597,36 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-01 — OpenAPI 3.0 for API Shield; Swagger on 3.0; API docs link
+
+**Why.** Uploading `/api/openapi.json` to API Shield → Schema Validation failed: `code 50010, failed to load
+OpenAPI file: … cannot unmarshal 'number' in field 'components.schemas.properties.exclusiveMinimum' of type
+'bool'`. Cloudflare's docs (`api-shield/security/schema-validation/#limitations`) say uploads are parsed
+with OAS 3.0 semantics only and relative server URLs are unsupported; ours is 3.1 with `servers: "/"`.
+
+**What.** `src/openapi30.ts` down-converts the 3.1 document (still the hand-written source) and
+`GET /api/openapi-3.0.json` serves it with `servers` = the request origin. Swagger UI now renders the 3.0
+document, so the docs page shows exactly what an upload contains. Every page's tab strip ends with an
+**API docs ↗** link (`NavTabs.tsx`, plain `<a>` in a new tab — a `NavLink` would be swallowed by the SPA
+router). Done self, not delegated: the output is enforced by a production security control.
+
+**Verified, and how.**
+- 9 tests in `src/openapi30.test.ts` (279 total). The 3.0 validator has teeth: the 3.1 document relabeled
+  `3.0.3` is rejected by `@readme/openapi-parser`.
+- Go `kin-openapi` **v0.118.0** (3.0-only, the same parser family as API Shield's error): the 3.1 file fails
+  to load (`cannot unmarshal array into Go struct field SchemaBis.type of type string`), the 3.0 file loads
+  with 14 paths. Current kin-openapi accepts 3.1, so it cannot reproduce the error; only an old one can.
+  Prod's served file (`/api/openapi-3.0.json`) also loads, `servers: https://cf-ai-waf-demo.nttlab.org`.
+- **Bug caught in the browser, before prod:** under `wrangler dev` the Worker sees the *route's* hostname
+  over http, so Swagger's server read `http://cf-ai-waf-demo.nttlab.org` and Try it out on localhost would
+  have hit prod. The initializer now overwrites `servers` with `window.location.origin`; re-checked:
+  `http://localhost:8787`, 18 operations, `OAS 3.0`, no console errors. Prod's initializer and bundle
+  (the link's `href:"/api-docs/",target:"_blank"`) grepped after deploy.
+- **Not verified:** a successful API Shield upload (only the user can do that), and the link in light mode.
+
+**Caveat before enforcing Schema Validation:** some request bounds are stricter than the Worker, which clamps
+instead (`systemPrompt` > 2000 chars, `maxAttempts` outside 1–5); such requests would be flagged.
 
 ### 2026-10-01 — external guardrails (Prisma AIRS)
 
@@ -1189,6 +1220,26 @@ exercised):
 27. **A real verdict has never been exercised** — no valid Prisma AIRS key was available. First thing to do
     with one: save it, *Test connection*, enable, and send one benign and one injection prompt from the
     Attack Library; confirm the green chip and the "Blocked by Prisma AIRS" card with detections and `scan_id`.
+    **Partly exercised 2026-10-01:** the user enabled a real key (profile `CW-LAB Security Profile`). The smoke
+    test's PII prompt (`my credit card is 4111 1111 1111 1111`) came back 3/3 as HTTP 200
+    `externalGuardrailBlocked: true`, `action: block`, `category: malicious`, `detected:
+    [agent, dlp, injection, source_code]`, 477–530 ms, with `scan_id`/`report_id`, and the same JSON in the
+    `x-external-guardrail` header. So a real **block** is parsed correctly. A real **allow** was seen the same
+    day on deploy `f293eccc`: `Hello! What can you help me with today?` → 200, `outcome: allow`, `category:
+    benign`, `detected: []`, 419 ms, and the model answered. Not yet seen: the rendered card and chip in a
+    browser, or a real `incomplete` (timeout/error flag) verdict.
+
+28. **The zone's PII rules are set to Log — on purpose, since 2026-10-01** (the user's choice, to let PII
+    prompts reach Prisma AIRS and confirm it blocks them). Measured on ray `a439b56029e6a1c8` via
+    `/api/verdict`: the edge **did** detect it (`piiCategories: ["CREDIT_CARD"]`, `scored: true`), every
+    matching rule acted `log` ("[Account-Level] Detect PII in LLM", "Monitor LLM PII Categories", …), and
+    Prisma AIRS blocked it in the Worker. **While this lasts, the demo's headline claim — "the edge blocks
+    PII" — does not hold for PII**, and attribution says so honestly (the turn is credited to Prisma AIRS, not
+    the WAF). Smoke check [4] was changed to pass on *either* a WAF 403 *or* a real external-guardrail
+    `outcome: "block"` (a fail-closed error still fails) and prints which layer stopped it. **Put the rule
+    back to Block before a customer demo of the WAF.** Also seen the same run: `/api/zone-rules` →
+    `source: fallback`, `Ruleset list failed (HTTP 403)` — the rules token cannot list rulesets, so the app
+    shows its static mirror, not live rules.
 
 ## Next tasks
 

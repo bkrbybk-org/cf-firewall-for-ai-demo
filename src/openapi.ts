@@ -1,5 +1,6 @@
 // OpenAPI 3.1 description of the Worker's HTTP API, served at GET /api/openapi.json
-// and rendered by Swagger UI at /api-docs/.
+// Swagger UI at /api-docs/ renders its 3.0 rendering (src/openapi30.ts,
+// /api/openapi-3.0.json) — the form API Shield accepts.
 //
 // HAND-WRITTEN on purpose, and kept honest by two guards rather than by hope:
 //   - src/openapi.test.ts parses it with a real OpenAPI validator and fails if the
@@ -88,8 +89,18 @@ export const openapi = {
         tags: ["Meta"],
         operationId: "getOpenApi",
         summary: "This document",
-        description: "The OpenAPI 3.1 description Swagger UI renders at `/api-docs/`.",
+        description: "The OpenAPI 3.1 source document. Swagger UI at `/api-docs/` renders the 3.0 rendering, `/api/openapi-3.0.json`.",
         responses: { "200": { description: "OpenAPI 3.1 document.", content: { "application/json": { schema: { type: "object" } } } } },
+      },
+    },
+    "/api/openapi-3.0.json": {
+      get: {
+        tags: ["Meta"],
+        operationId: "getOpenApi30",
+        summary: "This document as OpenAPI 3.0 (for API Shield)",
+        description:
+          "The same API, down-converted to OpenAPI 3.0.3 for Cloudflare API Shield Schema Validation, which rejects 3.1-only semantics (numeric `exclusiveMinimum`, `type` arrays, `const`) and relative server URLs. `servers` is the origin that served the request. Upload this file, not `/api/openapi.json`.",
+        responses: { "200": { description: "OpenAPI 3.0.3 document.", content: { "application/json": { schema: { type: "object" } } } } },
       },
     },
     "/api/models": {

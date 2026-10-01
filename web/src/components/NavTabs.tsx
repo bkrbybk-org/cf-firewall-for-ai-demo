@@ -5,6 +5,8 @@ import { NavLink } from 'react-router-dom';
 import {
   BarChart3,
   ClipboardCheck,
+  ExternalLink,
+  FileCode2,
   ShieldPlus,
   ShieldCheck,
   Swords,
@@ -37,6 +39,17 @@ export function NavTabs() {
           <Icon size={14} /> {label}
         </NavLink>
       ))}
+      {/* A plain <a>, not a NavLink: /api-docs/ is a static page served next to the
+          SPA, and the router would swallow it as an unknown client route. New tab,
+          so opening the reference never loses a chat or a red-team run in progress. */}
+      <a
+        href='/api-docs/'
+        target='_blank'
+        rel='noopener noreferrer'
+        title='OpenAPI 3.0 reference (Swagger UI) — the same document API Shield accepts'
+        className='ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-[12.5px] text-muted transition hover:border-line-strong hover:text-text'>
+        <FileCode2 size={14} /> API docs <ExternalLink size={11} />
+      </a>
     </nav>
   );
 }
