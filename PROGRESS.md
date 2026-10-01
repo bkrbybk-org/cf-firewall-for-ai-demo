@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-09-30 — doc resync, prod gateway fixed, OpenAPI spec + Swagger UI added_
+_Last updated: 2026-10-01 — code review: three honesty defects found (Open bugs #22–#24), one live in prod_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -17,6 +17,8 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 > evidence, prompt-log flag, CI), then 2026-08-01 (Red Team page, analytics honesty pass, chart
 > rework), then 2026-07-31 (AI Gateway REST migration, verdict window, prompt-log rewrite).
 > The prod AI Gateway outage found on 2026-09-30 was **resolved the same day** (Open bug #1).
+> **⚠️ The Compliance page's MEASURE 2.7 "blocked" count is wrong in prod (Open bug #22) — it counts every
+> WAF block in the zone, not AI Security's. Read #22 before showing that page to a customer.**
 
 ---
 
@@ -490,7 +492,9 @@ scan; blocked requests create no row), and old rows are NULL, so every rollup ga
 `latency_ms IS NOT NULL` and reports coverage. *Verified:* 19 seeded local rows across all six
 route/guarded/streamed combinations plus NULL rows — e.g. `direct, streamed=0: n=4 p50=900 p95=1200
 max=2500` vs `direct, streamed=1: n=3 p50=150 p95=180` — and the n=1 case (`MAX(1, …)` guard)
-returned the single value; `latencyCoverage` read 17 of 20; `/api/prompt-analytics` and `sort=latency`
+returned the single value; `latencyCoverage` read 17 of 20 — **correction 2026-10-01: the rank rule was
+never checked against a hand calculation, and it is wrong (Open bug #24): every p50/p95 is biased low.** The
+SQL was verified to *run* before it was delegated, not to compute the right percentile; `/api/prompt-analytics` and `sort=latency`
 were confirmed through `wrangler dev`. The rendered panel was built by a subagent and **not**
 browser-checked separately. It is **invisible in prod** while the prompt log is off.
 
@@ -548,7 +552,9 @@ on every one would be a false compliance claim, and `compliance.ts`'s own header
 Cloudflare does *not* cover is the page's credibility. **No data ≠ zero; capped payloads read "at
 least N"; an unconfigured/failed fetch renders nothing.** *Verified in the browser against the real
 zone:* the 500-row cap was genuinely hit in the 24 h window, so the floor path ran on live data
-(`at least 137 prompts scored · at least 337 blocked`); the empty and unconfigured states were forced
+(`at least 137 prompts scored · at least 337 blocked`) — **correction 2026-10-01: that chip was itself
+showing Open bug #22.** Its "blocked" is every WAF block in the zone, not AI Security's, and the floor was
+~25× below the real 24 h total; the verification checked the rendering states, not what the number counts; the empty and unconfigured states were forced
 by overriding `window.fetch` and rendered distinctly. Extra candidates (ISO A.7, OWASP LLM01/02,
 ATLAS AML.T0051, BOT, NCSA) were proposed and deliberately **not** added — what the page asserts to
 customers is an editorial call.
@@ -1066,7 +1072,58 @@ exercised):
     consumer in any page (confirmed by grep for each symbol outside its own file and tests). Prod
     carries dead code, and the feature they exist for still cannot be done in the app.
 
+**Found in the 2026-10-01 code review** (each measured, not inferred):
+
+22. **🔴 Compliance evidence credits AI Security with blocks it did not make — live in prod.** The MEASURE
+    2.7 chip ("AI system security and resilience are evaluated" — injection scoring) reports "N blocked" as
+    `blockedCount(analytics.actions)`, i.e. **every WAF block event in the zone**: Sensitive Paths,
+    Geography-based rule, AI-crawler blocks, managed-ruleset CVE rules. Measured over 24 h with grouped
+    GraphQL (no row cap): **8,318 block events, of which 2,608 (31%) were AI Security rules** (`Block LLM
+    Unsafe Categories` 1,643, `Block LLM Injection` 905, …); inside the 500 rows `/api/analytics` actually
+    reads, none of the top eight rules was an AI Security rule. So ~69% of the number shown under an AI
+    control is not AI Security, and the "at least 327" floor is ~25× below the real total. MEASURE 3.1's "N
+    events recorded" is likewise zone-wide (lower stakes — it sits under "risks are tracked"). This is the
+    same misattribution the analytics page's LLM-vs-other rule split was built to prevent, reintroduced on
+    the page a GRC reviewer reads. `complianceEvidence.test.ts` pins the output strings but never asserts
+    what "blocked" is drawn from, so the tests lock the defect in. **Fix:** tally blocks from AI Security
+    rules only, server-side (classify each event's rule by expression when live rules are available, by
+    the `\bLLM\b` name heuristic otherwise, and say which), with a test that a non-LLM block is excluded.
+    **Immediate mitigation (a one-line change, needs your OK since it alters a customer-facing page):** drop
+    the "blocked" half from the 2.7 chip until then.
+23. **Truncated analytics charts draw unread time as zero.** `/api/analytics` reads the *newest* 500 rows,
+    then zero-fills every bucket in the window, so when the cap is hit the older buckets read "no activity"
+    when they were simply never read. Measured on prod: **24 h view — 18 of 25 hourly buckets zero**, the
+    500 rows reaching back only ~6.5 h; **7 d view — 6 of 8 days zero**. The tiles say "row cap reached",
+    but `EventSeries` is never told, so the chart presents a burst that is an artefact. Violates the house
+    rule that "no data" is never rendered as zero. `/api/gateway-analytics` has the same structure (newest
+    first, zero-filled) but does not trigger on prod today (6 requests in 7 days). **Fix options:** return
+    the oldest fetched timestamp and render earlier buckets as "not read"; or — better if it holds — take
+    tallies and series from `firewallEventsAdaptiveGroups`, which returned uncapped per-rule totals in the
+    measurement for #22. *Verify against Cloudflare's docs first*: "Adaptive" datasets can be sampled, so
+    their `count` semantics must be confirmed before they are presented as exact.
+24. **Latency percentiles are biased low.** The rollup ranks with `CAST(n·p AS INTEGER)` — truncation —
+    where nearest-rank needs a ceiling. On real local rows `[77, 800, 900, 1200, 1313, 2500]` (n=6) it
+    reports **p95 = 1313 ms; nearest-rank p95 is 2500 ms**. For odd n the "p50" falls below the median (at
+    n=3 it is the minimum). The panel's own example rows show it: `n=3, p50 150, p95 180, max 400`. Worst
+    exactly where this demo lives — small n. Not visible in prod while the prompt log is off. **Fix:**
+    integer ceiling `(n*95 + 99)/100` (no reliance on SQLite math functions), a test of the rank rule, and
+    a check of the SQL's output against a hand calculation on real rows.
+25. **Minor.** `/api/chat` caps `history` (8,000 chars) and `systemPrompt` (2,000) but not `prompt`
+    itself. And 13 handler sites return raw upstream/exception text to the client — on local dev one
+    carried a stack trace with an absolute file path. Prod is behind Access, so low risk; worth a generic
+    message plus the detail in logs if this is ever exposed.
+
 ## Next tasks
+
+**Fix next, in this order** (who per CLAUDE.md's implementation approach):
+
+- [ ] **#22 compliance attribution** — *self*: it is honesty semantics on a customer-facing page. Decide the
+      mitigation with the user first.
+- [ ] **#24 percentile rank** — *self*: two lines of SQL, but a wrong statistic is invisible, so the check
+      against a hand calculation is the work.
+- [ ] **#23 truncated charts** — *self* for the design (verify the Groups dataset's sampling semantics in
+      Cloudflare's docs; choose "mark unread" vs "aggregate uncapped"), then *sonnet* for the chart change
+      against a fixed contract.
 
 **Unblock (do first)**
 

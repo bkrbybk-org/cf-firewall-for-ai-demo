@@ -36,7 +36,10 @@ by one party at a time.
 **Delegated work is a claim, not a result.** Re-run the gates yourself, grep the facts, and check
 anything about the outside world against its source. A subagent once concluded a real Cloudflare
 field did not exist because this repo never mentioned it; another applied a migration by file into
-its own worktree so this checkout's database never got it. Subagents leave their work uncommitted:
+its own worktree so this checkout's database never got it. **Running is not correct:** a percentile query was checked to *run* before it was delegated, ranked with
+truncation instead of a ceiling, and under-reported every p50/p95 for a month — check any computed number
+against a hand calculation on real rows, and check what a count actually counts before labelling it.
+Subagents leave their work uncommitted:
 commit or merge it deliberately. Prefer disjoint files in the same tree over `isolation: worktree`,
 whose separate `.wrangler` state has already caused one bug.
 
