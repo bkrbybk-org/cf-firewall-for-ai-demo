@@ -26,7 +26,7 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 | `/analytics` | **edge** (zone WAF + AI Security) and **AI Gateway** (account gateway logs), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
 | `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. Tick rows to run just a subset; choose the route, gateway and an optional Dynamic Route. |
 | `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
-| `/guardrails` | Configure **external guardrails** each prompt is forwarded to before the model runs — Palo Alto Networks **Prisma AIRS** today (CrowdStrike AIDR listed, not yet supported) — and the **traffic flow** diagram: sequential / parallel, order, and guardrail-only (skip the model). |
+| `/guardrails` | Configure **external guardrails** each prompt is forwarded to before the model runs — Palo Alto Networks **Prisma AIRS** and **CrowdStrike Falcon AIDR** — and the **traffic flow** diagram: sequential / parallel, order, and guardrail-only (skip the model). |
 
 `/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
 
@@ -53,6 +53,7 @@ src/                    Worker (TypeScript)
   openapi.ts            the OpenAPI 3.1 document served at /api/openapi.json (hand-written)
   openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
+  crowdstrikeAidr.ts    CrowdStrike Falcon AIDR AI Guard client (request, verdict/202/error parsing, timeout)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
@@ -215,9 +216,27 @@ npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for 
 
 ## External guardrails (Prisma AIRS)
 
-`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) is implemented; CrowdStrike AIDR is listed as not yet supported (its API is publicly documented at `aidr-docs.crowdstrike.com`; it is the next integration).
+`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Two are implemented: Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) and **CrowdStrike Falcon AIDR** (AI Detection and Response, AI Guard).
 
-**What you configure, per provider:** region (the endpoint), API key, AI security profile name, the fail mode, and the enable toggle. *Test connection* scans a fixed benign prompt with the **saved** settings.
+**What you configure, per provider:** region (the endpoint), the secret, the fail mode, and the enable toggle — plus, for Prisma AIRS only, the AI security profile name. *Test connection* scans a fixed benign prompt with the **saved** settings, through the same code path as a real chat turn.
+
+| | Prisma AIRS | CrowdStrike Falcon AIDR |
+|---|---|---|
+| Endpoint | `POST {region}/v1/scan/sync/request` | `POST {region}/aidr/aiguard/v1/guard_chat_completions` |
+| Regions | US, EU (Germany), India, Singapore | US-1 `api.crowdstrike.com`, US-2, EU-1 |
+| Secret | API key in `x-pan-token` | **Collector token** (`pts_…`) as `Authorization: Bearer` |
+| Policy | AI security **profile name**, sent per request | Attached to the collector in the Falcon console — nothing to name |
+| Verdict field | `action` allow/block | `result.blocked` true/false |
+| Detections shown | `prompt_detected` flags | `result.detectors.*.detected` (malicious prompt, PII, secrets, topic, …) |
+| Reference id | `scan_id` / `report_id` (Strata Cloud Manager) | `request_id`, plus `policy` and AIDR's `summary` |
+| Sources | PANW's OpenAPI spec (`PaloAltoNetworks/pan.dev`) + live endpoint | CrowdStrike's docs + OpenAPI spec (`aidr-docs.crowdstrike.com`) + live endpoint |
+
+CrowdStrike specifics that are easy to get wrong, each checked against the live endpoint:
+- **The spec's path is wrong for these hosts.** CrowdStrike's OpenAPI file says `/v1/guard_chat_completions` (copied from the Pangea-hosted service); on `api.crowdstrike.com`, US-2 and EU-1 that path is **404**, and `/aidr/aiguard/v1/…` (from the docs) is the real one.
+- **A 202 is an error, not a verdict.** AIDR can answer `202 Accepted` (asynchronous, with a `location` to poll). There is nothing to act on within the turn, so the fail mode decides.
+- **A `blocked` that is not a real boolean is an error** — never an allow.
+- **Redaction is reported, not applied.** When AIDR's policy redacts (`result.transformed`), this app still sends the **original** prompt to the model, and says so: the reply chip reads *allow · redaction not applied* in amber, never a green pass.
+- **Errors** come in the API gateway's shape (`{meta, errors:[{code, message}]}`, seen live) or the spec's Pangea validation shape; both are parsed.
 
 ### Traffic flow (the pipeline)
 
@@ -254,7 +273,7 @@ A block is deliberately a **200**, never a 403: 403 on this route means the edge
 
 **Setup** (one time): `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (migrations `0005` and `0006`), then `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (and add `GUARDRAIL_SECRET_KEY=…` to `.env` for `wrangler dev`). Rotating that secret makes the stored key undecryptable — the chat then reports the guardrail as unavailable and you re-enter the key.
 
-**Limits worth knowing:** *Test connection* and every forwarded prompt use a 5 s timeout. **Local `wrangler dev` cannot reach PANW's hosts** (local workerd throws `internal error` on that fetch — reproduced with a minimal worker containing none of this code, while `curl` from the same machine works), so locally the guardrail always errors; verify against prod.
+**Limits worth knowing:** *Test connection* and every forwarded prompt use a 5 s timeout. **Local `wrangler dev` cannot reach either vendor's hosts** (local workerd throws `internal error` on that fetch — reproduced for PANW with a minimal worker containing none of this code, and seen identically for `api.crowdstrike.com`, while `curl` from the same machine reaches both), so locally every guardrail errors; verify against prod with *Test connection* while the guardrail is **disabled**.
 
 ## Live edge verdict
 
@@ -523,7 +542,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **293 tests across 19 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **309 tests across 20 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -543,7 +562,8 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
-| `src/externalGuardrails.test.ts` (32) | **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
+| `src/crowdstrikeAidr.test.ts` (15) | The CrowdStrike AIDR client: the `/aidr/aiguard` path (not the spec's 404 one), Bearer collector token, no `user_id`/`source_ip`, the three official hosts; **a 200 without a boolean `blocked`, and a 202, are errors — never an allow**; verdict from `blocked` alone, never the detectors; redaction flagged; the live gateway's error body and the spec's validation errors; timeout and network failure. **Mutation-verified**: five planted regressions (missing `blocked` = allow, 202 as a verdict, verdict from detectors, the spec's path, always-allow) were each caught |
+| `src/externalGuardrails.test.ts` (33) | **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 

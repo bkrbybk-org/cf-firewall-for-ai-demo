@@ -170,6 +170,12 @@ export interface ExternalGuardrailResult {
   // timed out or errored (Prisma AIRS `timeout` / `error`). The verdict covers
   // only what did run, so an "allow" here is weaker than a complete one.
   incomplete?: boolean;
+  policy?: string; // CrowdStrike AIDR: the policy its collector token evaluated
+  summary?: string; // CrowdStrike AIDR: its own one-line description of the result
+  // CrowdStrike AIDR redacted something in the prompt. This app does NOT apply
+  // the redaction — the model gets the original prompt — so say so, never imply
+  // the model saw a cleaned version.
+  transformed?: boolean;
 }
 
 export interface ExternalGuardrailRegion {
@@ -187,6 +193,11 @@ export interface ExternalGuardrailConfig {
   endpoint: string; // full scan URL derived from the region (read-only)
   regions: ExternalGuardrailRegion[];
   profileName: string; // Prisma AIRS AI security profile name (required by the API)
+  // Provider-specific wording, from the server's registry so the page never
+  // hard-codes one vendor's terms for another.
+  requiresProfile: boolean; // false for CrowdStrike AIDR: the policy rides on the collector token
+  keyLabel: string; // "API key" | "Collector token"
+  vendor: string; // "Palo Alto Networks" | "CrowdStrike" — whose hosts the key is sent to
   failMode: "block" | "allow"; // what to do when the provider errors or times out
   apiKeySet: boolean;
   apiKeyLast4: string | null; // the key itself is write-only and never returned

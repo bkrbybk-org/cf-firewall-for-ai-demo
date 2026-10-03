@@ -25,6 +25,7 @@
 //     and says the guardrail was unavailable; "allow" lets it through and marks
 //     it `failedOpen` so the reply shows it was not scanned.
 
+import { AIDR_GUARD_PATH, AIDR_REGIONS, scanPromptWithAidr } from "./crowdstrikeAidr";
 import { PRISMA_AIRS_REGIONS, PRISMA_AIRS_SCAN_PATH, scanPromptWithPrismaAirs } from "./prismaAirs";
 import type {
   Env,
@@ -38,10 +39,18 @@ import type {
 // ── provider registry ────────────────────────────────────────────────────────
 interface ProviderSpec {
   label: string;
+  // false → listed for context but rejected by validateUpdate before anything
+  // is stored. Kept for the next integration, even though every provider in
+  // the registry is supported today.
   supported: boolean;
   regions: readonly { id: string; label: string; url: string }[];
   defaultRegion: string;
   scanPath: string;
+  // Prisma AIRS names an AI security profile in every request; CrowdStrike AIDR
+  // takes its policy from the collector token, so it has nothing to name.
+  requiresProfile: boolean;
+  keyLabel: string;
+  vendor: string;
 }
 
 export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
@@ -51,10 +60,20 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     regions: PRISMA_AIRS_REGIONS,
     defaultRegion: "us",
     scanPath: PRISMA_AIRS_SCAN_PATH,
+    requiresProfile: true,
+    keyLabel: "API key",
+    vendor: "Palo Alto Networks",
   },
-  // Listed so the page shows where the next integration goes. Not callable:
-  // `supported: false` is rejected by validateUpdate before anything is stored.
-  "crowdstrike-aidr": { label: "CrowdStrike AIDR", supported: false, regions: [], defaultRegion: "", scanPath: "" },
+  "crowdstrike-aidr": {
+    label: "CrowdStrike Falcon AIDR",
+    supported: true,
+    regions: AIDR_REGIONS,
+    defaultRegion: "us-1",
+    scanPath: AIDR_GUARD_PATH,
+    requiresProfile: false,
+    keyLabel: "Collector token",
+    vendor: "CrowdStrike",
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ExternalGuardrailProvider[];
@@ -108,6 +127,9 @@ export function toPublicConfig(c: StoredConfig) {
     endpoint: endpointFor(c.provider, c.region),
     regions: spec.regions.map((r) => ({ id: r.id, label: r.label, url: r.url })),
     profileName: c.profileName,
+    requiresProfile: spec.requiresProfile,
+    keyLabel: spec.keyLabel,
+    vendor: spec.vendor,
     failMode: c.failMode,
     apiKeySet: c.apiKeyEnc != null,
     apiKeyLast4: c.apiKeyLast4,
@@ -173,8 +195,8 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
   // turn fall through to the fail mode.
   if (next.enabled) {
     const hasKey = newApiKey != null || next.apiKeyEnc != null;
-    if (!hasKey) return { ok: false, error: "Cannot enable: save an API key first" };
-    if (!next.profileName) return { ok: false, error: "Cannot enable: an AI security profile name is required" };
+    if (!hasKey) return { ok: false, error: `Cannot enable: save ${spec.keyLabel === "API key" ? "an API key" : `a ${spec.keyLabel.toLowerCase()}`} first` };
+    if (spec.requiresProfile && !next.profileName) return { ok: false, error: "Cannot enable: an AI security profile name is required" };
   }
   return { ok: true, next, newApiKey };
 }
@@ -430,17 +452,32 @@ async function scanProvider(env: Env, c: StoredConfig, input: ForwardInput, fetc
     });
   }
 
-  if (c.provider === "prisma-airs") {
-    const baseUrl = PROVIDERS[c.provider].regions.find((r) => r.id === c.region)?.url;
-    if (!baseUrl) return resolve({ provider: c.provider, outcome: "error", error: `Unknown region "${c.region}"`, latencyMs: 0 });
-    return resolve(
-      await scanPromptWithPrismaAirs(
-        { baseUrl, apiKey, profileName: c.profileName, prompt: input.prompt, model: input.model, trId: input.ray ?? undefined },
+  return resolve(await scanWithKey(c, apiKey, input, fetchImpl));
+}
+
+// One provider's scan with an already-decrypted key. Shared by the pipeline and
+// the Test connection endpoint so the two can never call a provider differently.
+// The base URL comes ONLY from the provider's region allowlist.
+export async function scanWithKey(
+  c: StoredConfig,
+  apiKey: string,
+  input: ForwardInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<ExternalGuardrailResult> {
+  const spec = PROVIDERS[c.provider];
+  if (!spec.supported) return { provider: c.provider, outcome: "error", error: `${spec.label} is not supported yet`, latencyMs: 0 };
+  const baseUrl = spec.regions.find((r) => r.id === c.region)?.url;
+  if (!baseUrl) return { provider: c.provider, outcome: "error", error: `Unknown region "${c.region}"`, latencyMs: 0 };
+  const ray = input.ray ?? undefined;
+  switch (c.provider) {
+    case "prisma-airs":
+      return scanPromptWithPrismaAirs(
+        { baseUrl, apiKey, profileName: c.profileName, prompt: input.prompt, model: input.model, trId: ray },
         fetchImpl,
-      ),
-    );
+      );
+    case "crowdstrike-aidr":
+      return scanPromptWithAidr({ baseUrl, token: apiKey, prompt: input.prompt, model: input.model, spanId: ray }, fetchImpl);
   }
-  return resolve({ provider: c.provider, outcome: "error", error: `${PROVIDERS[c.provider].label} is not supported yet`, latencyMs: 0 });
 }
 
 // null → nothing to do: no provider enabled and the model is not skipped (or

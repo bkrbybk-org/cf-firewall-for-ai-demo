@@ -311,6 +311,9 @@ export interface ExternalGuardrailResult {
   error?: string;
   httpStatus?: number;
   incomplete?: boolean;
+  policy?: string;
+  summary?: string;
+  transformed?: boolean;
 }
 
 export type GuardrailPipelineMode = "sequential" | "parallel";

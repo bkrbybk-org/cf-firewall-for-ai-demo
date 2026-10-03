@@ -1,11 +1,11 @@
-// External guardrails page: configure forwarding of every /api/chat prompt to a
-// third-party guardrail (Palo Alto Networks Prisma AIRS first; CrowdStrike AIDR
-// is listed but not yet supported). State lives in D1 behind
+// External guardrails page: configure forwarding of every /api/chat prompt to
+// third-party guardrails (Palo Alto Networks Prisma AIRS, CrowdStrike Falcon
+// AIDR) and how they run together. State lives in D1 behind
 // /api/external-guardrails — this page only renders and edits it.
 //
 // Two honesty rules shape the code:
 //  - The toggle shows the SERVER's state, never the click. Enabling is rejected
-//    (HTTP 400) without a key and profile, and a pipeline edit (mode, order,
+//    (HTTP 400) without a key (and, for Prisma AIRS, a profile), and a pipeline edit (mode, order,
 //    guardrail-only) lives beside the providers in the same state, so every
 //    response replaces the whole state and nothing is optimistic.
 //  - The API key is write-only. It is held in an input's state only until a
@@ -113,7 +113,8 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
           {r.scanId && (
             <>
               {" "}
-              · scan_id <span className="font-mono break-all">{r.scanId}</span>
+              · {r.provider === "crowdstrike-aidr" ? "request_id" : "scan_id"}{" "}
+              <span className="font-mono break-all">{r.scanId}</span>
             </>
           )}
         </span>
@@ -140,6 +141,12 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
       </span>
     </div>
   );
+}
+
+// "an API key" / "a collector token" — each provider names its secret differently.
+function aKey(c: ExternalGuardrailConfig): string {
+  const name = c.keyLabel === "API key" ? c.keyLabel : c.keyLabel.toLowerCase();
+  return `${/^[aeiou]/i.test(name) ? "an" : "a"} ${name}`;
 }
 
 function ProviderCard({
@@ -220,7 +227,7 @@ function ProviderCard({
   }
 
   async function removeKey() {
-    if (!window.confirm(`Remove the saved ${config.label} API key? This also disables the guardrail.`)) return;
+    if (!window.confirm(`Remove the saved ${config.label} ${config.keyLabel.toLowerCase()}? This also disables the guardrail.`)) return;
     setBusy(true);
     setSaveErr(null);
     try {
@@ -267,7 +274,7 @@ function ProviderCard({
   }
 
   const testDisabledReason = !config.apiKeySet
-    ? "Save an API key first"
+    ? `Save ${aKey(config)} first`
     : dirty
       ? "Save your changes first — the test uses the saved configuration"
       : "Scans a fixed benign prompt with the saved configuration";
@@ -324,30 +331,43 @@ function ProviderCard({
             {regionInfo && region !== config.region ? `${regionInfo.url} (after save)` : config.endpoint}
           </div>
           <Hint>
-            No free-text endpoint on purpose: the API key is only ever sent to Palo Alto Networks' official hosts.
+            No free-text endpoint on purpose: the {config.keyLabel.toLowerCase()} is only ever sent to {config.vendor}'s
+            official hosts.
           </Hint>
         </div>
 
-        <div>
-          <label htmlFor={`${ids}profile`} className="mb-1 block text-[12px] font-semibold text-text">
-            AI security profile name
-          </label>
-          <input
-            id={`${ids}profile`}
-            type="text"
-            value={profileName}
-            disabled={saving}
-            onChange={(e) => setProfileName(e.target.value)}
-            autoComplete="off"
-            spellCheck={false}
-            className={INPUT_CLS}
-          />
-          <Hint>The profile configured in Strata Cloud Manager. Prisma AIRS requires one.</Hint>
-        </div>
+        {config.requiresProfile ? (
+          <div>
+            <label htmlFor={`${ids}profile`} className="mb-1 block text-[12px] font-semibold text-text">
+              AI security profile name
+            </label>
+            <input
+              id={`${ids}profile`}
+              type="text"
+              value={profileName}
+              disabled={saving}
+              onChange={(e) => setProfileName(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className={INPUT_CLS}
+            />
+            <Hint>The profile configured in Strata Cloud Manager. Prisma AIRS requires one.</Hint>
+          </div>
+        ) : (
+          <div>
+            <div className="mb-1 text-[12px] font-semibold text-text">Policy</div>
+            {/* No field: AIDR evaluates the policy attached to the collector in
+                the Falcon console, so there is nothing to name per request. */}
+            <Hint>
+              Set in the Falcon console on the collector this token belongs to — the app does not choose it. The policy
+              that ran is shown on each verdict.
+            </Hint>
+          </div>
+        )}
 
         <div className="lg:col-span-2">
           <label htmlFor={`${ids}key`} className="mb-1 block text-[12px] font-semibold text-text">
-            API key
+            {config.keyLabel}
           </label>
           <div className="flex flex-wrap items-center gap-2">
             <input
@@ -357,12 +377,14 @@ function ProviderCard({
               value={apiKey}
               disabled={saving}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder={config.apiKeySet ? "Enter a new key to replace the saved one" : "Paste an API key"}
+              placeholder={
+                config.apiKeySet ? `Enter a new ${config.keyLabel.toLowerCase()} to replace the saved one` : `Paste ${aKey(config)}`
+              }
               className={`${INPUT_CLS} max-w-md`}
             />
             {config.apiKeySet && (
               <button type="button" onClick={removeKey} disabled={busy || saving} className={BTN_CLS}>
-                Remove key
+                Remove {config.keyLabel === "API key" ? "key" : config.keyLabel.split(" ").pop()!.toLowerCase()}
               </button>
             )}
           </div>
@@ -375,7 +397,10 @@ function ProviderCard({
               "Not set"
             )}
           </div>
-          <Hint>Write-only: the key is encrypted at rest and never shown again. Leave empty to keep the saved key.</Hint>
+          <Hint>
+            Write-only: the {config.keyLabel.toLowerCase()} is encrypted at rest and never shown again. Leave empty to
+            keep the saved one.
+          </Hint>
         </div>
 
         <fieldset className="lg:col-span-2" disabled={saving}>

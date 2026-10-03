@@ -96,8 +96,23 @@ describe("validateUpdate", () => {
     expect(validateUpdate(null, airs()).ok).toBe(false);
   });
 
-  it("rejects configuring a provider that is not supported yet", () => {
-    expect(validateUpdate({ provider: "crowdstrike-aidr", enabled: true }, defaultConfig("crowdstrike-aidr")).ok).toBe(false);
+  // CrowdStrike AIDR takes its policy from the collector token, so it has no
+  // profile to require — but it still cannot be enabled without its token.
+  it("CrowdStrike AIDR: enables with a token and no profile, never without a token", () => {
+    const aidr = defaultConfig("crowdstrike-aidr");
+    expect(validateUpdate({ provider: "crowdstrike-aidr", enabled: true }, aidr)).toMatchObject({
+      ok: false,
+      error: "Cannot enable: save a collector token first",
+    });
+    const v = validateUpdate({ provider: "crowdstrike-aidr", enabled: true, apiKey: "pts_abc123" }, aidr);
+    expect(v.ok && v.next).toMatchObject({ enabled: true, region: "us-1", apiKeyLast4: "c123" });
+  });
+
+  it("CrowdStrike AIDR: region must be one of its three official hosts", () => {
+    for (const region of ["us", "eu", "https://api.crowdstrike.com", "us-3"]) {
+      expect(validateUpdate({ provider: "crowdstrike-aidr", region }, defaultConfig("crowdstrike-aidr")).ok, region).toBe(false);
+    }
+    expect(validateUpdate({ provider: "crowdstrike-aidr", region: "eu-1" }, defaultConfig("crowdstrike-aidr")).ok).toBe(true);
   });
 });
 
@@ -349,9 +364,15 @@ describe("runPipeline", () => {
 
   it("runs enabled providers in the STORED order, not the order D1 returns rows in", async () => {
     // Two enabled rows, returned AIRS-first. The stored order puts CrowdStrike
-    // first; it is unsupported, so its scan is a fail-closed error that stops a
-    // sequential pipeline — which proves it ran first, and AIRS was never called.
-    const rows = [await storedRow(), await storedRow({ provider: "crowdstrike-aidr", region: "" })];
+    // first and it blocks, which ends a sequential pipeline — so the only host
+    // called is CrowdStrike's, and AIRS never runs.
+    const aidrRow = await storedRow({
+      provider: "crowdstrike-aidr",
+      region: "eu-1",
+      profile_name: "",
+      api_key_enc: await encryptSecret("pts_token", SECRET, "crowdstrike-aidr"),
+    });
+    const rows = [await storedRow(), aidrRow];
     const env = {
       GUARDRAIL_SECRET_KEY: SECRET,
       DB: {
@@ -362,11 +383,15 @@ describe("runPipeline", () => {
         }),
       } as unknown as D1Database,
     } as Env;
-    const never = (async () => {
-      throw new Error("AIRS must not be called");
+    const called: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      called.push(url);
+      expect((init?.headers as Record<string, string>).authorization).toBe("Bearer pts_token");
+      return Response.json({ status: "Success", result: { blocked: true, detectors: { malicious_prompt: { detected: true } } } });
     }) as typeof fetch;
-    const r = await runPipeline(env, { prompt: "p", model: "m", ray: null }, never);
-    expect(r!.results.map((x) => x.provider)).toEqual(["crowdstrike-aidr"]);
+    const r = await runPipeline(env, { prompt: "p", model: "m", ray: null }, fetchImpl);
+    expect(called).toEqual(["https://api.eu-1.crowdstrike.com/aidr/aiguard/v1/guard_chat_completions"]);
+    expect(r!.results.map((x) => [x.provider, x.outcome])).toEqual([["crowdstrike-aidr", "block"]]);
     expect(r!.stoppedBy).toBe("crowdstrike-aidr");
     expect(r!.notRun.map((x) => x.provider)).toEqual(["prisma-airs"]);
   });

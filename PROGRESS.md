@@ -401,7 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-03 as version `595fa250-7c75-4abf-9521-9ac7cdd0e657` (guardrail pipeline); before that
+deployed 2026-10-03 as version `674a8c93-0f61-4a57-a880-96fd356fc2ee` (CrowdStrike AIDR); before that
+`595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
 that `99cbf558` (2026-09-07, built from `ef68406`). The token replacement the same day also created a version,
@@ -597,6 +598,41 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-03 — CrowdStrike Falcon AIDR guardrail
+
+**What.** `src/crowdstrikeAidr.ts` (AI Guard client) + registry entry: AIDR is a real, configurable provider
+in the pipeline next to Prisma AIRS. Regions US-1/US-2/EU-1 from the spec's `servers`; the collector token
+(`Authorization: Bearer`) is encrypted and write-only like the AIRS key. Provider-specific wording comes from
+the registry (`requiresProfile`, `keyLabel`, `vendor`), so the page names a "collector token", shows no
+profile field for AIDR (its policy rides on the collector), and says whose hosts the secret goes to. Test
+connection now goes through the same `scanWithKey` the pipeline uses, for both providers. Result gains
+`policy`, `summary`, `transformed`. Self-implemented end to end (hostile input, outside facts, hot files).
+
+**Facts, and where each came from.** CrowdStrike's docs and OpenAPI spec (`aidr-docs.crowdstrike.com`),
+then the live endpoint:
+- **The spec's path is wrong for these hosts.** It says `/v1/guard_chat_completions` (servers
+  `api.crowdstrike.com` etc.); probed 2026-10-03 with a dummy token, that path is **404** on all three regions
+  and the docs' `/aidr/aiguard/v1/guard_chat_completions` is **401**. The spec is evidently the Pangea one
+  with CrowdStrike hosts pasted in.
+- Live error body is the API gateway's `{meta:{trace_id}, errors:[{code, message}]}` — not in the spec.
+- 202 `Accepted` (async, with `location`) is treated as an **error** (no verdict in the turn), not polled.
+- `result.transformed` (redaction) is **not applied**: the model receives the original prompt. Shown as an
+  amber "allow · redaction not applied" chip, never a green pass. Applying it would mean rewriting the prompt
+  mid-pipeline (and deciding what a later guardrail then sees) — a design question, deferred.
+
+**Verified, and how.**
+- 15 client tests + 2 new config tests (309 total); five planted parser regressions all caught.
+- Local: enabling without a token → 400 "save a collector token first"; a URL as region → 400; the token
+  never appears in any response; page and diagram render AIDR as configurable (light mode, no console errors).
+  Local workerd cannot reach `api.crowdstrike.com` either (`internal error`, same as PANW).
+- Prod (deploy `674a8c93`, no migration): smoke 5/5. With AIDR **disabled**, a generated invalid token saved
+  and *Test connection* run per region → the deployed Worker got CrowdStrike's real **401** from US-1, US-2
+  and EU-1, parsed into `httpStatus: 401` + the gateway message. Token cleared afterwards; AIRS untouched.
+- **What that 401 does NOT prove:** a request with **no** token gets the identical 401, so — unlike the AIRS
+  check, where 403 vs 401 showed the key arrived — it cannot show the token was delivered. Token delivery is
+  pinned only by unit tests (`authorization: Bearer …`). **Never exercised: a real AIDR verdict**
+  (allow/block, detectors, `policy`, `transformed`), a 202, or AIDR and AIRS together in one pipeline.
 
 ### 2026-10-03 — guardrail pipeline: traffic-flow diagram, sequential / parallel, guardrail-only
 
@@ -1301,6 +1337,12 @@ exercised):
     back to Block before a customer demo of the WAF.** Also seen the same run: `/api/zone-rules` →
     `source: fallback`, `Ruleset list failed (HTTP 403)` — the rules token cannot list rulesets, so the app
     shows its static mirror, not live rules.
+29. **CrowdStrike AIDR has never returned a real verdict** (2026-10-03) — no collector token available.
+    The prod 401 check proves host, path and error parsing, but not token delivery (no token gets the same
+    401). First thing to do with a token: save it on `/guardrails` (AIDR **disabled**), *Test connection*
+    (expect `allow` with a `request_id` and `policy`), then enable and send an injection prompt; confirm the
+    amber block card lists AIDR detectors. Also unverified: what AIDR does with `transformed` in practice
+    (the app does not apply redactions — see the 2026-10-03 entry).
 
 ## Next tasks
 

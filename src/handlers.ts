@@ -35,11 +35,11 @@ import {
   runPipeline,
   save,
   savePipeline,
+  scanWithKey,
   toPublicConfig,
   validatePipelineUpdate,
   validateUpdate,
 } from "./externalGuardrails";
-import { scanPromptWithPrismaAirs } from "./prismaAirs";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
 import {
   listAiGateways,
@@ -58,6 +58,7 @@ import type {
   ChatRequestBody,
   ChatTurn,
   Env,
+  ExternalGuardrailProvider,
   PromptAnalytics,
   PromptLogRow,
   RedTeamResultRow,
@@ -1528,13 +1529,14 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
-  if (provider !== "prisma-airs") {
-    return Response.json({ error: "Only prisma-airs can be tested" }, { status: 400 });
+  if (typeof provider !== "string" || !(PROVIDER_IDS as string[]).includes(provider) || !PROVIDERS[provider as ExternalGuardrailProvider].supported) {
+    return Response.json({ error: `provider must be a supported one of: ${PROVIDER_IDS.join(", ")}` }, { status: 400 });
   }
   try {
     const c = (await loadAll(env.DB!)).find((x) => x.provider === provider)!;
-    if (!c.apiKeyEnc) return Response.json({ error: "No API key saved" }, { status: 400 });
-    if (!c.profileName) return Response.json({ error: "No AI security profile name saved" }, { status: 400 });
+    const spec = PROVIDERS[c.provider];
+    if (!c.apiKeyEnc) return Response.json({ error: `No ${spec.keyLabel.toLowerCase()} saved` }, { status: 400 });
+    if (spec.requiresProfile && !c.profileName) return Response.json({ error: "No AI security profile name saved" }, { status: 400 });
     let apiKey: string;
     try {
       apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
@@ -1544,8 +1546,8 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
         result: { provider: c.provider, outcome: "error", latencyMs: 0, error: "Stored API key could not be decrypted — re-enter it." },
       });
     }
-    const baseUrl = PROVIDERS[c.provider].regions.find((r) => r.id === c.region)!.url;
-    const result = await scanPromptWithPrismaAirs({ baseUrl, apiKey, profileName: c.profileName, prompt: GUARDRAIL_TEST_PROMPT });
+    // The same call the pipeline makes, so a passing test means the real thing works.
+    const result = await scanWithKey(c, apiKey, { prompt: GUARDRAIL_TEST_PROMPT, model: "", ray: null });
     return Response.json({ ok: result.outcome !== "error", result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -1,4 +1,4 @@
-// Chat-side rendering of the external guardrail pipeline (Prisma AIRS, ...):
+// Chat-side rendering of the external guardrail pipeline (Prisma AIRS, CrowdStrike AIDR):
 // the card for a turn a guardrail stopped, the card for a guardrail-only turn
 // (model deliberately not called), and the small per-result chips on a reply.
 //
@@ -21,7 +21,14 @@ const PROVIDER_LABELS: Record<ExternalGuardrailProvider, string> = {
 // The long form for running prose; the chips and lists use the short one.
 const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
   "prisma-airs": "Palo Alto Networks Prisma AIRS",
-  "crowdstrike-aidr": "CrowdStrike AIDR",
+  "crowdstrike-aidr": "CrowdStrike Falcon AIDR",
+};
+
+// What the provider's own reference id is called, so it can be searched for in
+// that vendor's console.
+const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
+  "prisma-airs": "scan_id",
+  "crowdstrike-aidr": "request_id",
 };
 
 // The provider name is data, not a constant: the second provider reuses this
@@ -42,6 +49,18 @@ const DETECTION_LABELS: Record<string, string> = {
   malicious_code: "Malicious code",
   agent: "Agent threat",
   topic_violation: "Topic violation",
+  // CrowdStrike AIDR detector names (result.detectors keys in its OpenAPI spec).
+  malicious_prompt: "Malicious prompt",
+  confidential_and_pii_entity: "Confidential / PII",
+  malicious_entity: "Malicious entity",
+  custom_entity: "Custom entity",
+  secret_and_key_entity: "Secret or key",
+  competitors: "Competitors",
+  language: "Language",
+  topic: "Topic",
+  emoji: "Emoji",
+  code: "Code",
+  mcp_validation: "MCP validation",
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -57,6 +76,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 // look at the prompt — and `failedOpen` says the turn went on unscanned by it.
 function resultSummary(r: ExternalGuardrailResult): { text: string; cls: string } {
   if (r.outcome === "allow") {
+    if (r.transformed) return { text: "allow — redaction not applied", cls: "text-cf-amber" };
     return r.incomplete
       ? { text: "allow (incomplete scan)", cls: "text-cf-amber" }
       : { text: "allow", cls: "text-cf-green" };
@@ -203,6 +223,11 @@ export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: Guardrail
                 <b className="font-mono text-text">{result.profileName}</b>
               </Field>
             )}
+            {result.policy && (
+              <Field label="policy">
+                <b className="font-mono text-text">{result.policy}</b>
+              </Field>
+            )}
             <Field label="latency">
               <b className="font-mono text-text">{result.latencyMs} ms</b>
             </Field>
@@ -213,11 +238,17 @@ export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: Guardrail
               completed.
             </div>
           )}
+          {result.summary && <div className="mt-1.5 text-[11.5px] text-muted">“{result.summary}”</div>}
           {(result.scanId || result.reportId) && (
-            // These two ids are what you search for in Strata Cloud Manager to
-            // open the provider's own report, so they are shown whole.
+            // These ids are what you search for in the vendor's console (Strata
+            // Cloud Manager, the Falcon console) to open its own report, so they
+            // are shown whole.
             <div className="mt-1.5 flex flex-col gap-0.5 font-mono text-[11px] break-all text-muted">
-              {result.scanId && <span>scan_id {result.scanId}</span>}
+              {result.scanId && (
+                <span>
+                  {SCAN_ID_LABEL[result.provider] ?? "id"} {result.scanId}
+                </span>
+              )}
               {result.reportId && <span>report_id {result.reportId}</span>}
             </div>
           )}
@@ -305,6 +336,19 @@ export function ExternalGuardrailBadge({ result }: { result: ExternalGuardrailRe
     // An allow from a scan where a detection service timed out or errored only
     // covers what did run, so it gets the amber "partial" tone rather than the
     // green of a complete pass.
+    // AIDR wanted part of the prompt redacted, but this app forwards the
+    // original — so the model saw what AIDR would have masked. Amber, and said
+    // in words, never a clean green pass.
+    if (result.transformed) {
+      return (
+        <span
+          title={`${name} redacted part of this prompt, but this app does not apply the redaction — the model received the original prompt.`}
+          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+        >
+          {name} · allow · redaction not applied · {result.latencyMs} ms
+        </span>
+      );
+    }
     if (result.incomplete) {
       return (
         <span

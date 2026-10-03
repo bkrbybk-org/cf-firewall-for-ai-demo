@@ -54,8 +54,11 @@ function errMsg(e: unknown): string {
 // say so before the click instead of after a rejected request.
 function cannotEnableReason(p: ExternalGuardrailConfig): string | null {
   if (!p.supported) return "Not yet supported — this provider cannot be enabled";
-  if (!p.apiKeySet) return "Needs an API key — save one in the provider card below";
-  if (!p.profileName.trim()) return "Needs an AI security profile name — save one in the provider card below";
+  if (!p.apiKeySet) return `Needs a saved ${p.keyLabel.toLowerCase()} — add it in the provider card below`;
+  // Only providers that name a profile per request need one (not CrowdStrike AIDR).
+  if (p.requiresProfile && !p.profileName.trim()) {
+    return "Needs an AI security profile name — save one in the provider card below";
+  }
   return null;
 }
 
