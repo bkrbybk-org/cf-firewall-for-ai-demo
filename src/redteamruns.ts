@@ -90,6 +90,7 @@ export interface ValidatedRun {
   denied: number;
   guardrails: number;
   external: number;
+  skipped: number;
   pending: number;
   error: number;
   reachedPct: number;
@@ -215,6 +216,8 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
   const denied = int(body.denied, 0, total, 0);
   const guardrails = int(body.guardrails, 0, total, 0);
   const external = int(body.external, 0, total, 0);
+  // A subset of `reached` (guardrail-only runs): bounded by it, not by total.
+  const skipped = int(body.skipped, 0, reached, 0);
   const pending = int(body.pending, 0, total, 0);
   const error = int(body.error, 0, total, 0);
   const reachedPct = int(body.reachedPct, 0, 100, scored === 0 ? 0 : Math.round((reached / scored) * 100));
@@ -242,6 +245,7 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
       denied,
       guardrails,
       external,
+      skipped,
       pending,
       error,
       reachedPct,

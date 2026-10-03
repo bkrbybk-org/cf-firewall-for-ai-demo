@@ -77,9 +77,13 @@ function TopicBars({ topics }: { topics: { label: string; score: number }[] }) {
 }
 
 // dashed-rail gradients keyed by which layer severed the flow.
-const CUT_RAIL: Record<"red" | "purple", string> = {
+const CUT_RAIL: Record<"red" | "purple" | "amber" | "gray", string> = {
   red: "bg-[repeating-linear-gradient(to_bottom,rgba(255,92,92,.55)_0_4px,transparent_4px_8px)]",
   purple: "bg-[repeating-linear-gradient(to_bottom,rgba(146,105,255,.6)_0_4px,transparent_4px_8px)]",
+  // External guardrail (amber, like its card) and a deliberate skip (neutral):
+  // neither is the WAF, so neither may borrow its red.
+  amber: "bg-[repeating-linear-gradient(to_bottom,rgba(245,166,35,.6)_0_4px,transparent_4px_8px)]",
+  gray: "bg-[repeating-linear-gradient(to_bottom,rgba(128,128,128,.5)_0_4px,transparent_4px_8px)]",
 };
 
 function Step({
@@ -94,7 +98,7 @@ function Step({
   icon: React.ElementType;
   last?: boolean;
   cut?: boolean; // dashed rail — the flow was severed here
-  cutColor?: "red" | "purple";
+  cutColor?: "red" | "purple" | "amber" | "gray";
   children: React.ReactNode;
 }) {
   return (
@@ -198,18 +202,27 @@ function RequestChips({ cfg }: { cfg: RequestConfig }) {
 
 export type GuardrailsBlock = { direction?: "prompt" | "response"; detail?: string };
 
+// The edge let the request through, but the Worker never called the model:
+// "external" = an external guardrail stopped the turn; "skipped" = every check
+// passed and guardrail-only mode skipped the model on purpose. Either way the
+// edge verdict alone would say "reached the model", which is false — the trace
+// has to end inside the Worker.
+export type StoppedInWorker = "external" | "skipped";
+
 export function FlowTrace({
   d,
   prompt,
   gateway,
   guardrails,
   requestCfg,
+  stoppedInWorker,
 }: {
   d: VerdictData;
   prompt?: string;
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock; // set when AI Gateway Guardrails blocked (2016/2017)
   requestCfg?: RequestConfig; // send-time controls (stream, multi-turn, cache, metadata)
+  stoppedInWorker?: StoppedInWorker;
 }) {
   const [showMisses, setShowMisses] = useState(false);
 
@@ -357,6 +370,30 @@ export function FlowTrace({
             )}
           </Sub>
         </Step>
+      ) : stoppedInWorker ? (
+        <>
+          <Step tone="ok" icon={Server}>
+            <Title>Worker</Title>
+            <Sub>edge allowed{outcome === "log" ? " (log-only rules flagged it — visible in analytics)" : ""}</Sub>
+          </Step>
+          {stoppedInWorker === "external" ? (
+            <Step tone="warn" icon={ShieldBan} cut cutColor="amber">
+              <Title>
+                <span className="text-cf-amber">Stopped by an external guardrail</span>
+              </Title>
+              <Sub>blocked, or unavailable under fail-closed — the card above says which.</Sub>
+            </Step>
+          ) : (
+            <Step tone="ok" icon={ShieldCheck} cut cutColor="gray">
+              <Title>External guardrails passed — guardrail-only mode</Title>
+              <Sub>the model was skipped on purpose; AI Gateway Guardrails did not run either.</Sub>
+            </Step>
+          )}
+          <Step tone="dead" icon={Sparkles} last>
+            <Title>Workers AI</Title>
+            <Sub>never called — the model did not run.</Sub>
+          </Step>
+        </>
       ) : guardrails ? (
         // Edge WAF allowed/logged the request, but AI Gateway Guardrails (a
         // separate control at the gateway layer) blocked it. 2016 = prompt

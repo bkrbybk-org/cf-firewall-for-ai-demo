@@ -2,7 +2,7 @@
 // bars. Reuses the analytics primitives so it reads as one system with the rest
 // of the app. The headline is "reached the model" (edge miss rate), never ASR —
 // see redteam.ts for why the two are different axes.
-import { ShieldX, ShieldCheck, TriangleAlert, CircleSlash } from "lucide-react";
+import { ShieldX, ShieldCheck, SkipForward, TriangleAlert, CircleSlash } from "lucide-react";
 import { Tile } from "../analytics/primitives";
 import { SEVERITY_BAR, type RtBreakdownRow, type RtScore, type RtSeverity } from "../../lib/redteam";
 
@@ -102,6 +102,22 @@ export function Scorecard({
           tone="border-line bg-surface-2"
         />
       </div>
+
+      {score.skipped > 0 && (
+        // "Reached the model" is an edge fact (nothing at the edge stopped it);
+        // in guardrail-only mode that is as far as it got. The headline maths is
+        // unchanged — this only stops the number from implying a model answered.
+        <div className="flex items-start gap-3 rounded-xl border border-cf-amber/50 bg-cf-amber/10 px-3.5 py-2.5">
+          <SkipForward size={15} className="mt-0.5 shrink-0 text-cf-amber" />
+          <p className="text-[12px] leading-relaxed text-text">
+            <b>
+              {score.skipped} of the {score.reached} that “reached the model”
+            </b>{" "}
+            {score.skipped === 1 ? "was" : "were"} not sent to it — guardrail-only mode was on, so they passed the edge
+            and every enabled external guardrail and stopped there.
+          </p>
+        </div>
+      )}
 
       {(score.denied > 0 || score.guardrails > 0 || score.pending > 0 || score.error > 0) && (
         <div className="rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-[11.5px] text-muted">

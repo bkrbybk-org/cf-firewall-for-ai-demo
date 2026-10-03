@@ -129,7 +129,9 @@ export const openapi = {
           "",
           "**Prompt log.** The turn is written to the D1 prompt log only when `PROMPT_LOG_ENABLED` is on *and* `excludeFromLog` is not `true`.",
           "",
-          "**External guardrail.** When one is enabled (`/api/external-guardrails`), the prompt is sent to it after the edge scan and before the model, on both routes. A block — or a provider error under fail-closed — is a **200** with `externalGuardrailBlocked: true`, never a 403 (403 means the edge WAF). Every response after the check carries the result in the `x-external-guardrail` header (URI-encoded JSON), because a streamed reply has no JSON body to put it in.",
+          "**External guardrails.** Enabled providers (`/api/external-guardrails`) run as a pipeline after the edge scan and before the model, on both routes — sequentially in the configured order, or in parallel. A block — or a provider error under fail-closed — is a **200** with `externalGuardrailBlocked: true`, never a 403 (403 means the edge WAF). Every response after the check carries the `GuardrailPipelineResult` in the `x-external-guardrails` header (URI-encoded JSON), because a streamed reply has no JSON body to put it in.",
+          "",
+          "**Guardrail-only mode.** When the pipeline's `guardrailOnly` is on, a prompt that passes every check is answered with a **200** `{guardrailOnly: true}` and **no model is called** — no reply, tokens or cost, and no AI Gateway Guardrails (they run inside the model call).",
         ].join("\n"),
         requestBody: {
           required: true,
@@ -139,14 +141,14 @@ export const openapi = {
           "200": {
             description: "The reply — JSON, or an SSE stream when `stream: true`.",
             headers: {
-              "x-external-guardrail": {
-                description: "Present when an external guardrail is enabled: the `ExternalGuardrailResult` for this prompt, as URI-encoded JSON.",
+              "x-external-guardrails": {
+                description: "Present when the pipeline ran (a guardrail is enabled, or guardrail-only is on): the `GuardrailPipelineResult` for this prompt, as URI-encoded JSON.",
                 schema: { type: "string" },
               },
             },
             content: {
               "application/json": {
-                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked")] },
+                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked"), ref("GuardrailOnlyResult")] },
               },
               "text/event-stream": {
                 schema: {
@@ -331,7 +333,7 @@ export const openapi = {
         operationId: "getExternalGuardrails",
         summary: "Every provider's configuration (API keys redacted)",
         description:
-          "**The API key is write-only**: it is never returned, only `apiKeySet` and `apiKeyLast4`. `configured: false` with a `setupHint` means the encryption secret (`GUARDRAIL_SECRET_KEY`), the D1 binding or migration 0005 is missing.",
+          "**The API key is write-only**: it is never returned, only `apiKeySet` and `apiKeyLast4`. `pipeline` is how enabled providers run. `configured: false` with a `setupHint` means the encryption secret (`GUARDRAIL_SECRET_KEY`), the D1 binding or a migration is missing.",
         responses: {
           "200": json("Configuration.", ref("ExternalGuardrailsState")),
           "502": json("D1 read failed.", ref("ExternalGuardrailsState")),
@@ -342,7 +344,7 @@ export const openapi = {
         operationId: "updateExternalGuardrail",
         summary: "Update one provider",
         description: [
-          "Omitted fields are unchanged. **Enabling one provider disables every other** (one active at a time, enforced by a unique index in D1). Enabling is refused until an API key and an AI security profile name are saved.",
+          "Omitted fields are unchanged. Any number of providers may be enabled; `PUT /api/external-guardrails/pipeline` decides how they run. Enabling is refused until an API key and an AI security profile name are saved, and for a provider that is not supported yet.",
           "",
           "The endpoint is chosen by `region` from the provider's official hosts only. There is no free-text URL: the stored key travels in a request header, so a typed endpoint would let anyone who can reach this API redirect it.",
           "",
@@ -353,6 +355,29 @@ export const openapi = {
           "200": json("The new state.", ref("ExternalGuardrailsState")),
           "400": json("Rejected — invalid field, unsupported provider, enabling without a key/profile, or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
           "405": error("Not GET or PUT."),
+          "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
+        },
+      },
+    },
+    "/api/external-guardrails/pipeline": {
+      put: {
+        tags: ["External guardrails"],
+        operationId: "updateGuardrailPipeline",
+        summary: "Set how enabled guardrails run",
+        description: [
+          "Omitted fields are unchanged. The edge WAF always runs first (before the Worker) and AI Gateway Guardrails run inside the model call, so only the external guardrails between them can be ordered.",
+          "",
+          "- `sequential`: in `order`; the first guardrail that stops the turn ends it and the rest do not run.",
+          "- `parallel`: all at once; the model runs only if every one lets it through. The Worker waits for all of them (each capped by its own timeout).",
+          "- `guardrailOnly`: never call the model — for testing the checks without model cost. Applies to chat and red-team runs alike.",
+          "",
+          "`order` must list every provider exactly once; anything else is rejected rather than repaired.",
+        ].join("\n"),
+        requestBody: { required: true, content: { "application/json": { schema: ref("GuardrailPipelineUpdate") } } },
+        responses: {
+          "200": json("The new state.", ref("ExternalGuardrailsState")),
+          "400": json("Rejected — invalid field or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
+          "405": error("Not a PUT."),
           "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
         },
       },
@@ -501,7 +526,7 @@ export const openapi = {
           cost: nullable("number", "Estimated USD from Workers AI unit pricing. 0 for a cache hit; null for a model with no price entry."),
           gateway: ref("GatewayMeta"),
           dynamicRoute: str("Echoed when the reply came from a Dynamic Route."),
-          externalGuardrail: ref("ExternalGuardrailResult"),
+          externalGuardrails: ref("GuardrailPipelineResult"),
         },
         ["reply", "model", "ray", "usage", "cost"],
       ),
@@ -565,15 +590,53 @@ export const openapi = {
         },
         ["provider", "outcome", "latencyMs"],
       ),
+      GuardrailPipelineMode: { type: "string", enum: ["sequential", "parallel"] },
+      GuardrailPipelineConfig: obj(
+        {
+          mode: ref("GuardrailPipelineMode"),
+          guardrailOnly: bool("Never call the model (chat and red-team runs)."),
+          order: arr(ref("ExternalGuardrailProvider")),
+        },
+        ["mode", "guardrailOnly", "order"],
+      ),
+      GuardrailPipelineUpdate: obj(
+        {
+          mode: ref("GuardrailPipelineMode"),
+          guardrailOnly: bool(),
+          order: { ...arr(ref("ExternalGuardrailProvider")), description: "Every provider exactly once." },
+        },
+      ),
+      GuardrailPipelineResult: obj(
+        {
+          mode: ref("GuardrailPipelineMode"),
+          guardrailOnly: bool(),
+          results: arr(ref("ExternalGuardrailResult")),
+          notRun: arr(obj({ provider: ref("ExternalGuardrailProvider"), reason: str() }, ["provider", "reason"])),
+          stoppedBy: { anyOf: [ref("ExternalGuardrailProvider"), { type: "null" }], description: "The guardrail whose result stopped the turn, or null." },
+          latencyMs: int("Wall clock for the whole pipeline."),
+        },
+        ["mode", "guardrailOnly", "results", "notRun", "stoppedBy", "latencyMs"],
+        "What the pipeline did for one prompt. `results` is in run order (sequential) or configured order (parallel); `notRun` lists enabled guardrails skipped because an earlier one stopped the turn.",
+      ),
       ExternalGuardrailBlocked: obj(
         {
           externalGuardrailBlocked: { const: true },
-          externalGuardrail: ref("ExternalGuardrailResult"),
+          externalGuardrails: ref("GuardrailPipelineResult"),
           model: str(),
           ray: nullable("string"),
         },
-        ["externalGuardrailBlocked", "externalGuardrail", "model", "ray"],
-        "The turn was stopped by an external guardrail: either its verdict was `block`, or it could not be consulted and the fail mode is `block`. Distinguish the two by `externalGuardrail.outcome`. HTTP status is **200**.",
+        ["externalGuardrailBlocked", "externalGuardrails", "model", "ray"],
+        "The turn was stopped by an external guardrail: its verdict was `block`, or it could not be consulted and its fail mode is `block`. The deciding result is the one whose `provider` equals `externalGuardrails.stoppedBy`; tell the two cases apart by its `outcome`. HTTP status is **200**.",
+      ),
+      GuardrailOnlyResult: obj(
+        {
+          guardrailOnly: { const: true },
+          externalGuardrails: ref("GuardrailPipelineResult"),
+          model: str("The model that WOULD have run."),
+          ray: nullable("string"),
+        },
+        ["guardrailOnly", "externalGuardrails", "model", "ray"],
+        "Guardrail-only mode: the prompt passed the edge and every enabled external guardrail, and the model was deliberately not called. No reply, usage or cost. HTTP status is **200**.",
       ),
       ExternalGuardrailConfig: obj(
         {
@@ -596,15 +659,16 @@ export const openapi = {
         {
           configured: bool("False → `setupHint` says what is missing."),
           providers: arr(ref("ExternalGuardrailConfig")),
+          pipeline: ref("GuardrailPipelineConfig"),
           setupHint: str(),
           error: str(),
         },
-        ["configured", "providers"],
+        ["configured", "providers", "pipeline"],
       ),
       ExternalGuardrailUpdate: obj(
         {
           provider: ref("ExternalGuardrailProvider"),
-          enabled: bool("Enabling one provider disables every other."),
+          enabled: bool("Any number may be enabled; the pipeline decides how they run."),
           region: str("One of the provider's `regions[].id`."),
           profileName: { type: "string", maxLength: 200 },
           failMode: { type: "string", enum: ["block", "allow"] },
@@ -761,7 +825,7 @@ export const openapi = {
           model: str(),
           gatewayId: nullable("string", "Null on the direct route."),
           guarded: flag("Gateway has Guardrails."),
-          outcome: { type: "string", enum: ["reply", "guardrails", "external", "error"], description: "`external` = an external guardrail (Prisma AIRS) blocked the turn; no model ran, so `latencyMs` is null." },
+          outcome: { type: "string", enum: ["reply", "guardrails", "external", "skipped", "error"], description: "`external` = an external guardrail blocked the turn; `skipped` = guardrail-only mode let it through and no model was called. In both, no model ran, so `latencyMs` is null." },
           prompt: str("PII-redacted at write time."),
           reply: nullable("string", "PII-redacted. Null for a blocked turn, or a streamed turn whose stream has not finished (or was never captured)."),
           redactions: int("PII spans masked across prompt + reply."),
@@ -802,7 +866,7 @@ export const openapi = {
               byRoute: arr(obj({ route: str(), count: int() }, ["route", "count"])),
               byModel: arr(obj({ model: str(), count: int(), promptTokens: int(), completionTokens: int() }, ["model", "count", "promptTokens", "completionTokens"])),
               repeated: arr(obj({ prompt: str(), count: int(), redactions: int() }, ["prompt", "count", "redactions"])),
-              series: arr(obj({ t: { type: "string", format: "date-time" }, reply: int(), guardrails: int(), external: int(), error: int() }, ["t", "reply", "guardrails", "external", "error"])),
+              series: arr(obj({ t: { type: "string", format: "date-time" }, reply: int(), guardrails: int(), external: int(), skipped: int(), error: int() }, ["t", "reply", "guardrails", "external", "skipped", "error"])),
               bucket: ref("SeriesBucket"),
               firstTs: nullable("integer"),
               lastTs: nullable("integer"),
@@ -856,11 +920,12 @@ export const openapi = {
           denied: int(),
           guardrails: int(),
           external: int("Blocked by an external guardrail (Prisma AIRS)."),
+          skipped: int("Of `reached`: got past every check in guardrail-only mode, so no model answered."),
           pending: int(),
           error: int(),
           reachedPct: int("reached / scored, 0 when nothing was scored — which means *nothing was measured*, not a perfect block rate."),
         },
-        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "dynamicRoute", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "external", "pending", "error", "reachedPct"],
+        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "dynamicRoute", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "external", "skipped", "pending", "error", "reachedPct"],
       ),
       RedTeamResultRow: obj(
         {
@@ -902,6 +967,7 @@ export const openapi = {
           denied: int(),
           guardrails: int(),
           external: int(),
+          skipped: int("Of `reached`, how many were not sent to the model (guardrail-only). Clamped to `reached`."),
           pending: int(),
           error: int(),
           reachedPct: { type: "integer", minimum: 0, maximum: 100 },

@@ -67,7 +67,15 @@ const SEV_PILL: Record<RtSeverity, string> = {
   low: "border-cf-blue/50 text-cf-blue",
 };
 
-function StateCell({ s, stopped }: { s?: RtAttackState; stopped?: boolean }) {
+function StateCell({
+  s,
+  stopped,
+  modelSkipped,
+}: {
+  s?: RtAttackState;
+  stopped?: boolean;
+  modelSkipped?: boolean;
+}) {
   if (!s || s === "queued") return <span className="text-subtle">—</span>;
   if (s === "sending" || s === "sent" || s === "resolving") {
     // Once the run is stopped nothing is in flight, so a spinner labelled
@@ -82,7 +90,20 @@ function StateCell({ s, stopped }: { s?: RtAttackState; stopped?: boolean }) {
     );
   }
   const pill = STATE_PILL[s] ?? { label: s, cls: "border-line text-muted" };
-  return <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${pill.cls}`}>{pill.label}</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${pill.cls}`}>{pill.label}</span>
+      {modelSkipped && (
+        // The pill is the edge fact ("reached"); this says no model answered it.
+        <span
+          title="Guardrail-only mode: passed the edge and every external guardrail, but the model was not called"
+          className="rounded-full border border-cf-amber/50 bg-cf-amber/10 px-1.5 py-px text-[10px] font-semibold text-cf-amber"
+        >
+          model skipped
+        </span>
+      )}
+    </span>
+  );
 }
 
 // ── sortable table ──────────────────────────────────────────────────────────
@@ -346,7 +367,10 @@ export function RedTeamPage() {
         : `sending ${sentCount}/${toRun.length}…`;
   else if (phase === "settling") phaseText = `waiting for edge ingestion — ${Math.ceil(settleLeftMs / 1000)}s`;
   else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${toRun.length}…`;
-  else if (phase === "done") phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})`;
+  else if (phase === "done")
+    phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})${
+      score.skipped > 0 ? `, ${score.skipped} not sent to it (guardrail-only)` : ""
+    }`;
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
@@ -729,7 +753,11 @@ export function RedTeamPage() {
                         </td>
                       )}
                       <td className="px-2.5 py-1.5 whitespace-nowrap">
-                        <StateCell s={attackStates[a.id]} stopped={phase === "stopped"} />
+                        <StateCell
+                          s={attackStates[a.id]}
+                          stopped={phase === "stopped"}
+                          modelSkipped={results.get(a.id)?.modelSkipped}
+                        />
                       </td>
                     </tr>
                   ))}

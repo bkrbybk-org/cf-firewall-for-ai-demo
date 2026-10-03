@@ -11,11 +11,16 @@ import { describe, expect, it } from "vitest";
 import {
   decryptSecret,
   defaultConfig,
+  defaultPipeline,
   encryptSecret,
-  forwardPrompt,
+  executePipeline,
+  normalizeOrder,
+  runPipeline,
   stopsTurn,
   toPublicConfig,
+  validatePipelineUpdate,
   validateUpdate,
+  type Scan,
   type StoredConfig,
 } from "./externalGuardrails";
 import type { Env, ExternalGuardrailResult } from "./types";
@@ -144,14 +149,134 @@ describe("stopsTurn", () => {
   });
 });
 
-describe("forwardPrompt", () => {
-  // A D1 stand-in that serves one stored row for the "enabled" lookup.
-  // `secret: null` means "not set". Not `undefined`: passing undefined to a
-  // parameter with a default silently applies the default.
-  async function envWith(row: Record<string, unknown> | null, secret: string | null = SECRET): Promise<Env> {
+describe("pipeline config", () => {
+  it("normalises a stored order into a full permutation", () => {
+    expect(normalizeOrder(["crowdstrike-aidr", "prisma-airs"])).toEqual(["crowdstrike-aidr", "prisma-airs"]);
+    // Unknown ids dropped, duplicates removed, missing providers appended — a
+    // hand-edited row can never make a provider vanish from the pipeline.
+    expect(normalizeOrder(["bogus", "crowdstrike-aidr", "crowdstrike-aidr"])).toEqual(["crowdstrike-aidr", "prisma-airs"]);
+    expect(normalizeOrder([])).toEqual(["prisma-airs", "crowdstrike-aidr"]);
+  });
+
+  it("accepts a valid update and leaves omitted fields alone", () => {
+    const v = validatePipelineUpdate({ mode: "parallel" }, defaultPipeline());
+    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr"] } });
+    const w = validatePipelineUpdate({ guardrailOnly: true, order: ["crowdstrike-aidr", "prisma-airs"] }, defaultPipeline());
+    expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order: ["crowdstrike-aidr", "prisma-airs"] });
+  });
+
+  // Strict on input: silently repairing a bad order would save one the operator never chose.
+  it("rejects an order that is not exactly a permutation, and malformed fields", () => {
+    for (const order of [["prisma-airs"], ["prisma-airs", "prisma-airs"], ["prisma-airs", "evil"], "prisma-airs", [1, 2]]) {
+      expect(validatePipelineUpdate({ order }, defaultPipeline()).ok, JSON.stringify(order)).toBe(false);
+    }
+    expect(validatePipelineUpdate({ mode: "race" }, defaultPipeline()).ok).toBe(false);
+    expect(validatePipelineUpdate({ guardrailOnly: "yes" }, defaultPipeline()).ok).toBe(false);
+    expect(validatePipelineUpdate([], defaultPipeline()).ok).toBe(false);
+  });
+});
+
+describe("executePipeline", () => {
+  // Fake providers. The registry has two ids, which is all the ordering rules need.
+  const A = { ...defaultConfig("prisma-airs"), enabled: true };
+  const B = { ...defaultConfig("crowdstrike-aidr"), enabled: true };
+  const verdict = (provider: StoredConfig["provider"], outcome: ExternalGuardrailResult["outcome"], extra = {}): ExternalGuardrailResult => ({
+    provider,
+    outcome,
+    latencyMs: 1,
+    ...extra,
+  });
+  // Records the call order and lets each fake take a set time.
+  function fakes(plan: Record<string, { r: ExternalGuardrailResult; ms?: number }>) {
+    const calls: string[] = [];
+    const scan: Scan = async (c) => {
+      calls.push(c.provider);
+      const p = plan[c.provider];
+      if (p.ms) await new Promise((res) => setTimeout(res, p.ms));
+      return p.r;
+    };
+    return { calls, scan };
+  }
+
+  it("sequential: runs in the configured order and goes on while each allows", async () => {
+    const f = fakes({ "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "allow") }, "prisma-airs": { r: verdict("prisma-airs", "allow") } });
+    const out = await executePipeline([B, A], "sequential", false, f.scan);
+    expect(f.calls).toEqual(["crowdstrike-aidr", "prisma-airs"]);
+    expect(out).toMatchObject({ stoppedBy: null, notRun: [], mode: "sequential" });
+    expect(out.results.map((r) => r.provider)).toEqual(["crowdstrike-aidr", "prisma-airs"]);
+  });
+
+  it("sequential: the first block ends it — later guardrails are not called, and say why", async () => {
+    const f = fakes({ "prisma-airs": { r: verdict("prisma-airs", "block") }, "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "allow") } });
+    const out = await executePipeline([A, B], "sequential", false, f.scan);
+    expect(f.calls).toEqual(["prisma-airs"]);
+    expect(out.stoppedBy).toBe("prisma-airs");
+    expect(out.notRun).toEqual([{ provider: "crowdstrike-aidr", reason: "Not run: Palo Alto Networks Prisma AIRS blocked the prompt" }]);
+  });
+
+  it("sequential: a fail-closed error stops it, a fail-open error does not", async () => {
+    const closed = fakes({ "prisma-airs": { r: verdict("prisma-airs", "error") }, "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "allow") } });
+    const c = await executePipeline([A, B], "sequential", false, closed.scan);
+    expect(c.stoppedBy).toBe("prisma-airs");
+    expect(c.notRun[0].reason).toMatch(/unavailable \(fail closed\)/);
+    const open = fakes({
+      "prisma-airs": { r: verdict("prisma-airs", "error", { failedOpen: true }) },
+      "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "allow") },
+    });
+    const o = await executePipeline([A, B], "sequential", false, open.scan);
+    expect(open.calls).toEqual(["prisma-airs", "crowdstrike-aidr"]);
+    expect(o.stoppedBy).toBeNull();
+  });
+
+  it("parallel: runs every guardrail at the same time — wall clock is the slowest, not the sum", async () => {
+    const f = fakes({
+      "prisma-airs": { r: verdict("prisma-airs", "allow"), ms: 60 },
+      "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "allow"), ms: 60 },
+    });
+    const t0 = Date.now();
+    const out = await executePipeline([A, B], "parallel", false, f.scan);
+    const wall = Date.now() - t0;
+    expect(wall).toBeLessThan(110); // sequential would be ≥ 120
+    expect(out.stoppedBy).toBeNull();
+  });
+
+  it("parallel: one block stops the turn, but every verdict is still reported, in configured order", async () => {
+    const f = fakes({
+      "prisma-airs": { r: verdict("prisma-airs", "allow"), ms: 30 },
+      "crowdstrike-aidr": { r: verdict("crowdstrike-aidr", "block"), ms: 5 },
+    });
+    const out = await executePipeline([A, B], "parallel", false, f.scan);
+    expect(out.stoppedBy).toBe("crowdstrike-aidr");
+    expect(out.results.map((r) => [r.provider, r.outcome])).toEqual([
+      ["prisma-airs", "allow"],
+      ["crowdstrike-aidr", "block"],
+    ]);
+    expect(out.notRun).toEqual([]);
+  });
+
+  it("carries guardrail-only through, including with no guardrail enabled (edge-only test)", async () => {
+    const out = await executePipeline([], "sequential", true, fakes({}).scan);
+    expect(out).toMatchObject({ guardrailOnly: true, results: [], stoppedBy: null });
+  });
+});
+
+describe("runPipeline", () => {
+  // A D1 stand-in: the pipeline row for `first()`, the enabled provider rows for
+  // `all()`. `secret: null` means "not set". Not `undefined`: passing undefined
+  // to a parameter with a default silently applies the default.
+  async function envWith(
+    row: Record<string, unknown> | null,
+    secret: string | null = SECRET,
+    pipeline: Record<string, unknown> | null = null,
+  ): Promise<Env> {
     return {
       GUARDRAIL_SECRET_KEY: secret ?? undefined,
-      DB: { prepare: () => ({ first: async () => row }) } as unknown as D1Database,
+      DB: {
+        prepare: (sql: string) => ({
+          first: async () => (sql.includes("guardrail_pipeline") ? pipeline : null),
+          all: async () => ({ results: row ? [row] : [] }),
+        }),
+      } as unknown as D1Database,
     } as Env;
   }
   async function storedRow(overrides: Record<string, unknown> = {}) {
@@ -172,8 +297,8 @@ describe("forwardPrompt", () => {
     const never = (async () => {
       throw new Error("must not be called");
     }) as typeof fetch;
-    expect(await forwardPrompt(await envWith(null), { prompt: "p", model: "m", ray: null }, never)).toBeNull();
-    expect(await forwardPrompt(await envWith(await storedRow(), null), { prompt: "p", model: "m", ray: null }, never)).toBeNull();
+    expect(await runPipeline(await envWith(null), { prompt: "p", model: "m", ray: null }, never)).toBeNull();
+    expect(await runPipeline(await envWith(await storedRow(), null), { prompt: "p", model: "m", ray: null }, never)).toBeNull();
   });
 
   it("sends the decrypted key only to the configured region's official host", async () => {
@@ -184,29 +309,72 @@ describe("forwardPrompt", () => {
       seenKey = (init?.headers as Record<string, string>)["x-pan-token"];
       return Response.json({ action: "allow", category: "benign" });
     }) as typeof fetch;
-    const r = await forwardPrompt(await envWith(await storedRow()), { prompt: "p", model: "m", ray: "abc" }, fetchImpl);
+    const r = await runPipeline(await envWith(await storedRow()), { prompt: "p", model: "m", ray: "abc" }, fetchImpl);
     expect(seenUrl).toBe("https://service-de.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request");
     expect(seenKey).toBe("the-real-key");
-    expect(r?.outcome).toBe("allow");
+    expect(r?.results[0].outcome).toBe("allow");
   });
 
   it("marks an error as failed-open only when the fail mode says allow", async () => {
     const down = (async () => {
       throw new TypeError("down");
     }) as typeof fetch;
-    const closed = await forwardPrompt(await envWith(await storedRow({ fail_mode: "block" })), { prompt: "p", model: "m", ray: null }, down);
-    expect(closed).toMatchObject({ outcome: "error" });
-    expect(closed?.failedOpen).toBeUndefined();
-    expect(stopsTurn(closed!)).toBe(true);
-    const open = await forwardPrompt(await envWith(await storedRow({ fail_mode: "allow" })), { prompt: "p", model: "m", ray: null }, down);
-    expect(open).toMatchObject({ outcome: "error", failedOpen: true });
-    expect(stopsTurn(open!)).toBe(false);
+    const closed = await runPipeline(await envWith(await storedRow({ fail_mode: "block" })), { prompt: "p", model: "m", ray: null }, down);
+    expect(closed!.results[0]).toMatchObject({ outcome: "error" });
+    expect(closed!.results[0].failedOpen).toBeUndefined();
+    expect(closed!.stoppedBy).toBe("prisma-airs");
+    const open = await runPipeline(await envWith(await storedRow({ fail_mode: "allow" })), { prompt: "p", model: "m", ray: null }, down);
+    expect(open!.results[0]).toMatchObject({ outcome: "error", failedOpen: true });
+    expect(open!.stoppedBy).toBeNull();
   });
 
   it("reports a key that no longer decrypts (secret rotated) as an error, not a silent pass", async () => {
     const otherSecret = btoa(String.fromCharCode(...Array.from({ length: 32 }, () => 7)));
-    const r = await forwardPrompt(await envWith(await storedRow(), otherSecret), { prompt: "p", model: "m", ray: null });
-    expect(r).toMatchObject({ outcome: "error" });
-    expect(r?.error).toMatch(/could not be decrypted/);
+    const r = await runPipeline(await envWith(await storedRow(), otherSecret), { prompt: "p", model: "m", ray: null });
+    expect(r!.results[0]).toMatchObject({ outcome: "error" });
+    expect(r!.results[0].error).toMatch(/could not be decrypted/);
+    expect(r!.stoppedBy).toBe("prisma-airs");
+  });
+
+  it("guardrail-only applies with nothing enabled, and even without the secret — it is about the model", async () => {
+    const never = (async () => {
+      throw new Error("must not be called");
+    }) as typeof fetch;
+    const pipe = { mode: "sequential", guardrail_only: 1, provider_order: "" };
+    const a = await runPipeline(await envWith(null, SECRET, pipe), { prompt: "p", model: "m", ray: null }, never);
+    expect(a).toMatchObject({ guardrailOnly: true, results: [], stoppedBy: null });
+    const b = await runPipeline(await envWith(await storedRow(), null, pipe), { prompt: "p", model: "m", ray: null }, never);
+    expect(b).toMatchObject({ guardrailOnly: true, results: [] });
+  });
+
+  it("runs enabled providers in the STORED order, not the order D1 returns rows in", async () => {
+    // Two enabled rows, returned AIRS-first. The stored order puts CrowdStrike
+    // first; it is unsupported, so its scan is a fail-closed error that stops a
+    // sequential pipeline — which proves it ran first, and AIRS was never called.
+    const rows = [await storedRow(), await storedRow({ provider: "crowdstrike-aidr", region: "" })];
+    const env = {
+      GUARDRAIL_SECRET_KEY: SECRET,
+      DB: {
+        prepare: (sql: string) => ({
+          first: async () =>
+            sql.includes("guardrail_pipeline") ? { mode: "sequential", guardrail_only: 0, provider_order: "crowdstrike-aidr,prisma-airs" } : null,
+          all: async () => ({ results: rows }),
+        }),
+      } as unknown as D1Database,
+    } as Env;
+    const never = (async () => {
+      throw new Error("AIRS must not be called");
+    }) as typeof fetch;
+    const r = await runPipeline(env, { prompt: "p", model: "m", ray: null }, never);
+    expect(r!.results.map((x) => x.provider)).toEqual(["crowdstrike-aidr"]);
+    expect(r!.stoppedBy).toBe("crowdstrike-aidr");
+    expect(r!.notRun.map((x) => x.provider)).toEqual(["prisma-airs"]);
+  });
+
+  it("reads mode and order from the stored pipeline row", async () => {
+    const fetchImpl = (async () => Response.json({ action: "allow", category: "benign" })) as typeof fetch;
+    const pipe = { mode: "parallel", guardrail_only: 0, provider_order: "crowdstrike-aidr,prisma-airs" };
+    const r = await runPipeline(await envWith(await storedRow(), SECRET, pipe), { prompt: "p", model: "m", ray: null }, fetchImpl);
+    expect(r).toMatchObject({ mode: "parallel", guardrailOnly: false, stoppedBy: null });
   });
 });

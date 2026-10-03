@@ -5,6 +5,7 @@ import {
   handleChat,
   handleExternalGuardrails,
   handleExternalGuardrailsTest,
+  handleGuardrailPipeline,
   handleGatewayAnalytics,
   handleModels,
   handleNeurons,
@@ -53,6 +54,8 @@ export default {
         return handleExternalGuardrails(request, env);
       case "/api/external-guardrails/test":
         return handleExternalGuardrailsTest(request, env);
+      case "/api/external-guardrails/pipeline":
+        return handleGuardrailPipeline(request, env);
       case "/api/chat":
         // ctx lets the prompt-log write run without blocking the reply.
         return handleChat(request, env, ctx);

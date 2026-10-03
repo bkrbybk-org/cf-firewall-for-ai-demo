@@ -26,7 +26,7 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 | `/analytics` | **edge** (zone WAF + AI Security) and **AI Gateway** (account gateway logs), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
 | `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. Tick rows to run just a subset; choose the route, gateway and an optional Dynamic Route. |
 | `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
-| `/guardrails` | Configure an **external guardrail** each prompt is forwarded to before the model runs — Palo Alto Networks **Prisma AIRS** today (CrowdStrike AIDR listed, not yet supported). |
+| `/guardrails` | Configure **external guardrails** each prompt is forwarded to before the model runs — Palo Alto Networks **Prisma AIRS** today (CrowdStrike AIDR listed, not yet supported) — and the **traffic flow** diagram: sequential / parallel, order, and guardrail-only (skip the model). |
 
 `/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
 
@@ -53,7 +53,7 @@ src/                    Worker (TypeScript)
   openapi.ts            the OpenAPI 3.1 document served at /api/openapi.json (hand-written)
   openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
-  externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, forwardPrompt
+  externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
   *.test.ts             vitest — see Tests
@@ -62,7 +62,8 @@ migrations/
   0002_latency.sql      latency_ms + streamed columns on prompt_log
   0003_redteam_runs.sql redteam_runs + redteam_results (saved runs)
   0004_redteam_dynamic_route.sql   dynamic_route column on redteam_runs
-  0005_external_guardrails.sql     external_guardrails (one enabled at a time) + redteam_runs.external
+  0005_external_guardrails.sql     external_guardrails (one enabled at a time — lifted by 0006) + redteam_runs.external
+  0006_guardrail_pipeline.sql      guardrail_pipeline (mode, guardrail-only, order); drops the one-enabled index; redteam_runs.skipped
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
   prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod); [4] passes on a WAF 403 or a real external-guardrail block
@@ -101,7 +102,8 @@ web/                    React app (Vite root)
       analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
                         GatewayTab, PromptLogTab
       redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
-      ExternalGuardrailCard.tsx   blocked/unavailable card + reply chip for an external guardrail
+      ExternalGuardrailCard.tsx   blocked/unavailable + "model skipped" cards and reply chips for the guardrail pipeline
+      PipelineDiagram.tsx         /guardrails traffic-flow diagram + mode / order / guardrail-only controls
     pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
 dist/                   Vite build output (gitignored) → wrangler assets
 ```
@@ -143,6 +145,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/openapi.json` | This API as an OpenAPI 3.1 document — the hand-written source (see **API reference** below) |
 | `GET /api/openapi-3.0.json` | The same document as OpenAPI 3.0.3, `servers` = the requesting origin. **Upload this one to API Shield**; Swagger UI renders it |
 | `GET/PUT /api/external-guardrails` | External-guardrail configuration; API keys are write-only and never returned |
+| `PUT /api/external-guardrails/pipeline` | How enabled guardrails run: `mode` (sequential/parallel), `guardrailOnly`, `order` |
 | `POST /api/external-guardrails/test` | Scan a fixed benign prompt with the **saved** configuration |
 | `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
 
@@ -150,7 +153,7 @@ Everything else falls through to the static assets (SPA fallback).
 
 ### API reference (OpenAPI + Swagger UI)
 
-The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, down-converted to **OpenAPI 3.0.3** at **`/api/openapi-3.0.json`**, which **Swagger UI at `/api-docs/`** renders (`/api-docs` redirects; every page links it as **API docs ↗** at the right end of the tab strip). It documents all 14 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
+The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, down-converted to **OpenAPI 3.0.3** at **`/api/openapi-3.0.json`**, which **Swagger UI at `/api-docs/`** renders (`/api-docs` redirects; every page links it as **API docs ↗** at the right end of the tab strip). It documents all 15 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
 
 - **Why a 3.0 copy.** Cloudflare API Shield Schema Validation parses uploads with OAS 3.0 semantics only and rejects relative server URLs; the 3.1 file fails at upload with `cannot unmarshal 'number' in field 'components.schemas.properties.exclusiveMinimum' of type 'bool'`. `src/openapi30.ts` rewrites only the 3.1-only forms, each preserving what the schema accepts: `type: [T, "null"]` → `nullable`, `const` → one-value `enum`, numeric `exclusiveMinimum` → `minimum` + `exclusiveMinimum: true`, `examples` → `example`, `servers` → the absolute origin. It walks schemas only (never example payloads or property *names*) and refuses a union 3.0 cannot express; `src/openapi30.test.ts` checks the result is valid 3.0, holds no 3.1-only keyword, and leaves every `ChatRequest` field equivalent. **Before enforcing** Schema Validation: some request bounds are stricter than the Worker, which clamps instead (`systemPrompt` over 2000 chars, `maxAttempts` outside 1–5), so such requests would be flagged. Watch `cf.schema_validation.uploaded.violated` first.
 - **Swagger targets its own origin.** The initializer replaces `servers` with `window.location.origin` before rendering: under `wrangler dev` the Worker sees the *route's* hostname over http, so an unpatched Try it out on localhost would send real requests to prod.
@@ -212,11 +215,25 @@ npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for 
 
 ## External guardrails (Prisma AIRS)
 
-`/guardrails` configures a third-party guardrail that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) is implemented; CrowdStrike AIDR is listed as not yet supported. **Only one provider can be enabled at a time** — enforced by a unique partial index in D1, not just by the UI.
+`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) is implemented; CrowdStrike AIDR is listed as not yet supported (its API is publicly documented at `aidr-docs.crowdstrike.com`; it is the next integration).
 
-**What you configure:** region (the endpoint), API key, AI security profile name, the fail mode, and the enable toggle. *Test connection* scans a fixed benign prompt with the **saved** settings.
+**What you configure, per provider:** region (the endpoint), API key, AI security profile name, the fail mode, and the enable toggle. *Test connection* scans a fixed benign prompt with the **saved** settings.
 
-**How a prompt flows:**
+### Traffic flow (the pipeline)
+
+The top of the page is a **live diagram drawn from the saved settings**: `Prompt → Edge WAF 🔒 → external guardrails → Model + AI Gateway Guardrails 🔒 → Reply`. Only the middle is configurable, and the diagram says why: the edge WAF runs before the Worker, and AI Gateway Guardrails run inside the model call (gateway route only). Any number of providers may be enabled.
+
+| Setting | Behaviour |
+|---|---|
+| **Sequential** (default) | Guardrails run in the order shown (↑/↓ to reorder). The first one that stops the turn ends it; later ones are listed as *not run* with the reason. Latency adds up. |
+| **Parallel** | All run at once; the model runs only if **every** one lets the prompt through. The Worker **waits for all of them** (each capped by its 5 s timeout) so every verdict is shown, even when one blocks early. Latency is the slowest one. |
+| **Guardrail-only** | The model is **never called** — for testing the checks without model cost. Applies to chat **and** Red Team runs (one global switch, with an amber banner while it is on). A passing prompt returns HTTP 200 `{guardrailOnly: true}` with no reply, tokens or cost; AI Gateway Guardrails do not run either. With no guardrail enabled it is an edge-only test. |
+
+Saved via `PUT /api/external-guardrails/pipeline` (`mode`, `guardrailOnly`, `order`) into the one-row `guardrail_pipeline` table (migration `0006`). An `order` that is not exactly every provider once is **rejected**, not repaired; a stored order is normalised on read so a provider can never vanish from the pipeline. The engine (`executePipeline`) is pure and tested with fake providers — call order, short-circuit, parallel wall clock, fail-open vs fail-closed.
+
+**Guardrail-only is honest everywhere:** chat shows a "Model skipped — guardrail-only mode" card (never an assistant message); the edge verdict under it says *"Passed the edge … The model was skipped"* rather than "Reached the model"; the prompt log records outcome `skipped`; Red Team results keep their real edge verdict (allow/log — that **is** what the edge did, so the headline is unchanged) but are tagged *model skipped*, and the scorecard says how many of the "reached" ones no model answered (`RtScore.skipped`, stored as `redteam_runs.skipped`).
+
+**How one guardrail's result is handled:**
 
 | Prisma AIRS says | What happens | Shown as |
 |---|---|---|
@@ -225,7 +242,7 @@ npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for 
 | unreachable / error, fail mode **block** (default) | model does not run | amber card "Prisma AIRS unavailable — prompt not sent", stating it is **not a verdict** |
 | unreachable / error, fail mode **allow** | model runs **unscanned** | amber chip "sent unscanned" |
 
-A block is deliberately a **200**, never a 403: 403 on this route means the edge WAF, and both the chat and the red-team runner attribute it that way. External blocks are their own outcome everywhere — `external` in the prompt log, the red-team state `external` (excluded from the "reached the model" denominator like AI Gateway Guardrails), the amber chart series — so no control is credited with another's block. The verdict rides in the `x-external-guardrail` response header (URI-encoded JSON) as well, because a streamed reply has no JSON body.
+A block is deliberately a **200**, never a 403: 403 on this route means the edge WAF, and both the chat and the red-team runner attribute it that way. External blocks are their own outcome everywhere — `external` in the prompt log, the red-team state `external` (excluded from the "reached the model" denominator like AI Gateway Guardrails), the amber chart series — so no control is credited with another's block. With several guardrails, the deciding result is the one named by `externalGuardrails.stoppedBy` — never simply the first. The whole pipeline result rides in the `x-external-guardrails` response header (URI-encoded JSON) as well, because a streamed reply has no JSON body. The edge verdict under an external block now reads *"Passed the edge …, then an external guardrail stopped it. The model never ran."* — before this it wrongly said "Reached the model".
 
 **Security decisions:**
 
@@ -235,7 +252,7 @@ A block is deliberately a **200**, never a 403: 403 on this route means the edge
 - **Prompts leave Cloudflare** for Palo Alto Networks when this is enabled. The page says so.
 - **Latency stays honest:** the model-latency clock restarts after the guardrail, and a blocked turn is logged with no latency at all, so a guardrail round trip is never averaged in with model latencies.
 
-**Setup** (one time): `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (migration `0005`), then `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (and add `GUARDRAIL_SECRET_KEY=…` to `.env` for `wrangler dev`). Rotating that secret makes the stored key undecryptable — the chat then reports the guardrail as unavailable and you re-enter the key.
+**Setup** (one time): `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (migrations `0005` and `0006`), then `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (and add `GUARDRAIL_SECRET_KEY=…` to `.env` for `wrangler dev`). Rotating that secret makes the stored key undecryptable — the chat then reports the guardrail as unavailable and you re-enter the key.
 
 **Limits worth knowing:** *Test connection* and every forwarded prompt use a 5 s timeout. **Local `wrangler dev` cannot reach PANW's hosts** (local workerd throws `internal error` on that fetch — reproduced with a minimal worker containing none of this code, while `curl` from the same machine works), so locally the guardrail always errors; verify against prod.
 
@@ -506,7 +523,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **270 tests across 18 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **293 tests across 19 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -516,7 +533,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `src/config.test.ts` (12) | `normalizeDynamicRoute` — accepts both `demo-routes` and `dynamic/demo-routes`, returns `null` (never a silently wrong value) for traversal or junk · `promptLogEnabled` — only the exact string `"true"` enables it; `"True"`, `"1"`, `"yes"`, `""` etc. all read as off (fails closed) |
 | `src/verdict-window.test.ts` (9) | `verdictWindow()` anchored vs. live bracketing (incl. the regression itself) and `isBeyondRetention()` — an unknown timestamp must never read as expired |
 | `web/src/lib/verdict.test.ts` (8) | Built from a real incident's payload: a 403 with only log-only rules classifies as `denied`, not `log` |
-| `web/src/lib/redteam.test.ts` (37) | The red-team scoring contract, corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns · `attackKey` (same prompt ⇒ same key across uploads and reorderings), `corpusFingerprint`, and `diffRuns` (refuses cross-corpus comparison; scores only the shared attacks so an added already-blocked attack cannot read as an improvement) |
+| `web/src/lib/redteam.test.ts` (39) | The red-team scoring contract (including guardrail-only: still `reached`, counted apart as `skipped`, never outside `reached`), corpus integrity (36 unique ids), and that the PDF's SARA-AM artifact never returns · `attackKey` (same prompt ⇒ same key across uploads and reorderings), `corpusFingerprint`, and `diffRuns` (refuses cross-corpus comparison; scores only the shared attacks so an added already-blocked attack cannot read as an improvement) |
 | `web/src/lib/metadata.test.ts` (6) | The 5-entry metadata cap and malformed-pair handling |
 | `web/src/lib/attackCsv.test.ts` (22) | Custom-corpus CSV parsing — quoted fields, embedded newlines, doubled quotes, BOM, CRLF, the 200-row cap, and rejecting a file with no `prompt` column instead of guessing |
 | `src/promptlog.test.ts` (18) | The prompt-log query builder — offset clamping past the old 200-row ceiling, LIKE-wildcard escaping, and an ORDER BY whitelist that discards anything not on it (the one place a column name reaches SQL) |
@@ -526,7 +543,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
-| `src/externalGuardrails.test.ts` (20) | Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
+| `src/externalGuardrails.test.ts` (32) | **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 

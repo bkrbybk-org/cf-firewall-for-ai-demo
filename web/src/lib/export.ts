@@ -4,7 +4,7 @@ import { getVerdict } from "./api";
 import { topicLabel } from "./format";
 import { verdictOutcome } from "./verdict";
 import type { Msg } from "../hooks/useChat";
-import type { Verdict as VerdictData } from "./types";
+import type { GuardrailPipelineResult, Verdict as VerdictData } from "./types";
 
 type VerdictSummary =
   | {
@@ -19,11 +19,41 @@ type VerdictSummary =
     }
   | { available: false; reason: string };
 
+// What the external guardrail pipeline did, kept to the facts a reader needs to
+// audit a turn. `outcome: "error"` is exported as-is — never as a detection.
+interface ExportGuardrails {
+  mode: string;
+  stoppedBy: string | null;
+  results: { provider: string; outcome: string; latencyMs: number; failedOpen?: boolean; category?: string; detected?: string[] }[];
+  notRun: { provider: string; reason: string }[];
+  latencyMs: number;
+}
+
+function summarizePipeline(p: GuardrailPipelineResult): ExportGuardrails {
+  return {
+    mode: p.mode,
+    stoppedBy: p.stoppedBy,
+    results: p.results.map((r) => ({
+      provider: r.provider,
+      outcome: r.outcome,
+      latencyMs: r.latencyMs,
+      failedOpen: r.failedOpen || undefined,
+      category: r.category,
+      detected: r.detected,
+    })),
+    notRun: p.notRun,
+    latencyMs: p.latencyMs,
+  };
+}
+
 export interface ExportTurn {
   ts: string;
   tsMs: number; // epoch ms — anchors this turn's verdict lookup
   prompt: string;
-  outcome: "reply" | "blocked" | "error";
+  // "skipped" = guardrail-only: the model was deliberately not called, so there
+  // is no reply and it is neither a block nor an error.
+  outcome: "reply" | "skipped" | "blocked" | "error";
+  externalGuardrails?: ExportGuardrails;
   model?: string;
   ray?: string;
   reply?: string;
@@ -65,6 +95,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
         reply: next.text,
         usage: next.meta.usage,
         cost: next.meta.cost,
+        externalGuardrails: next.meta.externalGuardrails && summarizePipeline(next.meta.externalGuardrails),
       });
     } else if (next.kind === "blocked") {
       turns.push({
@@ -90,10 +121,13 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
             : "prompt blocked by AI Gateway Guardrails (2016)",
       });
     } else if (next.kind === "external") {
-      const r = next.result;
+      const p = next.pipeline;
+      // The deciding result is the one `stoppedBy` names, not results[0].
+      const r = p.results.find((x) => x.provider === p.stoppedBy);
+      const externalGuardrails = summarizePipeline(p);
       // A fail-closed provider error stopped the turn too, but it is not a
       // verdict — export it as an error so the report never claims a detection.
-      if (r.outcome === "block") {
+      if (r?.outcome === "block") {
         turns.push({
           ts: next.ts,
           tsMs: next.tsMs,
@@ -102,10 +136,30 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
           ray: next.ray,
           detection: `external-guardrail:${r.provider}`,
           reason: `blocked by ${r.provider} (${r.category ?? "no category"}${r.detected?.length ? `: ${r.detected.join(", ")}` : ""})${r.scanId ? ` · scan ${r.scanId}` : ""}`,
+          externalGuardrails,
         });
       } else {
-        turns.push({ ts: next.ts, tsMs: next.tsMs, prompt: m.text, outcome: "error", errorText: `${r.provider} unavailable: ${r.error ?? "unknown error"}` });
+        turns.push({
+          ts: next.ts,
+          tsMs: next.tsMs,
+          prompt: m.text,
+          outcome: "error",
+          ray: next.ray,
+          errorText: r
+            ? `${r.provider} unavailable: ${r.error ?? "unknown error"}`
+            : `stopped by ${p.stoppedBy ?? "an external guardrail"}, but no result was returned for it`,
+          externalGuardrails,
+        });
       }
+    } else if (next.kind === "guardrailOnly") {
+      turns.push({
+        ts: next.ts,
+        tsMs: next.tsMs,
+        prompt: m.text,
+        outcome: "skipped",
+        ray: next.ray,
+        externalGuardrails: next.pipeline && summarizePipeline(next.pipeline),
+      });
     } else if (next.kind === "error") {
       turns.push({ ts: next.ts, tsMs: next.tsMs, prompt: m.text, outcome: "error", errorText: next.text });
     }
@@ -181,12 +235,33 @@ export function toMarkdown(exp: SessionExport): string {
       lines.push(`**Blocked** — ${t.detection ?? "waf"}: ${t.reason ?? "blocked by Cloudflare AI Security"}`);
     } else if (t.outcome === "error") {
       lines.push(`**Error** — ${t.errorText}`);
+    } else if (t.outcome === "skipped") {
+      // Not a reply: nothing answered, so no model, tokens or cost to report.
+      lines.push(
+        "**Model skipped** — guardrail-only mode. The prompt passed the edge WAF" +
+          (t.externalGuardrails?.results.length ? " and every enabled external guardrail" : "; no external guardrail was enabled") +
+          ". The model was not called, and AI Gateway Guardrails did not run.",
+      );
     } else {
       const cost = t.cost != null ? `, ~$${t.cost.toFixed(6)}` : "";
       lines.push(`**Reply** (${t.model ?? "model"}${cost}):`, "", t.reply ?? "");
     }
     lines.push("");
     if (t.ray) lines.push(`ray: \`${t.ray}\``);
+    if (t.externalGuardrails) {
+      const g = t.externalGuardrails;
+      lines.push(`external guardrails (${g.mode}, ${g.latencyMs} ms total):`);
+      for (const r of g.results) {
+        const what =
+          r.outcome === "error"
+            ? r.failedOpen
+              ? "unavailable — ran unscanned (fail open)"
+              : "unavailable — not a verdict"
+            : r.outcome;
+        lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${r.provider === g.stoppedBy ? " — stopped the turn" : ""}`);
+      }
+      for (const n of g.notRun) lines.push(`- ${n.provider}: did not run — ${n.reason}`);
+    }
     if (t.verdict?.available) {
       const v = t.verdict;
       lines.push(`edge verdict: **${v.action}**`);

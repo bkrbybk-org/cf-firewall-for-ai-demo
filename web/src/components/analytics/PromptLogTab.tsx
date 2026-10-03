@@ -34,8 +34,14 @@ const OUTCOME_TONE: Record<string, string> = {
   reply: "border-cf-green/50 text-cf-green",
   guardrails: "border-cf-purple/50 text-cf-purple",
   external: "border-cf-amber/50 text-cf-amber",
+  // Guardrail-only: passed every check, the model was never called. Blue, like
+  // its series — a neutral "nothing answered", not a reply (green) or a block.
+  skipped: "border-cf-blue/50 text-cf-blue",
   error: "border-cf-red/50 text-cf-red",
 };
+
+// Outcomes whose stored value reads badly as a label.
+const OUTCOME_LABEL: Record<string, string> = { skipped: "model skipped" };
 
 type SortKey = "ts" | "outcome" | "route" | "model" | "tokens" | "redactions" | "latency";
 type SortDir = "asc" | "desc";
@@ -132,7 +138,7 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
           <span
             className={`rounded-full border px-1.5 py-px text-[10px] font-semibold ${OUTCOME_TONE[r.outcome] ?? "border-line text-muted"}`}
           >
-            {r.outcome}
+            {OUTCOME_LABEL[r.outcome] ?? r.outcome}
           </span>
         </td>
         <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">
@@ -191,7 +197,9 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
                 </div>
               ) : (
                 <div className="text-[11px] text-subtle">
-                  Reply not captured{r.outcome === "reply" ? " (streamed)" : ""}.
+                  {r.outcome === "skipped"
+                    ? "No reply — the model was skipped (guardrail-only mode)."
+                    : `Reply not captured${r.outcome === "reply" ? " (streamed)" : ""}.`}
                 </div>
               )}
               <div className="text-[11px] text-subtle">
@@ -207,7 +215,14 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
               {/* The cf-ray join to the live edge verdict — the whole point.
                   `ts` anchors the lookup to when the request happened, so old
                   rows resolve instead of falling outside a window around now. */}
-              <Verdict ray={r.ray} ts={r.ts} prompt={r.prompt} />
+              {/* stoppedInWorker for rows the model never saw — otherwise an
+                  allowed edge verdict is headlined "Reached the model". */}
+              <Verdict
+                ray={r.ray}
+                ts={r.ts}
+                prompt={r.prompt}
+                stoppedInWorker={r.outcome === "external" ? "external" : r.outcome === "skipped" ? "skipped" : undefined}
+              />
             </div>
           </td>
         </tr>

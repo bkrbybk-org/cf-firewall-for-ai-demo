@@ -47,12 +47,19 @@ export interface RtRouteConfig {
   delayMs?: number;
 }
 
+// What one send produced, before its edge verdict is looked up. "skipped" =
+// guardrail-only: the prompt passed the edge and every external guardrail and
+// the model was deliberately not called. Edge-wise that is the same fact as a
+// reply (the request got through), so it resolves like one — but the result is
+// flagged `modelSkipped`, because no model ever answered it.
+type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "error";
+
 // One send through /api/chat, classified the same way useChat classifies a
 // non-stream response — but with no side effects on the message store.
 async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
-): Promise<{ ray?: string; kind: "reply" | "blocked" | "guardrails" | "external" | "error" }> {
+): Promise<{ ray?: string; kind: SendKind }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
@@ -78,10 +85,15 @@ async function sendOne(
     // reply is what an external-guardrail block looks like, and scoring it as a
     // failed request would hide every prompt Prisma AIRS stopped. A fail-closed
     // ERROR (provider unreachable) is also a 200 here; it is not a verdict, so
-    // it scores as an error rather than as a block.
+    // it scores as an error rather than as a block. With several guardrails the
+    // one that decides is `stoppedBy` — not whichever result happens to be first.
     if (data?.externalGuardrailBlocked) {
-      return { ray, kind: data.externalGuardrail?.outcome === "block" ? "external" : "error" };
+      const p = data.externalGuardrails;
+      const stopper = p?.results.find((r) => r.provider === p.stoppedBy);
+      return { ray, kind: stopper?.outcome === "block" ? "external" : "error" };
     }
+    // Guardrail-only: also a 200 with no reply, and also not a failure.
+    if (status >= 200 && status < 300 && data?.guardrailOnly) return { ray, kind: "skipped" };
     if (status >= 200 && status < 300 && data?.reply) return { ray, kind: "reply" };
     return { ray, kind: "error" };
   } catch {
@@ -93,11 +105,13 @@ async function sendOne(
 async function resolveState(
   ray: string | undefined,
   ts: number,
-  kind: "reply" | "blocked" | "guardrails" | "external" | "error",
+  sendKind: SendKind,
 ): Promise<RtResultState> {
-  if (kind === "guardrails") return "guardrails";
-  if (kind === "external") return "external";
-  if (kind === "error") return "error";
+  if (sendKind === "guardrails") return "guardrails";
+  if (sendKind === "external") return "external";
+  if (sendKind === "error") return "error";
+  // Got past the edge and the guardrails — the same edge fact as a reply.
+  const kind = sendKind === "skipped" ? "reply" : sendKind;
   // A 200 reply is ground truth that the request reached the model; a 403 is
   // ground truth that something at the edge stopped it. The verdict lookup
   // refines *which* — but can never overturn those facts, so we clamp.
@@ -201,7 +215,7 @@ export function useRedTeam(): RedTeamRun {
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
-    const sent: { id: string; ray?: string; ts: number; kind: "reply" | "blocked" | "guardrails" | "external" | "error" }[] = [];
+    const sent: { id: string; ray?: string; ts: number; kind: SendKind }[] = [];
     const delayMs = Math.max(0, cfg.delayMs ?? 0);
     for (let i = 0; i < corpus.length; i++) {
       const a = corpus[i];
@@ -249,6 +263,7 @@ export function useRedTeam(): RedTeamRun {
       const state = await resolveState(s.ray, s.ts, s.kind);
       if (stopRef.current) return;
       const result: RtRunResult = { id: s.id, ray: s.ray, ts: s.ts, state };
+      if (s.kind === "skipped") result.modelSkipped = true;
       out.set(s.id, result);
       setResults(new Map(out));
       setOne(s.id, state);

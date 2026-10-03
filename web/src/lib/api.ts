@@ -4,7 +4,8 @@ import type {
   ChatResponse,
   ChatTurn,
   ExternalGuardrailProvider,
-  ExternalGuardrailResult,
+  GuardrailPipelineResult,
+  GuardrailPipelineUpdate,
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
@@ -267,19 +268,32 @@ export interface ChatStreamResult {
   // `model` field (OpenAI-shape chunks only — e.g. a Dynamic Route response).
   // null for the plain Workers AI binding stream, whose chunks carry no model.
   model: string | null;
-  // External guardrail verdict for a streamed reply. A stream has no JSON body
-  // to carry it, so the Worker sends it in the `x-external-guardrail` response
-  // header (URI-encoded JSON). null when no external guardrail is enabled.
-  externalGuardrail: ExternalGuardrailResult | null;
+  // External guardrail verdicts for a streamed reply. A stream has no JSON body
+  // to carry them, so the Worker sends them in the `x-external-guardrails`
+  // response header (URI-encoded JSON). null when the pipeline did not run.
+  externalGuardrails: GuardrailPipelineResult | null;
+}
+
+// PUT /api/external-guardrails/pipeline — returns the new state on success;
+// `{ error }` (HTTP 400) when the update is rejected.
+export async function saveGuardrailPipeline(
+  update: GuardrailPipelineUpdate,
+): Promise<ExternalGuardrailsState & { error?: string }> {
+  const r = await fetch("/api/external-guardrails/pipeline", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  return r.json();
 }
 
 export type ChatResult = ChatJsonResult | ChatStreamResult;
 
-function readExternalGuardrailHeader(h: Headers): ExternalGuardrailResult | null {
-  const raw = h.get("x-external-guardrail");
+function readExternalGuardrailHeader(h: Headers): GuardrailPipelineResult | null {
+  const raw = h.get("x-external-guardrails");
   if (!raw) return null;
   try {
-    return JSON.parse(decodeURIComponent(raw)) as ExternalGuardrailResult;
+    return JSON.parse(decodeURIComponent(raw)) as GuardrailPipelineResult;
   } catch {
     return null;
   }
@@ -328,7 +342,7 @@ export async function postChat(
   });
   const contentType = res.headers.get("content-type") || "";
   const rayHeader = res.headers.get("cf-ray");
-  const externalGuardrail = readExternalGuardrailHeader(res.headers);
+  const externalGuardrails = readExternalGuardrailHeader(res.headers);
 
   if (!contentType.includes("text/event-stream")) {
     const raw = await res.text();
@@ -339,7 +353,7 @@ export async function postChat(
       /* not JSON (block page) */
     }
     if (data && rayHeader && !data.ray) data.ray = rayHeader;
-    if (data && externalGuardrail && !data.externalGuardrail) data.externalGuardrail = externalGuardrail;
+    if (data && externalGuardrails && !data.externalGuardrails) data.externalGuardrails = externalGuardrails;
     return {
       mode: "json",
       status: res.status,
@@ -408,6 +422,6 @@ export async function postChat(
   }
   if (buffer) handleLine(buffer);
 
-  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway, model, externalGuardrail };
+  return { mode: "stream", status: res.status, ray: rayHeader, text, usage, gateway, model, externalGuardrails };
 }
 

@@ -448,6 +448,11 @@ export interface RtRunResult {
   ray?: string;
   ts?: number;
   state: RtResultState;
+  // Guardrail-only: the edge and every external guardrail let it through, and
+  // the model was deliberately not called. The state is still the real edge
+  // verdict (allow/log) — scoring is about what the edge did — but no model
+  // answered, so the UI must never present it as an answered prompt.
+  modelSkipped?: boolean;
 }
 
 // Map a settled edge Outcome to the run state. `guardrails` is decided upstream
@@ -479,6 +484,7 @@ export interface RtScore {
   denied: number; // non-WAF refusals (excluded)
   guardrails: number; // AI Gateway Guardrails blocks (excluded from headline)
   external: number; // external-guardrail blocks (excluded from headline, counted apart from Guardrails)
+  skipped: number; // of `reached`: got through, but guardrail-only — no model answered
   pending: number; // no verdict yet (excluded)
   error: number; // request failed (excluded)
   reachedPct: number; // reached / scored, 0 when scored === 0
@@ -491,10 +497,16 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     denied = 0,
     guardrails = 0,
     external = 0,
+    skipped = 0,
     pending = 0,
     error = 0;
   for (const r of results) {
-    if (isReachedModel(r.state)) reached++;
+    if (isReachedModel(r.state)) {
+      reached++;
+      // Only counted inside `reached`: a skipped flag on a blocked result
+      // would be meaningless, so it can never inflate anything else.
+      if (r.modelSkipped) skipped++;
+    }
     else if (isStoppedAtEdge(r.state)) stopped++;
     else if (r.state === "denied") denied++;
     else if (r.state === "guardrails") guardrails++;
@@ -511,6 +523,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     denied,
     guardrails,
     external,
+    skipped,
     pending,
     error,
     reachedPct: scored === 0 ? 0 : Math.round((reached / scored) * 100),

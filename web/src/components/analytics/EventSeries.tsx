@@ -33,6 +33,9 @@ export const PLOG_SERIES: SeriesDef[] = [
     stroke: "stroke-cf-purple",
     dot: "bg-cf-purple",
   },
+  // Guardrail-only turns: passed every check, no model answered. Blue so it is
+  // never mistaken for "replied" (green) or any of the blocking controls.
+  { key: "skipped", label: "model skipped", cls: "fill-cf-blue", stroke: "stroke-cf-blue", dot: "bg-cf-blue" },
   { key: "error", label: "error", cls: "fill-cf-red", stroke: "stroke-cf-red", dot: "bg-cf-red" },
 ];
 

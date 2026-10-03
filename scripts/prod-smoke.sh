@@ -116,7 +116,10 @@ CODE=$(curl -s -o /tmp/smoke4.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" 
   -d '{"prompt":"my credit card is 4111 1111 1111 1111","stream":false,"excludeFromLog":true}' --max-time 60)
 if [[ "$CODE" == "200" ]] && node -e '
   const b = JSON.parse(require("fs").readFileSync("/tmp/smoke4.txt", "utf8"));
-  process.exit(b.externalGuardrailBlocked === true && b.externalGuardrail?.outcome === "block" ? 0 : 1);
+  // The deciding result is the one named by stoppedBy — not results[0].
+  const p = b.externalGuardrails;
+  const stopper = p?.results?.find((r) => r.provider === p.stoppedBy);
+  process.exit(b.externalGuardrailBlocked === true && stopper?.outcome === "block" ? 0 : 1);
 ' 2>/dev/null; then
   check "POST /api/chat (PII → ext. guardrail)" 200 /tmp/smoke4.txt "$CODE"
   echo "      ↳ blocked by the EXTERNAL guardrail, not the edge WAF — the zone's PII rule is not blocking"

@@ -93,18 +93,58 @@ export interface ChatResponse {
   direction?: "prompt" | "response";
   detail?: string;
   dynamicRoute?: string; // echoed back when the reply came from a dynamic route
-  // External guardrail (e.g. Palo Alto Networks Prisma AIRS). When it blocked the
-  // turn the response is a 200 with `externalGuardrailBlocked: true` — never a
-  // 403, which is reserved for the edge WAF so the two are never confused. On a
-  // reply it carries the verdict that let the prompt through.
+  // External guardrail pipeline (e.g. Palo Alto Networks Prisma AIRS). When it
+  // stopped the turn the response is a 200 with `externalGuardrailBlocked: true`
+  // — never a 403, which is reserved for the edge WAF so the two are never
+  // confused. On a reply it carries the verdicts that let the prompt through.
   externalGuardrailBlocked?: boolean;
-  externalGuardrail?: ExternalGuardrailResult;
+  // Guardrail-only mode: the prompt passed the edge and every enabled external
+  // guardrail, and the model was deliberately NOT called (no reply, no tokens,
+  // no cost). AI Gateway Guardrails did not run either — they are part of the
+  // model call. Never render this as a model answer.
+  guardrailOnly?: boolean;
+  externalGuardrails?: GuardrailPipelineResult;
 }
 
 // ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
-// A third-party guardrail the Worker forwards each prompt to before calling the
-// model. At most one provider is enabled at a time (enforced in D1).
+// Third-party guardrails the Worker forwards each prompt to before calling the
+// model. Any number may be enabled; the pipeline config decides how they run.
 export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
+
+// How enabled guardrails run, between the edge WAF (always first, before the
+// Worker) and the model (where AI Gateway Guardrails run, gateway route only):
+//   sequential — in `order`; the first one that stops the turn ends it, and the
+//                rest do not run (listed in `notRun`). Latency adds up.
+//   parallel   — all at once; the model runs only if EVERY one lets it through.
+//                The Worker waits for all of them (each is capped by its own
+//                timeout), so every verdict is shown. Latency = the slowest.
+export type GuardrailPipelineMode = "sequential" | "parallel";
+
+export interface GuardrailPipelineConfig {
+  mode: GuardrailPipelineMode;
+  // Stop before the model: for testing the checks without model cost. Applies
+  // to chat AND red-team runs (one global switch).
+  guardrailOnly: boolean;
+  order: ExternalGuardrailProvider[]; // every provider exactly once; sequential order
+}
+
+// PUT /api/external-guardrails/pipeline. Omitted fields are left unchanged.
+// `order` must list every provider exactly once.
+export type GuardrailPipelineUpdate = Partial<GuardrailPipelineConfig>;
+
+// What the pipeline did for one prompt.
+export interface GuardrailPipelineResult {
+  mode: GuardrailPipelineMode;
+  guardrailOnly: boolean;
+  // One per guardrail that ran, in the order run (sequential) or configured order (parallel).
+  // Empty when none is enabled (possible in guardrail-only mode: edge-only test).
+  results: ExternalGuardrailResult[];
+  // Enabled guardrails that did not run because an earlier one stopped the turn (sequential).
+  notRun: { provider: ExternalGuardrailProvider; reason: string }[];
+  // The guardrail whose result stopped the turn, or null when the turn went on.
+  stoppedBy: ExternalGuardrailProvider | null;
+  latencyMs: number; // wall clock for the whole pipeline
+}
 
 // What one forwarded prompt produced. `outcome` is what the Worker DID:
 //   allow — the provider said allow; the model ran.
@@ -157,6 +197,7 @@ export interface ExternalGuardrailsState {
   // false → the encryption secret or D1 binding is missing; `setupHint` says what to do
   configured: boolean;
   providers: ExternalGuardrailConfig[];
+  pipeline: GuardrailPipelineConfig;
   setupHint?: string;
   error?: string;
 }
@@ -165,7 +206,7 @@ export interface ExternalGuardrailsState {
 // (never echoed back); `clearApiKey: true` deletes it (and disables the provider).
 export interface ExternalGuardrailUpdate {
   provider: ExternalGuardrailProvider;
-  enabled?: boolean; // enabling one provider disables every other
+  enabled?: boolean;
   region?: string;
   profileName?: string;
   failMode?: "block" | "allow";
@@ -262,7 +303,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number;
-  outcome: "reply" | "guardrails" | "external" | "error"; // external = an external guardrail (Prisma AIRS) blocked it
+  outcome: "reply" | "guardrails" | "external" | "skipped" | "error"; // external = an external guardrail blocked it; skipped = guardrail-only, model not called
   prompt: string;
   reply: string | null;
   redactions: number;
@@ -300,7 +341,7 @@ export interface PromptAnalytics {
   byRoute?: { route: string; count: number }[];
   byModel?: { model: string; count: number; promptTokens: number; completionTokens: number }[];
   repeated?: { prompt: string; count: number; redactions: number }[];
-  series?: { t: string; reply: number; guardrails: number; external: number; error: number }[];
+  series?: { t: string; reply: number; guardrails: number; external: number; skipped: number; error: number }[];
   bucket?: "5m" | "hour" | "day";
   firstTs?: number | null;
   lastTs?: number | null;
@@ -355,6 +396,7 @@ export interface RedTeamRunRow {
   denied: number;
   guardrails: number;
   external: number; // blocked by an external guardrail (Prisma AIRS)
+  skipped: number; // of `reached`: passed every check but guardrail-only, so no model answered
   pending: number;
   error: number;
   reachedPct: number;

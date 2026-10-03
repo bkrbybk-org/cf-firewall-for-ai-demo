@@ -58,8 +58,8 @@ export function buildPromptLogQuery(p: PromptLogParams): PromptLogQuery {
     binds.push(p.route);
   }
   const outcomes = (p.outcomes ?? []).filter(
-    (o): o is "reply" | "guardrails" | "external" | "error" =>
-      o === "reply" || o === "guardrails" || o === "external" || o === "error",
+    (o): o is "reply" | "guardrails" | "external" | "skipped" | "error" =>
+      o === "reply" || o === "guardrails" || o === "external" || o === "skipped" || o === "error",
   );
   if (outcomes.length) {
     where.push(`outcome IN (${outcomes.map(() => "?").join(",")})`);

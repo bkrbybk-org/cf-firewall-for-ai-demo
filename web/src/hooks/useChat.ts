@@ -10,7 +10,7 @@ import { postChat, type GatewayBackoff } from "../lib/api";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
-import type { ChatTurn, ExternalGuardrailResult, GatewayMeta, Model, Usage } from "../lib/types";
+import type { ChatTurn, GatewayMeta, GuardrailPipelineResult, Model, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
@@ -67,7 +67,7 @@ export type Msg =
         cost?: number | null;
         gateway?: GatewayMeta; // set when this reply was routed via AI Gateway
         dynamicRoute?: string; // set when a dynamic route chose the model
-        externalGuardrail?: ExternalGuardrailResult; // the external guardrail's verdict that let it through
+        externalGuardrails?: GuardrailPipelineResult; // the pipeline verdicts that let it through
       };
       ray?: string;
     }
@@ -97,17 +97,37 @@ export type Msg =
       id: number;
       // Stopped by an external guardrail (Prisma AIRS) inside the Worker — its
       // own kind, never folded into "blocked" (the edge WAF) or "guardrails"
-      // (AI Gateway), so each control is credited only with what it did.
+      // (AI Gateway), so each control is credited only with what it did. The
+      // deciding result is `pipeline.stoppedBy`'s, not results[0].
       kind: "external";
       ts: string;
       tsMs: number;
       ray?: string;
-      result: ExternalGuardrailResult;
+      pipeline: GuardrailPipelineResult;
+    }
+  | {
+      id: number;
+      // Guardrail-only mode: passed the edge and every enabled guardrail, and the
+      // model was deliberately not called. Its own kind, never an "assistant"
+      // message — there is no reply, and it must not enter multi-turn history.
+      // `pipeline` is optional only because a response may omit it; results can
+      // legitimately be empty (edge-only test).
+      kind: "guardrailOnly";
+      ts: string;
+      tsMs: number;
+      ray?: string;
+      pipeline?: GuardrailPipelineResult;
     }
   | { id: number; kind: "error"; text: string; ts: string; tsMs: number }
 
 export interface TurnResult {
-  kind: "reply" | "blocked" | "error";
+  // "skipped" = guardrail-only: it got past the edge but no model answered, so
+  // callers that wait on an edge verdict can treat it like a reply (the edge did
+  // see it) without claiming the model responded.
+  // "external" = an external guardrail stopped it INSIDE the Worker — the edge
+  // let it through. Not "blocked": DemoMode reads "blocked" as a definitive edge
+  // 403 and would credit the WAF with Prisma AIRS's block.
+  kind: "reply" | "skipped" | "external" | "blocked" | "error";
   ray?: string;
 }
 
@@ -275,7 +295,7 @@ export function useChat(cfg: {
                     cost,
                     gateway: gwMeta,
                     dynamicRoute: routeMeta,
-                    externalGuardrail: result.externalGuardrail ?? undefined,
+                    externalGuardrails: result.externalGuardrails ?? undefined,
                   },
                 }
               : m,
@@ -302,9 +322,19 @@ export function useChat(cfg: {
             reason: data?.reason,
           });
           outcome = { kind: "blocked", ray };
-        } else if (data?.externalGuardrailBlocked && data.externalGuardrail) {
-          push({ id: nextId(), kind: "external", ...stamp(), ray, result: data.externalGuardrail });
-          outcome = { kind: "blocked", ray };
+        } else if (data?.externalGuardrailBlocked && data.externalGuardrails) {
+          push({ id: nextId(), kind: "external", ...stamp(), ray, pipeline: data.externalGuardrails });
+          outcome = { kind: "external", ray };
+        } else if (data?.externalGuardrailBlocked) {
+          // Stopped, but with no pipeline detail to render. Say so rather than
+          // falling through to a bare "HTTP 200" that reads like success.
+          push({
+            id: nextId(),
+            kind: "error",
+            text: "An external guardrail stopped this prompt, but the response carried no pipeline detail.",
+            ...stamp(),
+          });
+          outcome = { kind: "external", ray };
         } else if (data?.guardrailsBlocked) {
           push({
             id: nextId(),
@@ -317,6 +347,9 @@ export function useChat(cfg: {
             gateway: data.gateway ?? undefined,
           });
           outcome = { kind: "blocked", ray };
+        } else if (status >= 200 && status < 300 && data?.guardrailOnly) {
+          push({ id: nextId(), kind: "guardrailOnly", ...stamp(), ray, pipeline: data.externalGuardrails });
+          outcome = { kind: "skipped", ray };
         } else if (status >= 200 && status < 300 && data?.reply) {
           const gwMeta = data.gateway ?? undefined;
           const cost = gwMeta?.cached === true ? 0 : data.cost;
@@ -332,7 +365,7 @@ export function useChat(cfg: {
               cost,
               gateway: gwMeta,
               dynamicRoute: data.dynamicRoute,
-              externalGuardrail: data.externalGuardrail,
+              externalGuardrails: data.externalGuardrails,
             },
             ray,
           });

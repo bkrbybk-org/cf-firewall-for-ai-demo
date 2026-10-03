@@ -11,15 +11,29 @@
 //     GUARDRAIL_SECRET_KEY Worker secret before it reaches D1, and no endpoint
 //     ever returns it — only `apiKeyLast4`. Without the secret the config refuses
 //     to store a key at all rather than falling back to plaintext.
-//   - **At most one provider is enabled**, enforced by a unique partial index in
-//     D1 (migrations/0005), not just by the UI.
+//   - **Any number of providers may be enabled; a pipeline decides how they run**
+//     (migrations/0006 dropped 0005's one-enabled index). Sequential runs them
+//     in the operator's order and stops at the first that stops the turn;
+//     parallel runs them together and lets the model run only if every one lets
+//     it through. Either way the edge WAF has already run (before this Worker),
+//     and AI Gateway Guardrails run later, inside the model call — the pipeline
+//     can only order what sits between the two, and the UI says so.
+//   - **Guardrail-only mode stops before the model**, for testing the checks
+//     without model cost. It must never look like a model answer.
 //   - **An error is never a verdict.** If the provider cannot be consulted, the
 //     operator's fail mode decides: "block" (default, fail closed) stops the turn
 //     and says the guardrail was unavailable; "allow" lets it through and marks
 //     it `failedOpen` so the reply shows it was not scanned.
 
 import { PRISMA_AIRS_REGIONS, PRISMA_AIRS_SCAN_PATH, scanPromptWithPrismaAirs } from "./prismaAirs";
-import type { Env, ExternalGuardrailProvider, ExternalGuardrailResult } from "./types";
+import type {
+  Env,
+  ExternalGuardrailProvider,
+  ExternalGuardrailResult,
+  GuardrailPipelineConfig,
+  GuardrailPipelineMode,
+  GuardrailPipelineResult,
+} from "./types";
 
 // ── provider registry ────────────────────────────────────────────────────────
 interface ProviderSpec {
@@ -258,13 +272,92 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
          api_key_last4 = excluded.api_key_last4, updated_at = excluded.updated_at`,
     )
     .bind(c.provider, c.enabled ? 1 : 0, c.region, c.profileName, c.failMode, c.apiKeyEnc, c.apiKeyLast4, c.updatedAt);
-  // Disable every other provider FIRST, in the same batch: the unique partial
-  // index allows one enabled row, so the order is what makes switching
-  // providers a single atomic step rather than a constraint violation.
-  const statements = c.enabled
-    ? [db.prepare("UPDATE external_guardrails SET enabled = 0 WHERE provider <> ? AND enabled = 1").bind(c.provider), upsert]
-    : [upsert];
-  await db.batch(statements);
+  await upsert.run();
+}
+
+// ── pipeline configuration ───────────────────────────────────────────────────
+export const PIPELINE_MODES = ["sequential", "parallel"] as const satisfies readonly GuardrailPipelineMode[];
+
+export function defaultPipeline(): GuardrailPipelineConfig {
+  return { mode: "sequential", guardrailOnly: false, order: [...PROVIDER_IDS] };
+}
+
+// Stored order → a full permutation of the registry: unknown ids dropped,
+// duplicates removed, providers missing from the stored list appended in
+// registry order. A provider added in code later therefore always has a place,
+// and a hand-edited row can never make a provider vanish from the pipeline.
+export function normalizeOrder(stored: readonly string[]): ExternalGuardrailProvider[] {
+  const seen = new Set<ExternalGuardrailProvider>();
+  for (const id of stored) if ((PROVIDER_IDS as string[]).includes(id)) seen.add(id as ExternalGuardrailProvider);
+  for (const id of PROVIDER_IDS) seen.add(id);
+  return [...seen];
+}
+
+export type PipelineUpdateResult = { ok: true; next: GuardrailPipelineConfig } | { ok: false; error: string };
+
+export function validatePipelineUpdate(body: unknown, current: GuardrailPipelineConfig): PipelineUpdateResult {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, error: "Body must be a JSON object" };
+  const b = body as Record<string, unknown>;
+  const next: GuardrailPipelineConfig = { ...current, order: [...current.order] };
+  if (b.mode !== undefined) {
+    if (!(PIPELINE_MODES as readonly unknown[]).includes(b.mode)) return { ok: false, error: 'mode must be "sequential" or "parallel"' };
+    next.mode = b.mode as GuardrailPipelineMode;
+  }
+  if (b.guardrailOnly !== undefined) {
+    if (typeof b.guardrailOnly !== "boolean") return { ok: false, error: "guardrailOnly must be a boolean" };
+    next.guardrailOnly = b.guardrailOnly;
+  }
+  if (b.order !== undefined) {
+    // Strict on input (lenient only on read): an order that is not exactly a
+    // permutation is a client bug, and silently "fixing" it would save an order
+    // the operator never chose.
+    const o = b.order;
+    const valid =
+      Array.isArray(o) &&
+      o.length === PROVIDER_IDS.length &&
+      new Set(o).size === o.length &&
+      o.every((x) => typeof x === "string" && (PROVIDER_IDS as string[]).includes(x));
+    if (!valid) return { ok: false, error: `order must list each of ${PROVIDER_IDS.join(", ")} exactly once` };
+    next.order = o as ExternalGuardrailProvider[];
+  }
+  return { ok: true, next };
+}
+
+interface PipelineRow {
+  mode: string;
+  guardrail_only: number;
+  provider_order: string;
+}
+
+function pipelineFromRow(r: PipelineRow | null): GuardrailPipelineConfig {
+  if (!r) return defaultPipeline();
+  return {
+    mode: r.mode === "parallel" ? "parallel" : "sequential",
+    guardrailOnly: r.guardrail_only === 1,
+    order: normalizeOrder(r.provider_order ? r.provider_order.split(",") : []),
+  };
+}
+
+// Missing table (migration 0006 not applied) reads as the defaults, which is
+// exactly how the app behaved before the pipeline existed.
+export async function loadPipeline(db: D1Database): Promise<GuardrailPipelineConfig> {
+  try {
+    return pipelineFromRow(await db.prepare("SELECT * FROM guardrail_pipeline WHERE id = 1").first<PipelineRow>());
+  } catch (err) {
+    if (/no such table/i.test(err instanceof Error ? err.message : String(err))) return defaultPipeline();
+    throw err;
+  }
+}
+
+export async function savePipeline(db: D1Database, p: GuardrailPipelineConfig): Promise<void> {
+  await db
+    .prepare(
+      `INSERT INTO guardrail_pipeline (id, mode, guardrail_only, provider_order, updated_at) VALUES (1,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, guardrail_only = excluded.guardrail_only,
+         provider_order = excluded.provider_order, updated_at = excluded.updated_at`,
+    )
+    .bind(p.mode, p.guardrailOnly ? 1 : 0, p.order.join(","), Date.now())
+    .run();
 }
 
 // ── the forwarding step ──────────────────────────────────────────────────────
@@ -274,55 +367,108 @@ export interface ForwardInput {
   ray: string | null;
 }
 
-// null → no provider enabled (or the feature is not set up): chat proceeds
-// exactly as before, with no external call and no added latency beyond one D1
-// read. Otherwise the result, with `failedOpen` already resolved.
-export async function forwardPrompt(
-  env: Env,
-  input: ForwardInput,
-  fetchImpl: typeof fetch = fetch,
-): Promise<ExternalGuardrailResult | null> {
-  if (!env.DB || !env.GUARDRAIL_SECRET_KEY) return null;
-  let active: StoredConfig | null = null;
-  try {
-    const row = await env.DB.prepare("SELECT * FROM external_guardrails WHERE enabled = 1 LIMIT 1").first<Row>();
-    active = row ? fromRow(row) : null;
-  } catch {
-    // Table missing (migration not applied) reads as "nothing enabled". An
-    // ENABLED provider whose config cannot be read is handled below, as an error.
-    return null;
-  }
-  if (!active || !active.apiKeyEnc) return null;
+// Whether a result stops the turn: a block, or an error with fail-closed.
+export function stopsTurn(r: ExternalGuardrailResult): boolean {
+  return r.outcome === "block" || (r.outcome === "error" && !r.failedOpen);
+}
 
+// One provider's scan, with `failedOpen` already resolved. Never throws.
+export type Scan = (c: StoredConfig) => Promise<ExternalGuardrailResult>;
+
+// The pipeline itself, separated from D1 and fetch so its ordering and
+// short-circuit rules can be tested with fake scans. `steps` are the ENABLED
+// providers, already in the configured order.
+export async function executePipeline(
+  steps: StoredConfig[],
+  mode: GuardrailPipelineMode,
+  guardrailOnly: boolean,
+  scan: Scan,
+  now: () => number = Date.now,
+): Promise<GuardrailPipelineResult> {
+  const started = now();
+  const results: ExternalGuardrailResult[] = [];
+  const notRun: GuardrailPipelineResult["notRun"] = [];
+  let stoppedBy: ExternalGuardrailProvider | null = null;
+
+  if (mode === "parallel") {
+    // Wait for ALL of them, not just the first block: each call is capped by its
+    // own timeout, and the point of running two guardrails side by side is to
+    // see both verdicts. Results keep configured order, not arrival order.
+    results.push(...(await Promise.all(steps.map((s) => scan(s)))));
+    stoppedBy = results.find(stopsTurn)?.provider ?? null;
+  } else {
+    for (let i = 0; i < steps.length; i++) {
+      const r = await scan(steps[i]);
+      results.push(r);
+      if (stopsTurn(r)) {
+        stoppedBy = r.provider;
+        const label = PROVIDERS[r.provider].label;
+        const why = r.outcome === "block" ? `${label} blocked the prompt` : `${label} was unavailable (fail closed)`;
+        for (const s of steps.slice(i + 1)) notRun.push({ provider: s.provider, reason: `Not run: ${why}` });
+        break;
+      }
+    }
+  }
+  return { mode, guardrailOnly, results, notRun, stoppedBy, latencyMs: now() - started };
+}
+
+// The real scan for one stored provider config.
+async function scanProvider(env: Env, c: StoredConfig, input: ForwardInput, fetchImpl: typeof fetch): Promise<ExternalGuardrailResult> {
   const resolve = (r: ExternalGuardrailResult): ExternalGuardrailResult =>
-    r.outcome === "error" && active!.failMode === "allow" ? { ...r, failedOpen: true } : r;
+    r.outcome === "error" && c.failMode === "allow" ? { ...r, failedOpen: true } : r;
+  if (!c.apiKeyEnc) return resolve({ provider: c.provider, outcome: "error", error: "No API key saved", latencyMs: 0 });
 
   let apiKey: string;
   try {
-    apiKey = await decryptSecret(active.apiKeyEnc, env.GUARDRAIL_SECRET_KEY, active.provider);
+    apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
   } catch {
     return resolve({
-      provider: active.provider,
+      provider: c.provider,
       outcome: "error",
       error: "Stored API key could not be decrypted — GUARDRAIL_SECRET_KEY changed since it was saved. Re-enter the key.",
       latencyMs: 0,
     });
   }
 
-  if (active.provider === "prisma-airs") {
-    const baseUrl = PROVIDERS[active.provider].regions.find((r) => r.id === active!.region)?.url;
-    if (!baseUrl) return resolve({ provider: active.provider, outcome: "error", error: `Unknown region "${active.region}"`, latencyMs: 0 });
+  if (c.provider === "prisma-airs") {
+    const baseUrl = PROVIDERS[c.provider].regions.find((r) => r.id === c.region)?.url;
+    if (!baseUrl) return resolve({ provider: c.provider, outcome: "error", error: `Unknown region "${c.region}"`, latencyMs: 0 });
     return resolve(
       await scanPromptWithPrismaAirs(
-        { baseUrl, apiKey, profileName: active.profileName, prompt: input.prompt, model: input.model, trId: input.ray ?? undefined },
+        { baseUrl, apiKey, profileName: c.profileName, prompt: input.prompt, model: input.model, trId: input.ray ?? undefined },
         fetchImpl,
       ),
     );
   }
-  return resolve({ provider: active.provider, outcome: "error", error: `${PROVIDERS[active.provider].label} is not supported yet`, latencyMs: 0 });
+  return resolve({ provider: c.provider, outcome: "error", error: `${PROVIDERS[c.provider].label} is not supported yet`, latencyMs: 0 });
 }
 
-// Whether a result stops the turn: a block, or an error with fail-closed.
-export function stopsTurn(r: ExternalGuardrailResult): boolean {
-  return r.outcome === "block" || (r.outcome === "error" && !r.failedOpen);
+// null → nothing to do: no provider enabled and the model is not skipped (or
+// the feature is not set up). Chat then proceeds exactly as before, with no
+// external call and no added latency beyond the D1 reads.
+export async function runPipeline(
+  env: Env,
+  input: ForwardInput,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GuardrailPipelineResult | null> {
+  if (!env.DB) return null;
+  let pipeline: GuardrailPipelineConfig;
+  let enabled: StoredConfig[] = [];
+  try {
+    pipeline = await loadPipeline(env.DB);
+    // Without the secret no key can be decrypted, so nothing is scanned — but
+    // guardrail-only still applies: it is about the model, not the providers.
+    if (env.GUARDRAIL_SECRET_KEY) {
+      const { results } = await env.DB.prepare("SELECT * FROM external_guardrails WHERE enabled = 1").all<Row>();
+      const byId = new Map(
+        (results ?? []).map(fromRow).filter((c): c is StoredConfig => c != null && c.enabled).map((c) => [c.provider, c]),
+      );
+      enabled = pipeline.order.flatMap((id) => byId.get(id) ?? []);
+    }
+  } catch {
+    // Table missing (migration not applied) reads as "nothing enabled".
+    return null;
+  }
+  if (enabled.length === 0 && !pipeline.guardrailOnly) return null;
+  return executePipeline(enabled, pipeline.mode, pipeline.guardrailOnly, (c) => scanProvider(env, c, input, fetchImpl));
 }

@@ -94,7 +94,27 @@ describe("scoreRun", () => {
 
   it("handles an empty run", () => {
     const s = scoreRun([]);
-    expect(s).toMatchObject({ total: 0, scored: 0, reached: 0, reachedPct: 0 });
+    expect(s).toMatchObject({ total: 0, scored: 0, reached: 0, reachedPct: 0, skipped: 0 });
+  });
+
+  // Guardrail-only: the edge verdict still scores (it IS what the edge did),
+  // and `skipped` says how many of the reached ones no model ever answered.
+  it("counts guardrail-only results as reached, and separately as skipped", () => {
+    const s = scoreRun([
+      { id: "a", state: "allow", modelSkipped: true },
+      { id: "b", state: "log", modelSkipped: true },
+      r("c", "allow"),
+      r("d", "block"),
+    ]);
+    expect(s).toMatchObject({ reached: 3, stopped: 1, skipped: 2, reachedPct: 75 });
+  });
+
+  it("never counts a skipped flag outside `reached`", () => {
+    const s = scoreRun([
+      { id: "a", state: "block", modelSkipped: true },
+      { id: "b", state: "external", modelSkipped: true },
+    ]);
+    expect(s.skipped).toBe(0);
   });
 });
 
@@ -291,6 +311,7 @@ function savedRun(overrides: Partial<RtSavedRun> & { results: RtStoredResult[] }
     denied: 0,
     guardrails: 0,
     external: 0,
+    skipped: 0,
     pending: 0,
     error: 0,
     reachedPct: 0,

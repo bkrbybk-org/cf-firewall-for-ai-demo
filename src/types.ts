@@ -125,7 +125,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number; // 0/1 (SQLite has no bool)
-  outcome: "reply" | "guardrails" | "external" | "error"; // external = an external guardrail (Prisma AIRS) blocked it
+  outcome: "reply" | "guardrails" | "external" | "skipped" | "error"; // external = an external guardrail blocked it; skipped = guardrail-only, model not called
   prompt: string;
   reply: string | null; // null for streamed replies (not captured) or blocks
   redactions: number; // PII spans masked in prompt+reply
@@ -187,7 +187,7 @@ export interface PromptAnalytics {
   byModel: { model: string; count: number; promptTokens: number; completionTokens: number }[];
   // Same prompt text seen more than once — attack replay / autopilot reruns.
   repeated: { prompt: string; count: number; redactions: number }[];
-  series: { t: string; reply: number; guardrails: number; external: number; error: number }[];
+  series: { t: string; reply: number; guardrails: number; external: number; skipped: number; error: number }[];
   bucket: SeriesBucket;
   firstTs: number | null;
   lastTs: number | null;
@@ -244,6 +244,7 @@ export interface RedTeamRunRow {
   denied: number;
   guardrails: number;
   external: number; // blocked by an external guardrail (Prisma AIRS)
+  skipped: number; // reached past every check but guardrail-only: no model was called
   pending: number;
   error: number;
   reachedPct: number;
@@ -310,4 +311,21 @@ export interface ExternalGuardrailResult {
   error?: string;
   httpStatus?: number;
   incomplete?: boolean;
+}
+
+export type GuardrailPipelineMode = "sequential" | "parallel";
+
+export interface GuardrailPipelineConfig {
+  mode: GuardrailPipelineMode;
+  guardrailOnly: boolean;
+  order: ExternalGuardrailProvider[];
+}
+
+export interface GuardrailPipelineResult {
+  mode: GuardrailPipelineMode;
+  guardrailOnly: boolean;
+  results: ExternalGuardrailResult[];
+  notRun: { provider: ExternalGuardrailProvider; reason: string }[];
+  stoppedBy: ExternalGuardrailProvider | null;
+  latencyMs: number;
 }

@@ -5,24 +5,31 @@
 //
 // Two honesty rules shape the code:
 //  - The toggle shows the SERVER's state, never the click. Enabling is rejected
-//    (HTTP 400) without a key and profile, and enabling one provider disables
-//    another, so every response replaces the whole state and nothing is
-//    optimistic.
+//    (HTTP 400) without a key and profile, and a pipeline edit (mode, order,
+//    guardrail-only) lives beside the providers in the same state, so every
+//    response replaces the whole state and nothing is optimistic.
 //  - The API key is write-only. It is held in an input's state only until a
 //    save succeeds, then wiped; what the server reports back is just whether a
 //    key exists and its last four characters.
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, Loader2, ShieldAlert } from "lucide-react";
 import { Header } from "../components/Header";
+import { PipelineDiagram } from "../components/PipelineDiagram";
 import { Switch } from "../components/Switch";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { getExternalGuardrails, saveExternalGuardrail, testExternalGuardrail } from "../lib/api";
+import {
+  getExternalGuardrails,
+  saveExternalGuardrail,
+  saveGuardrailPipeline,
+  testExternalGuardrail,
+} from "../lib/api";
 import type {
   ExternalGuardrailConfig,
   ExternalGuardrailProvider,
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
+  GuardrailPipelineUpdate,
 } from "../lib/types";
 
 const INPUT_CLS =
@@ -141,7 +148,7 @@ function ProviderCard({
 }: {
   config: ExternalGuardrailConfig;
   // Every successful response is handed up so the page re-renders ALL providers
-  // from the server's view — enabling this one may have disabled another.
+  // and the traffic-flow diagram from the server's view, not from this card's.
   onState: (s: ExternalGuardrailsState) => void;
 }) {
   const p: ExternalGuardrailProvider = config.provider;
@@ -463,6 +470,19 @@ export function GuardrailsPage() {
     load();
   }, [load]);
 
+  // Shared by the diagram's writes. A rejected update comes back as { error }
+  // with no usable state, so hand the message back and leave the page alone.
+  const accept = (s: (ExternalGuardrailsState & { error?: string }) | null): string | null => {
+    if (isState(s) && !s.error) {
+      setState(s);
+      return null;
+    }
+    return s?.error || "Update was rejected by the server";
+  };
+  const toggleProvider = async (provider: ExternalGuardrailProvider, enabled: boolean) =>
+    accept(await saveExternalGuardrail({ provider, enabled }));
+  const savePipeline = async (update: GuardrailPipelineUpdate) => accept(await saveGuardrailPipeline(update));
+
   return (
     <div className="flex h-full flex-col">
       <Header
@@ -479,7 +499,8 @@ export function GuardrailsPage() {
               When enabled, <b className="text-text">every prompt sent through /api/chat is forwarded to the provider
               before the model runs</b>, on both the direct and the AI Gateway route. The Cloudflare edge WAF still
               scans first. <b className="text-text">Prompts leave Cloudflare and are sent to the third party</b> — only
-              enable this for data you are willing to share with them. Only one guardrail can be active at a time.
+              enable this for data you are willing to share with them. Any number of guardrails can be active; the
+              traffic flow below sets how they run.
             </p>
           </div>
 
@@ -514,6 +535,12 @@ export function GuardrailsPage() {
                 </p>
               </div>
             </div>
+          )}
+
+          {/* `pipeline` guard: a Worker older than this bundle sends providers
+              without it, and the diagram would throw on the missing config. */}
+          {state?.configured && state.pipeline && (
+            <PipelineDiagram state={state} onToggle={toggleProvider} onPipeline={savePipeline} />
           )}
 
           {state?.configured && (

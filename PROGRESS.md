@@ -401,8 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-01 as version `f293eccc-9931-47be-b44a-c2292c4e8e27` (OpenAPI 3.0 rendering, Swagger on
-3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
+deployed 2026-10-03 as version `595fa250-7c75-4abf-9521-9ac7cdd0e657` (guardrail pipeline); before that
+`f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
 that `99cbf558` (2026-09-07, built from `ef68406`). The token replacement the same day also created a version,
 from a secret change rather than a deploy.
@@ -598,6 +598,63 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-03 — guardrail pipeline: traffic-flow diagram, sequential / parallel, guardrail-only
+
+**Asked for:** a diagram on the settings page to view and adjust traffic flow — order guardrails (AIRS before
+CrowdStrike), run them together and wait for all to allow, or send to the guardrails only (no LLM cost).
+**Decided with the user:** a diagram drawn from the config with controls (not a free-form graph editor, which
+could draw flows the Worker cannot run); guardrail-only is one global switch for chat **and** Red Team;
+**pipeline first, CrowdStrike AIDR later** — so today only AIRS is real and ordering/parallel are proven with
+fake providers in tests, not with two live vendors.
+
+**Design.** Only what sits between the edge WAF (before the Worker) and the model (where AI Gateway
+Guardrails live) can be ordered; the diagram draws both ends locked and says why. Migration `0006` drops
+`0005`'s one-enabled index (**not purely additive** — said before applying), adds the one-row
+`guardrail_pipeline` table and `redteam_runs.skipped`. `executePipeline` is separated from D1/fetch.
+- *Sequential*: configured order, first stop ends it, the rest go in `notRun` with a reason.
+- *Parallel*: `Promise.all` — **waits for every guardrail**, not just the first block. This reverses what I
+  first proposed (answer on the first block): two guardrails side by side are only worth showing with both
+  verdicts, and each call is already capped at 5 s.
+- *Guardrail-only*: HTTP 200 `{guardrailOnly: true}`, no reply/tokens/cost, prompt-log outcome `skipped`.
+  Red Team keeps the real edge verdict (allow/log) — that is what the edge did, so the headline maths is
+  unchanged — and counts the skipped ones apart (`RtScore.skipped`, a subset of `reached`).
+- Response shape changed: `externalGuardrail` (one result) → `externalGuardrails` (`GuardrailPipelineResult`),
+  header `x-external-guardrail` → `x-external-guardrails`. The deciding result is the one named by
+  `stoppedBy`, never `results[0]`.
+
+**Who did what.** Self: migration, engine, handler, types, API layer, red-team scoring, OpenAPI, smoke
+script, docs, and review. Sonnet: the diagram (`PipelineDiagram.tsx`), chat cards, export, analytics/Red Team
+display — from a frozen contract. **Review found and I fixed:**
+- **The edge verdict said "Reached the model" for turns the model never saw.** That was already true under
+  every external-block card since 2026-10-01; Sonnet flagged it and withheld the verdict from guardrail-only
+  cards rather than fix files outside its brief. Fixed: `Verdict`/`FlowTrace` take `stoppedInWorker`
+  (`external` | `skipped`); the trace ends in the Worker on an amber (external) or grey (skip) cut — never
+  the WAF's red — and the headline reads "Passed the edge …, then an external guardrail stopped it" /
+  "… The model was skipped". Restored under both cards and on prompt-log rows.
+- **Demo mode credited the WAF with external blocks**: `useChat` reported an external stop as `blocked`,
+  which `DemoMode` treats as a definitive edge 403. Now `external`, so Demo mode looks up the real edge verdict.
+  Pre-existing since 2026-10-01.
+
+**Verified, and how.**
+- Local gate: `npm run check`, web `tsc -b`, 293 tests / 19 files. Six planted engine regressions (no
+  sequential break, serial "parallel", parallel ignoring blocks, guardrail-only dropped when nothing is
+  enabled, stored order ignored, lenient order validation) — **five caught at first; the order one was not**
+  (the D1-path test had one enabled row), so a two-row test was added and it is now caught.
+- `wrangler dev` + Browser pane: diagram in parallel then sequential (step numbers + reorder arrows), the
+  guardrail-only switch (banner, model struck through, "No reply — verdict only"), state confirmed through
+  the API after each click; chat with AIRS enabled under a generated test key (local workerd cannot reach PANW,
+  so a fail-closed "unavailable — not a verdict" card in parallel mode) and with AIRS off + guardrail-only
+  ("Model skipped", edge-only). Light mode at 375 px: no horizontal scroll. No console errors. The verdict
+  fix could not be seen locally — local dev sets no `cf-ray`, so no verdict card renders.
+- Prod (deploy `595fa250`, migration applied first): smoke 5/5 after updating check [4] to the new shape (it
+  first failed on my own stale script, not on prod — the body was a real AIRS block). Through Access with the
+  user's real key: benign prompt → reply with `prisma-airs allow · benign · 496 ms`; guardrail-only on →
+  `guardrailOnly: true`, no reply, AIRS `allow` recorded — **switched straight back off** (seconds); bad
+  `order` → 400. Deployed bundle contains "Traffic flow", the banner, "Model skipped" and the new verdict text.
+- **Not verified:** two live providers in one pipeline (only AIRS exists); the rendered verdict fix and the
+  diagram on prod (Access-gated, checked by bundle grep only); the `skipped` prompt-analytics series on real
+  rows (the prompt log is off in prod); Red Team in guardrail-only mode end to end.
+
 ### 2026-10-01 — OpenAPI 3.0 for API Shield; Swagger on 3.0; API docs link
 
 **Why.** Uploading `/api/openapi.json` to API Shield → Schema Validation failed: `code 50010, failed to load
@@ -633,7 +690,8 @@ instead (`systemPrompt` > 2000 chars, `maxAttempts` outside 1–5); such request
 **Forward each prompt to a third-party guardrail before the model** (`/guardrails`, `src/prismaAirs.ts`,
 `src/externalGuardrails.ts`, migration `0005`). Palo Alto Networks Prisma AIRS (AI Runtime Security, API
 intercept) is implemented; CrowdStrike AIDR is listed but unsupported. Runs after the edge scan and before
-the model, on both routes; one provider enabled at a time (unique partial index in D1). Built with the
+the model, on both routes; one provider enabled at a time (unique partial index in D1 — **lifted 2026-10-03**
+by the guardrail pipeline, migration `0006`). Built with the
 default implementation approach: the client contract was frozen first, the config page and chat card were
 delegated to a Sonnet subagent against it, and everything touching secrets, outbound auth, `handleChat`,
 scoring semantics and the spec stayed with the main thread.
@@ -1217,6 +1275,9 @@ exercised):
     red-team scanner's service token. It **cannot read or redirect the key** (write-only; allowlisted hosts),
     so the worst case is a guardrail switched off or set to fail open. If that matters, restrict the path in
     Access to human identities, or check the `Cf-Access-Jwt-Assertion` identity in the Worker.
+    **Since 2026-10-03 the same callers can also switch guardrail-only on** (`/api/external-guardrails/pipeline`),
+    which stops every chat from getting a model reply until someone switches it off — visible (amber banner on
+    `/guardrails`, "Model skipped" cards in chat) but disruptive mid-demo. Same remedy.
 27. **A real verdict has never been exercised** — no valid Prisma AIRS key was available. First thing to do
     with one: save it, *Test connection*, enable, and send one benign and one injection prompt from the
     Attack Library; confirm the green chip and the "Blocked by Prisma AIRS" card with detections and `scan_id`.

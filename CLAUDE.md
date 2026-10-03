@@ -145,6 +145,9 @@ alters what a customer sees in a demo. State it and let them choose.
   `gh api repos/bkrbybk-org/cf-firewall-for-ai-demo` means the active account has read-only access.
 - In this zsh, an unquoted `--include=*.tsx` fails with `no such match` *and the pipeline carries
   on*, so a grep-based "no consumers" check silently reports zero. Quote the glob.
+- zsh does **not** word-split an unquoted variable: `J='-H content-type:application/json'; curl $J …` passes
+  one malformed argument, and prod answers with Access's 302 page — which looks like an auth failure. Put
+  curl headers in an array (`H=(-H "…" -H "…"); curl "${H[@]}"`).
 - Under `wrangler dev`, `request.url` carries the **route's hostname over http**
   (`http://cf-ai-waf-demo.nttlab.org`), not `localhost`. Never build a link or server URL from it for the
   browser — derive it client-side (`window.location.origin`), or local "Try it out" hits prod.

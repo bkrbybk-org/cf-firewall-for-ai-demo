@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import { fetchVerdictOnce, pollVerdict, verdictOutcome, type Outcome, type PollResult } from "../lib/verdict";
-import { FlowTrace, type GuardrailsBlock } from "./FlowTrace";
+import { FlowTrace, type GuardrailsBlock, type StoppedInWorker } from "./FlowTrace";
 import type { GatewayMeta, Verdict as VerdictData } from "../lib/types";
 import type { RequestConfig } from "../hooks/useChat";
 
@@ -38,6 +38,7 @@ function summaryLine(
   gateway?: GatewayMeta,
   guardrails?: GuardrailsBlock,
   httpStatus?: number | null,
+  stoppedInWorker?: StoppedInWorker,
 ): string {
   if (guardrails) {
     return guardrails.direction === "response"
@@ -50,6 +51,17 @@ function summaryLine(
   if (cls === "denied")
     return `Stopped at the edge — ${httpStatus ?? "error"}, but no WAF rule blocked it. Another layer (Access, rate limiting) refused the request.`;
   if (cls === "challenge") return "Challenged at the edge before reaching the model.";
+  // The edge let it through, but the Worker stopped before the model — so
+  // "reached the model" below would be false.
+  if (stoppedInWorker) {
+    const edge =
+      cls === "log"
+        ? `Passed the edge (${ruleCount} log-only rule${ruleCount === 1 ? "" : "s"} flagged it)`
+        : "Passed the edge — no rule matched";
+    return stoppedInWorker === "external"
+      ? `${edge}, then an external guardrail stopped it. The model never ran.`
+      : `${edge}, and every external guardrail. The model was skipped (guardrail-only).`;
+  }
   if (cls === "log")
     return `Reached the model — ${ruleCount} log-only rule${ruleCount === 1 ? "" : "s"} flagged it for analytics.`;
   return gateway ? "Reached the model via AI Gateway — no rule matched." : "Reached the model — no rule matched.";
@@ -61,16 +73,18 @@ function VerdictBody({
   gateway,
   guardrails,
   requestCfg,
+  stoppedInWorker,
 }: {
   d: VerdictData;
   prompt?: string;
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock;
   requestCfg?: RequestConfig;
+  stoppedInWorker?: StoppedInWorker;
 }) {
   const cls = verdictOutcome(d);
   const ruleCount = d.rules?.length ?? 0;
-  const summary = summaryLine(cls, ruleCount, gateway, guardrails, d.httpStatus);
+  const summary = summaryLine(cls, ruleCount, gateway, guardrails, d.httpStatus, stoppedInWorker);
 
   // AI Gateway Guardrails is a separate control from the edge WAF, so its block
   // gets a purple badge instead of the edge action pill.
@@ -93,7 +107,14 @@ function VerdictBody({
 
       {/* The flow trace IS the body — every detection lives in its node. */}
       <div className="mt-3">
-        <FlowTrace d={d} prompt={prompt} gateway={gateway} guardrails={guardrails} requestCfg={requestCfg} />
+        <FlowTrace
+          d={d}
+          prompt={prompt}
+          gateway={gateway}
+          guardrails={guardrails}
+          requestCfg={requestCfg}
+          stoppedInWorker={stoppedInWorker}
+        />
       </div>
     </div>
   );
@@ -112,6 +133,7 @@ export function Verdict({
   gateway,
   guardrails,
   requestCfg,
+  stoppedInWorker,
 }: {
   ray: string;
   /** epoch ms of the request itself, when known (prompt-log rows have it) */
@@ -120,6 +142,8 @@ export function Verdict({
   gateway?: GatewayMeta;
   guardrails?: GuardrailsBlock;
   requestCfg?: RequestConfig;
+  /** the edge let it through but the Worker stopped before the model */
+  stoppedInWorker?: StoppedInWorker;
 }) {
   const [status, setStatus] = useState<Status>({ phase: "pending", tries: 0 });
 
@@ -143,7 +167,16 @@ export function Verdict({
   }, [ray, ts]);
 
   if (status.phase === "done")
-    return <VerdictBody d={status.data} prompt={prompt} gateway={gateway} guardrails={guardrails} requestCfg={requestCfg} />;
+    return (
+      <VerdictBody
+        d={status.data}
+        prompt={prompt}
+        gateway={gateway}
+        guardrails={guardrails}
+        requestCfg={requestCfg}
+        stoppedInWorker={stoppedInWorker}
+      />
+    );
 
   let text: string;
   if (status.phase === "pending") text = `checking Cloudflare edge log… ray ${ray} (${status.tries})`;
