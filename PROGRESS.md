@@ -1749,6 +1749,80 @@ exercised):
 - [x] ~~**Guardrail card option A (compact rows), viewer-selectable**~~ — done 2026-10-05, per viewer (the
       user's choice over a presenter-wide D1 setting). See Implemented.
 
+**Plan: Cisco AI Defense + Check Point Lakera Guard as external guardrails 3 and 4** (written 2026-10-05,
+not started; **blocked on credentials, see 0**). Facts below are from each vendor's own docs, fetched
+2026-10-05. Both previous vendors' docs were wrong in places, so every one of these is *documented*, not
+*verified*, until a real payload is seen.
+
+| | Cisco AI Defense: Inspection API | Lakera Guard v2 (Check Point) |
+|---|---|---|
+| Call | `POST /api/v1/inspect/chat` | `POST /v2/guard` |
+| Hosts | `https://{us,ap,eu}.api.inspect.aidefense.security.cisco.com` | `https://api.lakera.ai`; the API reference also lists `eu.`, `us.`, `ap-southeast-1.` (region binding unverified) |
+| Auth | `X-Cisco-AI-Defense-API-Key: <key>`. The key comes from an AI Defense application connection; policy scope is unverified | `Authorization: Bearer <key>` |
+| Selects policy | the key (per connection) | `project_id` in the body (the Guard page says required; the API reference says optional) |
+| Body | `messages[{role,content}]`, optional `metadata` (we send only `client_transaction_id` = ray), `config` | `messages[…]`, `project_id`, `breakdown: true` |
+| Verdict | `is_safe` (boolean) | `flagged` (boolean), plus `action` `"enforce"`/`"detect"`. **In Detect mode `flagged` is always false** |
+| Detail | `classifications[]`, `rules[{rule_name, classification…}]`, `severity`, `attack_technique`, `explanation` | `breakdown[]` per detector (`detector_type`, `detected`…), `payload[]` match spans |
+| Id for the console | `event_id`, documented as set "if violation occurs"; `client_transaction_id` echoed | `metadata.request_uuid` |
+| Errors | 401 / 500, `{message}` | 400 / 401 / 429 / 500, `{error, code, request_id}` (per the API reference) |
+| Past-request lookup | possibly via the separate AI Defense *Management API* events (base URL and auth unverified) | none: `/v2/guard/results` runs a **new** scan with no decision; it is not a lookup |
+
+0. [ ] **You: credentials.** A Lakera project ID and an API key; a Cisco AI Defense tenant with an
+   application connection, its API key and region. **Without them, step 6 cannot happen and the
+   providers ship as `supported: false`** (listed but impossible to enable), the same pattern used for
+   CrowdStrike before it was verified. Lakera may have a free community tier (third-party sources say so;
+   unverified).
+1. [ ] **Registry generalisation** (*self*; hot files `src/types.ts`, `web/src/lib/types.ts`):
+   - Extend the `ExternalGuardrailProvider` union and the `openapi.ts` enum.
+   - Add a per-provider `profileLabel` ("AI security profile name" / "Project ID"), replacing the hard-coded
+     text in `GuardrailsPage.tsx:343` and `PipelineDiagram.tsx:60`.
+   - No migration: `external_guardrails.provider` has no CHECK constraint, and `profile_name` holds Lakera's
+     `project_id`.
+   - Verify: gates; and the order validation (strict permutation) and `normalizeOrder` with 4 providers.
+2. [ ] **`src/ciscoAiDefense.ts` + test** (*sonnet*, disjoint files, parallel with 3). The brief pins:
+   - A 200 without a boolean `is_safe` is an **error**, never an allow.
+   - `is_safe: false` is a block, whatever `severity` says.
+   - Send no `metadata` beyond `client_transaction_id`, and no user, IP or user agent.
+   - The region allowlist only.
+   - 401/500 `{message}` parsed; timeout and network failure become error results.
+   - `rules[].rule_name` and `classifications` map to `detected`; `event_id` maps to `scanId`.
+   - Verify: tests plus a mutation pass, like `crowdstrikeAidr.test.ts`.
+3. [ ] **`src/lakeraGuard.ts` + test** (*sonnet*, parallel with 2). The brief pins:
+   - A non-boolean `flagged` is an error.
+   - `flagged: true` is a block.
+   - **`action: "detect"` with detectors that fired is an allow with `detectOnly: true`**: Lakera logged
+     them, but the project does not block. This mirrors Prisma AIRS's "alerts only" and must never read as a
+     clean pass.
+   - Request `breakdown: true`; detected `detector_type` values map to `detected`.
+   - 400/401/429/500 bodies parsed; a 429 is an error result, so the fail mode decides.
+   - `request_uuid` maps to `scanId`.
+4. [ ] **Wire-up** (*self*; hot `handlers.ts` untouched, since it only calls `scanWithKey`):
+   - `scanWithKey` switch and the `PROVIDERS` entries.
+   - `ExternalGuardrailResult.detectOnly` in both type files.
+   - In `guardrailView.ts`: a `detectOnly` note ("Detect mode — N detections logged, not blocked"), amber
+     `partial`; `PROVIDER_LABELS`, `SCAN_ID_LABEL` (`event_id` / `request_uuid`); `DETECTION_LABELS` for the
+     new names.
+   - The reply chip; the openapi `ExternalGuardrailResult` schema.
+   - The report panel stays Prisma AIRS-only.
+   - Verify: gates; `guardrailView` tests for `detectOnly`; a browser check with stubbed four-vendor
+     pipelines (sequential, parallel, Detect mode) in both card layouts, plus the diagram and the `/guardrails`
+     cards with four providers at 375 px, in dark and light.
+5. [ ] **Unauthenticated probes** (*self*): POST each documented path with no key and record the error
+   shape. CrowdStrike taught us a 401 does not prove a path exists; PANW answers 403 to any path. Record only
+   what a probe proves.
+6. [ ] **Live verification on prod** (*self*; needs 0): save each key with the provider **disabled**, then
+   *Test connection* with a benign prompt and an injection prompt. Capture the real payloads and correct the
+   parsers and docs to match them before enabling. Then enable in a 4-way parallel run, read the card, and
+   switch back to the user's pipeline.
+7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
+   schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
+
+**Open questions for the user:**
+- **(a)** Should Lakera's Detect mode count as "allow with alerts" (planned) or be treated as a block?
+- **(b)** Should Cisco's `severity` ever override `is_safe` (planned: no)?
+- **(c)** Should Cisco events be looked up through the Management API later (a report panel like Prisma
+  AIRS's)? That needs its own research and probably a second key.
+
 **Unblock (do first)**
 
 - [x] ~~**Replace prod's rejected `CF_AIG_TOKEN`**~~ (Open bug #1) — done 2026-09-30. Original entry: new API token with
