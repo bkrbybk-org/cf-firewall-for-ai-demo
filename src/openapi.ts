@@ -626,6 +626,12 @@ export const openapi = {
         },
         ["provider", "outcome", "latencyMs"],
       ),
+      SeriesReadCoverage: {
+        type: "string",
+        enum: ["partial", "none"],
+        description:
+          "Present only when the row cap was hit (rows are read newest first). `none` = the bucket is older than the oldest row read: **not read — its zeros mean unknown, not zero**. `partial` = the bucket holding the oldest row read: its counts are a floor. Absent = fully read.",
+      },
       GuardrailReportDetection: obj(
         {
           service: str("PANW's `detection_service`, e.g. `dlp`, `urlf`, `prompt injection`."),
@@ -837,7 +843,7 @@ export const openapi = {
           ),
           actions: { type: "object", additionalProperties: { type: "integer" }, description: "Raw WAF action → count." },
           topRules: arr(obj({ name: str(), action: str(), count: int() }, ["name", "action", "count"])),
-          series: arr(obj({ t: { type: "string", format: "date-time" }, block: int(), log: int(), other: int() }, ["t", "block", "log", "other"])),
+          series: arr(obj({ t: { type: "string", format: "date-time" }, block: int(), log: int(), other: int(), read: ref("SeriesReadCoverage") }, ["t", "block", "log", "other"])),
           bucket: ref("SeriesBucket"),
           aiScored: int("Requests AI Security actually scored."),
           scoreBuckets: arr(obj({ label: str(), count: int() }, ["label", "count"])),
@@ -869,7 +875,7 @@ export const openapi = {
           errors: int("Requests with `success === false`."),
           statusCodes: arr(obj({ code: int(), count: int() }, ["code", "count"])),
           byModel: arr(obj({ model: str(), count: int(), tokensIn: int(), tokensOut: int(), cost: num() }, ["model", "count", "tokensIn", "tokensOut", "cost"])),
-          series: arr(obj({ t: { type: "string", format: "date-time" }, hit: int(), miss: int(), error: int() }, ["t", "hit", "miss", "error"])),
+          series: arr(obj({ t: { type: "string", format: "date-time" }, hit: int(), miss: int(), error: int(), read: ref("SeriesReadCoverage") }, ["t", "hit", "miss", "error"])),
           bucket: ref("SeriesBucket"),
           truncated: bool("Hit the row cap — totals are a floor."),
         },

@@ -8,6 +8,8 @@ import {
   verdictWindow,
   type SeriesBucket,
 } from "./config";
+import { markReadCoverage } from "./coverage";
+import { nearestRank } from "./percentile";
 import type { AnalyticsSummary, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
 
 // Time-bucket scaffold shared by the zone analytics and the gateway analytics.
@@ -392,7 +394,7 @@ export async function queryAnalytics(
   const topRules = [...ruleCounts.values()].sort((a, b) => b.count - a.count).slice(0, 8);
 
   // Time series: 5-minute buckets at 1h, hourly to 48h, daily beyond.
-  const { bucket, series, floor } = makeBuckets(now, hours, (t) => ({ t, block: 0, log: 0, other: 0 }));
+  const { bucket, series, floor, stepMs } = makeBuckets(now, hours, (t) => ({ t, block: 0, log: 0, other: 0 }));
   for (const e of fw) {
     const row = series.get(floor(e.datetime));
     if (!row) continue;
@@ -459,7 +461,9 @@ export async function queryAnalytics(
     prev: prevTruncated ? undefined : prev,
     actions,
     topRules,
-    series: [...series.values()],
+    // The series is built from `fw` alone, so its coverage is fw's: rows come
+    // newest first, so the last one is the oldest actually read (bug #23).
+    series: markReadCoverage([...series.values()], fw.length >= EVENT_LIMIT, fw.at(-1)?.datetime ?? null, stepMs),
     bucket,
     aiScored,
     scoreBuckets: buckets.map(({ label, count }) => ({ label, count })),
@@ -498,10 +502,12 @@ type GatewayLog = {
 const GATEWAY_LOG_LIMIT = 500;
 const GATEWAY_PAGE_SIZE = 50;
 
+// Nearest rank, the same rule as the prompt-log rollup (src/percentile.ts). It
+// used ⌊n·p⌋ as a 0-based index — rank ⌊n·p⌋+1, one too high whenever n·p is
+// whole (n = 20 → "p95" was the maximum, not rank 19). Sibling of bug #24.
 function percentile(sorted: number[], p: number): number {
   if (!sorted.length) return 0;
-  const i = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
-  return Math.round(sorted[i]);
+  return Math.round(sorted[nearestRank(sorted.length, p) - 1]);
 }
 
 export async function queryGatewayLogs(
@@ -515,7 +521,7 @@ export async function queryGatewayLogs(
   const since = new Date(now - hours * 3_600_000).toISOString();
   const until = new Date(now + 60_000).toISOString();
 
-  const { bucket, series, floor } = makeBuckets(now, hours, (t) => ({ t, hit: 0, miss: 0, error: 0 }));
+  const { bucket, series, floor, stepMs } = makeBuckets(now, hours, (t) => ({ t, hit: 0, miss: 0, error: 0 }));
   const empty: GatewayAnalytics = {
     gatewayId, guarded, rangeHours: hours, since, until,
     requests: 0, cachedRequests: 0, totalCost: 0, tokensIn: 0, tokensOut: 0,
@@ -612,7 +618,9 @@ export async function queryGatewayLogs(
     byModel: [...modelRows.entries()]
       .map(([model, m]) => ({ model, ...m }))
       .sort((a, b) => b.count - a.count),
-    series: [...series.values()],
+    // Pages arrive newest first (order_by created_at desc), so the last row is
+    // the oldest read — whether the cap or a failed later page stopped us.
+    series: markReadCoverage([...series.values()], truncated, rows.at(-1)?.created_at ?? null, stepMs),
     truncated,
   };
 }

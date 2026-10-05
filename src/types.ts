@@ -157,7 +157,7 @@ export interface AnalyticsSummary {
   actions: Record<string, number>; // raw action → count (block, log, …)
   topRules: { name: string; action: string; count: number }[];
   // Time buckets: 5-minute at 1h, hourly to 48h, daily beyond (see bucketFor).
-  series: { t: string; block: number; log: number; other: number }[];
+  series: { t: string; block: number; log: number; other: number; read?: "partial" | "none" }[];
   bucket: SeriesBucket;
   aiScored: number; // requests AI Security actually scored
   scoreBuckets: { label: string; count: number }[]; // injection-score histogram
@@ -286,7 +286,7 @@ export interface GatewayAnalytics {
   errors: number; // success === false
   statusCodes: { code: number; count: number }[];
   byModel: { model: string; count: number; tokensIn: number; tokensOut: number; cost: number }[];
-  series: { t: string; hit: number; miss: number; error: number }[];
+  series: { t: string; hit: number; miss: number; error: number; read?: "partial" | "none" }[];
   bucket: SeriesBucket;
   truncated: boolean; // hit the row cap — totals are a floor, not exact
   error?: string;

@@ -318,7 +318,9 @@ export interface Analytics {
   // itself truncated — see AnalyticsSummary in src/types.ts.
   prev?: { totalEvents: number; blocked: number; logged: number; piiRequests: number };
   topRules?: { name: string; action: string; count: number }[];
-  series?: { t: string; block: number; log: number; other: number }[];
+  // `read`: set only when the row cap was hit. "none" = the bucket is older than the
+  // oldest row read — NOT READ, never draw it as zero; "partial" = its count is a floor.
+  series?: { t: string; block: number; log: number; other: number; read?: "partial" | "none" }[];
   bucket?: "5m" | "hour" | "day";
   aiScored?: number;
   scoreBuckets?: { label: string; count: number }[];
@@ -497,7 +499,8 @@ export interface GatewayAnalytics {
   errors?: number;
   statusCodes?: { code: number; count: number }[];
   byModel?: { model: string; count: number; tokensIn: number; tokensOut: number; cost: number }[];
-  series?: { t: string; hit: number; miss: number; error: number }[];
+  // `read`: as for Analytics.series — "none" buckets were never read (row cap), not zero.
+  series?: { t: string; hit: number; miss: number; error: number; read?: "partial" | "none" }[];
   bucket?: "5m" | "hour" | "day";
   truncated?: boolean;
   error?: string;

@@ -1,6 +1,6 @@
 // Time-series chart shared by all three Analytics tabs, plus the series
 // definitions that configure it.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { SeriesBucket } from "./primitives";
 
 // `cls` fills the area wash, `stroke` draws the 2px line, `dot` keys the legend
@@ -73,12 +73,27 @@ export function EventSeries({
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const hatchId = `unread-${useId().replace(/:/g, "")}`;
   const num = (r: Record<string, number | string>, k: string) => Number(r[k] ?? 0);
   const total = (r: Record<string, number | string>) => defs.reduce((n, s) => n + num(r, s.key), 0);
 
+  // Row-cap coverage (bug #23). The server tags buckets it never read as
+  // read: "none" — they are UNKNOWN, not zero, so they get no line, no area, no
+  // marker and no number, only a hatched "not read" band. They are always the
+  // oldest, contiguous ones (rows are read newest-first), so the plotted range
+  // simply starts at `firstRead`. read: "partial" is the bucket holding the
+  // oldest row read: plotted, but every value in it is a floor ("≥").
+  const readOf = (r: Record<string, number | string>) => r.read as "partial" | "none" | undefined;
+  const firstRead = rows.reduce((acc, r, i) => (readOf(r) === "none" ? i + 1 : acc), 0);
+  const unreadCount = firstRead;
+  const isUnread = (i: number) => i < firstRead;
+  const isPartial = (i: number) => readOf(rows[i]) === "partial";
+  const plotted = rows.slice(firstRead).map((r, j) => ({ r, i: j + firstRead }));
+
   const n = rows.length;
-  // Unstacked, so the axis tops out at the largest single series value.
-  const peak = Math.max(1, ...rows.flatMap((r) => defs.map((s) => num(r, s.key))));
+  // Unstacked, so the axis tops out at the largest single series value — over
+  // the READ buckets only; an unread bucket has no value to scale to.
+  const peak = Math.max(1, ...plotted.flatMap(({ r }) => defs.map((s) => num(r, s.key))));
   const max = niceMax(peak);
 
   // The chart is sized in REAL PIXELS, not a fixed aspect ratio. It used to be
@@ -227,15 +242,48 @@ export function EventSeries({
           </g>
         ))}
 
+        {/* Not-read band: hatched, from the left edge to the first read bucket,
+            with its reason written on it. Never a zero line through it. */}
+        {unreadCount > 0 && (
+          <g>
+            <defs>
+              <pattern id={hatchId} width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <line x1="0" y1="0" x2="0" y2="6" className="stroke-line-strong" strokeWidth="1.5" />
+              </pattern>
+            </defs>
+            {(() => {
+              // Ends halfway into the gap before the first read bucket, so a
+              // read bucket's own marker is never under the hatch.
+              const x0 = padL;
+              const x1 = firstRead >= n ? W - padR : (xAt(firstRead - 1) + xAt(firstRead)) / 2;
+              return (
+                <>
+                  <rect x={x0} y={padT} width={Math.max(0, x1 - x0)} height={plotH} fill={`url(#${hatchId})`} opacity={0.6} />
+                  {x1 - x0 > 70 && (
+                    <text
+                      x={(x0 + x1) / 2}
+                      y={padT + plotH / 2 + 3.5}
+                      textAnchor="middle"
+                      className="fill-muted text-[10.5px] font-semibold"
+                    >
+                      not read — row cap
+                    </text>
+                  )}
+                </>
+              );
+            })()}
+          </g>
+        )}
+
         {/* Area wash, drawn first so lines and markers sit on top. */}
-        {n > 1 &&
+        {plotted.length > 1 &&
           defs.map((s) => (
             <polygon
               key={s.key}
               points={[
-                ...rows.map((r, i) => `${xAt(i)},${yAt(num(r, s.key))}`),
+                ...plotted.map(({ r, i }) => `${xAt(i)},${yAt(num(r, s.key))}`),
                 `${xAt(n - 1)},${baseY}`,
-                `${xAt(0)},${baseY}`,
+                `${xAt(firstRead)},${baseY}`,
               ].join(" ")}
               className={s.cls}
               fillOpacity={0.1}
@@ -243,11 +291,11 @@ export function EventSeries({
           ))}
 
         {/* 2px line per series. */}
-        {n > 1 &&
+        {plotted.length > 1 &&
           defs.map((s) => (
             <polyline
               key={s.key}
-              points={rows.map((r, i) => `${xAt(i)},${yAt(num(r, s.key))}`).join(" ")}
+              points={plotted.map(({ r, i }) => `${xAt(i)},${yAt(num(r, s.key))}`).join(" ")}
               fill="none"
               className={s.stroke}
               strokeWidth="2"
@@ -258,9 +306,9 @@ export function EventSeries({
 
         {/* Markers carry a surface-colored ring so they stay legible where
             series overlap. Hidden on dense series to avoid clutter. */}
-        {(showMarkers || n === 1) &&
+        {(showMarkers || plotted.length === 1) &&
           defs.map((s) =>
-            rows.map((r, i) => (
+            plotted.map(({ r, i }) => (
               <circle
                 key={`${s.key}-${i}`}
                 cx={xAt(i)}
@@ -327,16 +375,38 @@ export function EventSeries({
           }}
         >
           <div className="mb-1 font-semibold text-text">{fmtBucket(String(hoveredRow.t))}</div>
-          {defs.map((s) => (
-            <div key={s.key} className="flex items-center gap-2">
-              <span className={`h-0.5 w-3 shrink-0 rounded-full ${s.dot}`} />
-              <span className="font-mono font-semibold text-text tabular-nums">{num(hoveredRow, s.key)}</span>
-              <span className="text-muted">{s.label}</span>
+          {isUnread(hover!) ? (
+            // No numbers at all: anything here would be read as a measurement.
+            <div className="max-w-52 text-muted">
+              <b className="text-text">Not read.</b> The newest rows the query may fetch all fall after this bucket,
+              so nothing is known about it — this is not zero.
             </div>
-          ))}
-          <div className="mt-1 border-t border-line pt-1 text-muted">
-            <span className="font-mono font-semibold text-text tabular-nums">{total(hoveredRow)}</span> total
-          </div>
+          ) : (
+            <>
+              {defs.map((s) => (
+                <div key={s.key} className="flex items-center gap-2">
+                  <span className={`h-0.5 w-3 shrink-0 rounded-full ${s.dot}`} />
+                  <span className="font-mono font-semibold text-text tabular-nums">
+                    {isPartial(hover!) ? "≥" : ""}
+                    {num(hoveredRow, s.key)}
+                  </span>
+                  <span className="text-muted">{s.label}</span>
+                </div>
+              ))}
+              <div className="mt-1 border-t border-line pt-1 text-muted">
+                <span className="font-mono font-semibold text-text tabular-nums">
+                  {isPartial(hover!) ? "≥" : ""}
+                  {total(hoveredRow)}
+                </span>{" "}
+                total
+              </div>
+              {isPartial(hover!) && (
+                <div className="mt-1 max-w-52 text-[10.5px] text-subtle">
+                  Partly read: older events in this bucket fell past the row cap.
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -344,9 +414,12 @@ export function EventSeries({
           same values the tooltip shows sighted users. */}
       <div className="sr-only" aria-live="polite">
         {hoveredRow
-          ? `${fmtBucket(String(hoveredRow.t))}: ` +
-            defs.map((s) => `${num(hoveredRow, s.key)} ${s.label}`).join(", ") +
-            `, ${total(hoveredRow)} total`
+          ? isUnread(hover!)
+            ? `${fmtBucket(String(hoveredRow.t))}: not read — row cap reached, not zero`
+            : `${fmtBucket(String(hoveredRow.t))}: ` +
+              (isPartial(hover!) ? "partly read, at least " : "") +
+              defs.map((s) => `${num(hoveredRow, s.key)} ${s.label}`).join(", ") +
+              `, ${total(hoveredRow)} total`
           : ""}
       </div>
 
@@ -356,6 +429,14 @@ export function EventSeries({
             <span className={`h-2 w-2 rounded-full ${s.dot}`} /> {s.label}
           </span>
         ))}
+        {unreadCount > 0 && (
+          <span className="flex items-center gap-1.5" title="Row cap reached: these buckets were never read">
+            <svg width="10" height="10" aria-hidden="true">
+              <rect width="10" height="10" fill={`url(#${hatchId})`} className="stroke-line-strong" strokeWidth="1" />
+            </svg>
+            not read ({unreadCount} of {n} {bucket === "day" ? "days" : "buckets"})
+          </span>
+        )}
         {n > 0 && (
           <button
             type="button"
@@ -397,14 +478,25 @@ export function EventSeries({
                   <th scope="row" className="px-2.5 py-1 font-mono text-[11px] font-normal whitespace-nowrap text-muted">
                     {fmtBucket(String(r.t))}
                   </th>
-                  {defs.map((s) => (
-                    <td key={s.key} className="px-2.5 py-1 text-right font-mono tabular-nums text-text">
-                      {num(r, s.key).toLocaleString()}
+                  {isUnread(i) ? (
+                    // One cell across every column: "not read", never a row of zeros.
+                    <td colSpan={defs.length + 1} className="px-2.5 py-1 text-right text-[11px] text-subtle italic">
+                      not read — row cap
                     </td>
-                  ))}
-                  <td className="px-2.5 py-1 text-right font-mono font-semibold tabular-nums text-text">
-                    {total(r).toLocaleString()}
-                  </td>
+                  ) : (
+                    <>
+                      {defs.map((s) => (
+                        <td key={s.key} className="px-2.5 py-1 text-right font-mono tabular-nums text-text">
+                          {isPartial(i) ? "≥" : ""}
+                          {num(r, s.key).toLocaleString()}
+                        </td>
+                      ))}
+                      <td className="px-2.5 py-1 text-right font-mono font-semibold tabular-nums text-text">
+                        {isPartial(i) ? "≥" : ""}
+                        {total(r).toLocaleString()}
+                      </td>
+                    </>
+                  )}
                 </tr>
               ))}
             </tbody>

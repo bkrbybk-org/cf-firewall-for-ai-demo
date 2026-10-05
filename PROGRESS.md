@@ -401,8 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-05 as version `8c607cc6-2f41-4de5-9cd9-cfc3c3eba367` (bug #24, nearest-rank percentiles);
-before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
+deployed 2026-10-05 as version `b51a5897-0fee-4d88-a010-55bf119ace99` (bug #23, capped-chart coverage);
+before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
@@ -599,6 +599,43 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — bug #23 fixed: capped charts say "not read", not zero
+
+**Decision.** The bug offered two fixes: mark unread buckets, or read the uncapped `…AdaptiveGroups`
+datasets. Cloudflare's docs (GraphQL Analytics sampling; the 2025-10-01 changelog adding confidence
+intervals for `count`/`sum` on adaptive datasets) say adaptive datasets are **sampled** — Groups counts are
+estimates. Presenting them as exact counts would swap one honesty defect for another, so: keep the exact
+rows and say what they cover. Groups-based estimates, labelled as estimates with their confidence interval,
+remain a possible later addition.
+
+**What.** `src/coverage.ts` `markReadCoverage()` tags series buckets when the read was capped: `read:
+"none"` (ends before the oldest row read — rows arrive newest first, so that is the last row) or
+`"partial"` (holds it; counts are floors). Applied to `/api/analytics` (from `fw`, the only dataset the
+series is built from) and `/api/gateway-analytics` (capped, or a later page failed). `EventSeries` plots
+only from the first read bucket, draws a hatched "not read — row cap" band over the rest, scales the axis
+to read buckets only, and prints "not read" / "≥ N" in the tooltip, screen-reader text and data table —
+never a 0 for an unread bucket. Self-implemented: honesty semantics on every Analytics tab.
+
+**Also fixed — a sibling of #24.** The gateway tab's `percentile()` used `⌊n·p⌋` as a 0-based index, i.e.
+rank ⌊n·p⌋+1: one rank too high whenever n·p is whole (n = 20: "p95" was the maximum). Now `nearestRank()`.
+
+**Verified, and how.**
+- 6 coverage tests (337 total), four planted regressions all caught. **CI trap hit again:** vitest passed
+  while `npm run check` failed on the test helper's weak type — caught by running both, as CLAUDE.md says.
+- `wrangler dev` against the **real zone**: 24 h → 500 events, capped, 25 buckets = 2 read / 1 partial /
+  **22 not read**; 7 d → 1 partial / **7 not read**; 1 h → not capped, nothing tagged. Both capped windows
+  put the oldest row read today after 06:00 UTC — consistent. (The bug's original measurement was 18 of 25;
+  traffic has grown since.) Browser: hatched band + label, lines only over the read hours, legend "not read
+  (22 of 25 buckets)"; tooltip over an unread hour reads "Not read … this is not zero" with no numbers, over
+  the partial hour "≥73 block, ≥96 log, ≥53 other, ≥222 total — Partly read"; screen-reader text matches;
+  dark and light themes. Console errors seen were `/api/neurons` polls from while the dev server
+  restarted; every request after the page load was 200.
+- Prod (`b51a5897`): smoke 5/5; `/api/analytics` 24 h → 2/1/22, 7 d → 0/1/7, 1 h → untagged;
+  `/api/gateway-analytics` 7 d → 17 requests, not capped, untagged. Bundle contains the band label.
+- **Parallel mode with both vendors, live** — shown in a user screenshot of prod (2026-10-05): AIDR `block`
+  (946 ms) and Prisma AIRS `block` (470 ms), "mode parallel (waited for all) · guardrails run 2 · pipeline
+  total 946 ms" — wall clock = the slower one, as designed. The last unverified pipeline mode.
 
 ### 2026-10-05 — bug #24 fixed: nearest-rank latency percentiles
 
@@ -1357,7 +1394,8 @@ exercised):
     the `\bLLM\b` name heuristic otherwise, and say which), with a test that a non-LLM block is excluded.
     **Immediate mitigation (a one-line change, needs your OK since it alters a customer-facing page):** drop
     the "blocked" half from the 2.7 chip until then.
-23. **Truncated analytics charts draw unread time as zero.** `/api/analytics` reads the *newest* 500 rows,
+23. ~~**Truncated analytics charts draw unread time as zero.**~~ **FIXED 2026-10-05** (deploy `b51a5897`) —
+    unread buckets tagged and drawn as "not read"; see that day's entry. Original entry: `/api/analytics` reads the *newest* 500 rows,
     then zero-fills every bucket in the window, so when the cap is hit the older buckets read "no activity"
     when they were simply never read. Measured on prod: **24 h view — 18 of 25 hourly buckets zero**, the
     500 rows reaching back only ~6.5 h; **7 d view — 6 of 8 days zero**. The tiles say "row cap reached",
@@ -1428,9 +1466,7 @@ exercised):
 - [ ] **#22 compliance attribution** — *self*: it is honesty semantics on a customer-facing page. Decide the
       mitigation with the user first.
 - [x] ~~**#24 percentile rank**~~ — done 2026-10-05, checked against a hand calculation on real rows.
-- [ ] **#23 truncated charts** — *self* for the design (verify the Groups dataset's sampling semantics in
-      Cloudflare's docs; choose "mark unread" vs "aggregate uncapped"), then *sonnet* for the chart change
-      against a fixed contract.
+- [x] ~~**#23 capped charts**~~ — done 2026-10-05: "mark unread" chosen (Groups datasets are sampled).
 
 **Unblock (do first)**
 
