@@ -457,7 +457,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **374 across 25 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **380 across 26 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +622,31 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — bug #4: the red card reads the zone's real block body
+
+**What.** `web/src/lib/edgeBlock.ts`'s `parseEdgeBlock()` reads a 403 body in either shape: the legacy
+`{blocked, detection, reason}`, or the zone's Custom JSON `{error, reason_code, message, detail}`.
+- **Known code:** `LLM_PII_BLOCKED` reads "PII detected in prompt — <the rule's message and detail>".
+- **Unknown code:** "Blocked by a Cloudflare rule — <message>", with no detection label. A code's spelling
+  is not evidence of what fired, and the edge verdict under the card names the rule.
+- **The card** also shows the rule's reason code.
+- **HTML and other unstructured bodies** keep the old "without a structured reason" wording.
+- **The session export** had the same honesty flaw: an unattributed block exported as
+  `waf: blocked by Cloudflare AI Security`. It now exports as `edge, unattributed: the response carried no
+  structured reason`, or as `rule <code>` when a code came back.
+
+**Verified.**
+- **Gates:** 380 tests across 26 files, with 6 new in `edgeBlock.test.ts`.
+- **Mutation-verified:** reading the code table without `Object.hasOwn` (so `toString` resolves) was caught,
+  and so was mapping a guessed `LLM_INJECTION_BLOCKED` code.
+- **Browser** (`wrangler dev`, stubbed 403s): the real prod PII body from #4 shows the rule's message plus
+  `LLM_PII_BLOCKED`. An unknown code shows "Blocked by a Cloudflare rule". An HTML 403 shows the
+  unattributed wording, and the legacy shape still works.
+- **Prod** (`646fd605-2306-43c0-b854-53adfc765577`): smoke 5/5. The bundle `index-DbDgFDk0.js` is the same
+  hash as the local build and contains the new strings.
+- **Not seen live:** no measured edge rule blocks at present (#28, now wider than PII), so prod returned
+  no 403 to render.
 
 ### 2026-10-05 — "decided" is not shown when several guardrails blocked in parallel
 
@@ -1463,6 +1488,12 @@ uncommitted.
    + httpStatus, not the body), and the raw-response viewer still pretty-prints it. Fix: map
    `reason_code` → detection (`LLM_PII_BLOCKED` → `pii`, etc.) and show `message`, keeping the
    existing `{blocked,detection,reason}` shape working so either rule config renders correctly.
+   **Client side FIXED 2026-10-05** (deploy `646fd605`). Correction to the above: the card did not fall
+   back to "Blocked by Cloudflare AI Security for Apps". With no `detection` it took the *unattributed*
+   branch, "The edge returned 403 without a structured reason", which was false for a body that was
+   structured. `web/src/lib/edgeBlock.ts` reads both shapes now. Only `LLM_PII_BLOCKED`, the one code seen
+   live, maps to a detection. Any other `reason_code` shows the rule's own message and code as
+   "Blocked by a Cloudflare rule", and no detection type is guessed from how the code is spelled.
 5. **Account-level "Monitor Likely Attacks (Score GE 20 AND LE 50)" is a red herring** — fires on a
    non-LLM attack score despite the name. **Mitigated in the UI** as of 2026-08-01: it now lands in
    the "not AI Security" group rather than the AI Security rule list, so it can no longer be read as
@@ -1629,6 +1660,13 @@ exercised):
     back to Block before a customer demo of the WAF.** Also seen the same run: `/api/zone-rules` →
     `source: fallback`, `Ruleset list failed (HTTP 403)` — the rules token cannot list rulesets, so the app
     shows its static mirror, not live rules.
+    **Wider than PII (measured 2026-10-05):** on ray `a45bf4a83891a1bd`, the Attack Library's "Ignore
+    instructions" prompt hit **Block LLM Injection with action `log`**, alongside Monitor LLM Injection, the
+    account-level injection rule and the managed detection, all `log`. The same day an unsafe-topic (S1)
+    prompt and a Thai politics prompt also got no edge 403 and were stopped by the external guardrails
+    instead. Their rays were not captured, so it is not proven *which* rules acted. **No measured edge
+    rule blocks right now**, so the red card, and the #4 fix, cannot be seen live until one is set back
+    to Block.
 29. ~~CrowdStrike AIDR has never returned a real verdict~~ — **resolved 2026-10-05**: real `block` and
     `allow` verdicts on prod with the user's collector token (see that entry), which also proves the token
     is delivered. Still open: AIDR returned `transformed: true` on the PII prompt, and the app does **not**
@@ -1671,8 +1709,10 @@ exercised):
       `src/` or `web/` postdates the deployment. `npm run smoke:prod` passes all five checks
       through Access: gateway route 200, direct route 200, PII prompt correctly 403, and the four
       read-only endpoints healthy.
-- [ ] Map the prod block-response JSON keys in the client (Open bug #4) — the edge now returns a
-      specific reason the UI throws away.
+- [x] ~~Map the prod block-response JSON keys in the client (Open bug #4)~~ — done 2026-10-05.
+- [ ] Add each other block rule's `reason_code` to `REASON_CODE_DETECTIONS` (`web/src/lib/edgeBlock.ts`)
+      **from a real payload**, once the rules block again (#28). Until then those codes show their message
+      and code, with no detection label.
 - [ ] Replace the local `.env` `CF_AIG_TOKEN` so `wrangler dev` can exercise the gateway route
       again (prod is fine — Open bug #1).
 

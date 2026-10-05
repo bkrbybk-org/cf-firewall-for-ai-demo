@@ -353,7 +353,12 @@ Source: [AI Security for Apps — unsafe topics](https://developers.cloudflare.c
 
 Every blocked card has a **▸ View raw response** toggle showing exactly what the browser received — pretty-printed JSON if the rule returns a custom JSON body, raw HTML otherwise.
 
-⚠️ **Current live state**: the deployed block rules return **Custom JSON** (since 2026-08-03), but in a shape the chat does not read yet — `{"error":"request_blocked","reason_code":"LLM_PII_BLOCKED","message":…}` rather than `{blocked, detection, reason}` — so the red card's reason text is still a generic fallback (PROGRESS Open bug #4). The viewer pretty-prints the real body, and the accurate detail comes from the edge verdict below the card; attribution does not depend on the body.
+**Which body the card reads** (`web/src/lib/edgeBlock.ts`):
+- The deployed block rules return **Custom JSON**, `{"error":"request_blocked","reason_code":"LLM_PII_BLOCKED","message":…,"detail":…}`. The card shows the rule's own `message` + `detail` and its reason code.
+- A code is labelled as a detection type (`LLM_PII_BLOCKED` → "PII detected in prompt") **only when that exact code has been seen live**. Any other code reads "Blocked by a Cloudflare rule — <message>", since its spelling is not evidence of what fired; the edge verdict below the card names the rule.
+- The legacy `{blocked, detection, reason}` shape still works.
+- An HTML or otherwise unstructured 403 says plainly that it does not identify who refused it.
+- Attribution in the verdict never depends on the body.
 
 ## Analytics page (`/analytics`)
 
@@ -493,7 +498,7 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
 
 1. **Enable the feature** — Security → Settings → **AI Security for Apps**.
 2. **Label the endpoint** — Security → Web Assets: ensure `POST <host>/api/chat` exists and carries the managed label **`cf-llm`**. Detection only runs on labeled endpoints with `application/json` bodies.
-3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI's reason text understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}`; the deployed zone's `{error, reason_code, message}` body is not mapped yet (Open bug #4), so it shows the generic reason.
+3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI reads either `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}` or `{"error": "request_blocked", "reason_code": "…", "message": "…", "detail": "…"}` (see "Which body the card reads" above). A new rule's `reason_code` gets a detection label only once it is added to `REASON_CODE_DETECTIONS` from a real payload.
 
    The deployed zone currently runs these 10 rules. **The app reads them live** from the Rulesets API (`GET /api/zone-rules`) when `CF_ANALYTICS_TOKEN` carries **Zone → WAF → Read**, and classifies each as AI Security or not by whether its *expression* references `cf.llm.*` — so renaming a rule in the dashboard can no longer misfile it. Without that scope it falls back to the `ZONE_RULES` mirror in `web/src/lib/data.ts`, and the flow trace says so explicitly ("static mirror — may be stale") rather than passing hand-maintained data off as live. Keep the mirror updated as the fallback.
 
@@ -510,7 +515,7 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
    | Monitor LLM Custom Topics - Politics and Election | **block** | custom topic score ≤ 40 |
    | Monitor LLM Custom Topics - Telco Use Cases | log | custom topic score ≤ 50 |
 
-   ⚠️ **Live exception (since 2026-10-01, on purpose):** the zone's PII rules are set to **Log** (every matching rule acted `log` on a measured credit-card prompt), so PII prompts pass the edge and reach the external guardrails (to show Prisma AIRS blocking them). Until they are switched back, demo step 2 below ends at the amber external-guardrail card (or a reply), not a 403. PROGRESS Open bug #28.
+   ⚠️ **Live exception (since 2026-10-01, on purpose):** the zone's PII rules are set to **Log** (every matching rule acted `log` on a measured credit-card prompt), so PII prompts pass the edge and reach the external guardrails (to show Prisma AIRS blocking them). Until they are switched back, demo step 2 below ends at the amber external-guardrail card (or a reply), not a 403. **Not only PII:** on 2026-10-05, **Block LLM Injection** also acted `log`, and unsafe-topic and politics prompts got no edge 403 either, so steps 2–4 currently end at the external guardrails. PROGRESS Open bug #28.
 
    `injection_score` is 1–99 and **low = likely attack**; `100` means *not scored*. Custom-topic scores invert the same way — lower = stronger match.
 
@@ -569,7 +574,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **374 tests across 25 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **380 tests across 26 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -589,6 +594,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/openapi30.test.ts` (9) | The OAS 3.0.3 down-conversion API Shield needs: type arrays → `nullable`, `const` → `enum`, numeric `exclusiveMinimum` → boolean + `minimum`, `examples` → `example`, no 3.1-only keyword left anywhere, one absolute `servers` URL, every path and the chat request schema preserved, the source document untouched, and a union 3.0 cannot express refused rather than silently narrowed |
+| `web/src/lib/edgeBlock.test.ts` (6) | The edge 403 body (bug #4): the real prod PII body maps to `pii` with the rule's message + detail; an unseen `reason_code` keeps its message and code but claims no detection, even when spelled like one; inherited keys (`toString`, `__proto__`) never resolve; the legacy shape still works; HTML / empty / partial bodies are unstructured. **Mutation-verified** (no own-key check; a guessed code mapping) |
 | `web/src/lib/cardLayout.test.ts` (5) | The per-viewer card layout preference: only the exact word `compact` selects compact; missing, unknown or throwing storage reads as the default (columns); a refused write reports failure instead of throwing |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
 | `web/src/lib/guardrailView.test.ts` (32) | The guardrail card's view model: the deciding result is the one `stoppedBy` names (also when it is not `results[0]`); parallel with 2+ blocks marks every blocker "independent" and none "decided" (mutation-verified); an error is `unavailable`/fail-open and never carries findings, even with `detected` set; a fail-closed stop is headlined "Not sent to the model — X unavailable", never as a block; "Blocked by N of M" counts only blocks; `notRun` vendors follow results with their reason; the incomplete / redaction-not-applied / fail-open notes; the "Where they differ" grouping only when findings actually differ |

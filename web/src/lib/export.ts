@@ -61,6 +61,7 @@ export interface ExportTurn {
   cost?: number | null;
   detection?: string;
   reason?: string;
+  reasonCode?: string; // the edge rule's own reason_code, when its response carried one
   errorText?: string;
   verdict?: VerdictSummary;
 }
@@ -106,6 +107,7 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
         ray: next.ray,
         detection: next.detection,
         reason: next.reason,
+        reasonCode: next.code,
       });
     } else if (next.kind === "guardrails") {
       turns.push({
@@ -232,7 +234,10 @@ export function toMarkdown(exp: SessionExport): string {
   exp.turns.forEach((t, i) => {
     lines.push(`## Turn ${i + 1} — ${t.ts}`, "", `> ${t.prompt}`, "");
     if (t.outcome === "blocked") {
-      lines.push(`**Blocked** — ${t.detection ?? "waf"}: ${t.reason ?? "blocked by Cloudflare AI Security"}`);
+      // No fallback names a detection or credits AI Security: a 403 whose body did not
+      // identify itself says only that the edge refused it (the verdict line says who).
+      const who = t.detection ?? (t.reasonCode ? `rule ${t.reasonCode}` : "edge, unattributed");
+      lines.push(`**Blocked** — ${who}: ${t.reason ?? "the response carried no structured reason"}`);
     } else if (t.outcome === "error") {
       lines.push(`**Error** — ${t.errorText}`);
     } else if (t.outcome === "skipped") {

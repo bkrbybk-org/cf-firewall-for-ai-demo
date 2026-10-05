@@ -7,6 +7,7 @@
 // survives navigating to another tab and back, and is cleared by a refresh.
 import { useCallback, useRef } from "react";
 import { postChat, type GatewayBackoff } from "../lib/api";
+import { parseEdgeBlock } from "../lib/edgeBlock";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
@@ -81,6 +82,7 @@ export type Msg =
       contentType: string;
       detection?: string;
       reason?: string;
+      code?: string; // the rule's reason_code, when the edge's Custom JSON carried one
     }
   | {
       id: number;
@@ -306,6 +308,7 @@ export function useChat(cfg: {
         const { status, contentType, raw, data } = result;
         const ray = data?.ray?.split("-")[0] || undefined;
         if (status === 403) {
+          const edge = parseEdgeBlock(data);
           push({
             id: nextId(),
             kind: "blocked",
@@ -314,12 +317,14 @@ export function useChat(cfg: {
             raw,
             contentType,
             // Only attribute the block when the response actually says so (a
-            // WAF rule answering with our custom JSON). A bare 403 with an
-            // HTML body proves nothing about WHO refused it — Cloudflare
-            // Access returns exactly that — and blaming the WAF there made
-            // the demo credit AI Security for rejections it never made.
-            detection: data?.blocked ? data.detection : undefined,
-            reason: data?.reason,
+            // WAF rule answering with Custom JSON — lib/edgeBlock.ts reads both
+            // shapes). A bare 403 with an HTML body proves nothing about WHO
+            // refused it — Cloudflare Access returns exactly that — and blaming
+            // the WAF there made the demo credit AI Security for rejections it
+            // never made.
+            detection: edge.detection,
+            reason: edge.reason,
+            code: edge.code,
           });
           outcome = { kind: "blocked", ray };
         } else if (data?.externalGuardrailBlocked && data.externalGuardrails) {

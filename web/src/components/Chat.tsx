@@ -78,6 +78,9 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
   // evidence the edge refused the request, not evidence of who did it.
   const attributed = !!(m.detection && DETECTION_LABELS[m.detection]);
   const label = attributed ? DETECTION_LABELS[m.detection!] : null;
+  // A rule that answered with its own reason_code identified itself even when this
+  // app does not know what that code means: show its words, claim no detection type.
+  const selfIdentified = attributed || !!m.code;
   return (
     <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-red/60 bg-cf-red/10 p-4 text-sm shadow-sm">
       <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-red">
@@ -88,15 +91,25 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
           <>
             {label} — {m.reason || "Blocked by Cloudflare AI Security for Apps"}
           </>
+        ) : selfIdentified ? (
+          <>Blocked by a Cloudflare rule — {m.reason || "its response gave no message"}</>
         ) : (
           <>The edge returned 403 without a structured reason, so what refused it is not stated here.</>
         )}
       </div>
       <div className="mt-2 text-xs text-muted">
-        The prompt never reached the LLM.{m.ray ? <> ray <span className="font-mono">{m.ray}</span>.</> : null}{" "}
+        The prompt never reached the LLM.{m.ray ? <> ray <span className="font-mono">{m.ray}</span>.</> : null}
+        {m.code && (
+          <>
+            {" "}
+            Rule's reason code <span className="font-mono break-all">{m.code}</span>.
+          </>
+        )}{" "}
         {attributed
           ? "See the edge verdict below."
-          : "The edge verdict below shows whether a WAF rule matched — if none did, the block came from another layer (Access, rate limiting)."}
+          : selfIdentified
+            ? "The edge verdict below names the rule that fired."
+            : "The edge verdict below shows whether a WAF rule matched — if none did, the block came from another layer (Access, rate limiting)."}
       </div>
       {m.raw && (
         <details className="mt-2.5">
