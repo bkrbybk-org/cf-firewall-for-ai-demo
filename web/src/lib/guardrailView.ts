@@ -19,12 +19,16 @@ import type {
 export const PROVIDER_LABELS: Record<ExternalGuardrailProvider, string> = {
   "prisma-airs": "Prisma AIRS",
   "crowdstrike-aidr": "CrowdStrike AIDR",
+  "cisco-ai-defense": "Cisco AI Defense",
+  "lakera-guard": "Lakera Guard",
 };
 
 // The long form for running prose; the chips and lists use the short one.
 export const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
   "prisma-airs": "Palo Alto Networks Prisma AIRS",
   "crowdstrike-aidr": "CrowdStrike Falcon AIDR",
+  "cisco-ai-defense": "Cisco AI Defense",
+  "lakera-guard": "Check Point Lakera Guard",
 };
 
 // What the provider's own reference id is called, so it can be searched for in
@@ -32,6 +36,8 @@ export const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
 export const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
   "prisma-airs": "scan_id",
   "crowdstrike-aidr": "request_id",
+  "cisco-ai-defense": "event_id",
+  "lakera-guard": "request_uuid",
 };
 
 export const DETECTION_LABELS: Record<string, string> = {
@@ -101,8 +107,8 @@ export interface VendorView {
   state: VendorState;
   stateLabel: string;
   // An "allow" whose coverage is weaker than it reads (incomplete scan, redaction
-  // not applied). The label stays "allow" — that is what the provider said — but a
-  // renderer must not paint it as a clean green pass.
+  // not applied, Detect-mode alerts). The label stays "allow" — that is what the
+  // provider said — but a renderer must not paint it as a clean green pass.
   partial: boolean;
   decided: boolean; // true only for the result named by pipeline.stoppedBy
   // What the card shows about this vendor's part in the stop — kept apart from
@@ -159,6 +165,14 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
   if (r.outcome === "allow" && r.transformed) {
     notes.push(`Redaction requested by ${name} was not applied — the model would receive the original prompt`);
   }
+  // Lakera Guard in Detect mode: detectors fired, the project only logs. Decided with
+  // the user: "allow with alerts" — the verdict stays allow, but it is never a clean pass.
+  if (r.outcome === "allow" && r.detectOnly) {
+    const n = (r.detected ?? []).length;
+    notes.push(
+      `Detect mode — ${name} logged ${n === 1 ? "1 detection" : `${n} detections`} but its project only alerts, so it did not block`,
+    );
+  }
   if (state === "failedOpen") {
     notes.push("Could not be reached; set to fail open, so this prompt was not scanned by it");
   }
@@ -183,7 +197,7 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     fullName: providerFullLabel(r.provider),
     state,
     stateLabel: STATE_LABELS[state],
-    partial: state === "allow" && (!!r.incomplete || !!r.transformed),
+    partial: state === "allow" && (!!r.incomplete || !!r.transformed || !!r.detectOnly),
     decided,
     marker: decided ? "decided" : null, // revisited in pipelineView, which sees every result
     // An error is not a verdict: whatever `detected` holds, nothing was found.
@@ -202,10 +216,16 @@ function whyLine(vendors: VendorView[]): string | null {
   const withFindings = vendors.filter((v) => v.findings.length > 0);
   if (withFindings.length < 2) return null;
 
-  const labels = dedupe(withFindings.flatMap((v) => v.findings));
+  // Case-insensitive: two vendors naming the same thing ("Prompt injection" from our
+  // Prisma AIRS label, "Prompt Injection" from a Cisco rule name) must not read as a
+  // disagreement. Only case is folded — different words stay different findings.
+  const fold = (s: string) => s.toLowerCase();
+  const firstSpelling = new Map<string, string>();
+  for (const f of withFindings.flatMap((v) => v.findings)) if (!firstSpelling.has(fold(f))) firstSpelling.set(fold(f), f);
+  const labels = [...firstSpelling.values()];
   const groups = new Map<string, { who: VendorView[]; labels: string[] }>();
   for (const label of labels) {
-    const who = withFindings.filter((v) => v.findings.includes(label));
+    const who = withFindings.filter((v) => v.findings.some((f) => fold(f) === fold(label)));
     const key = who.map((v) => v.provider).join("+");
     const g = groups.get(key) ?? { who, labels: [] };
     g.labels.push(label);

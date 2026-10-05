@@ -25,7 +25,9 @@
 //     and says the guardrail was unavailable; "allow" lets it through and marks
 //     it `failedOpen` so the reply shows it was not scanned.
 
+import { CISCO_AID_INSPECT_PATH, CISCO_AID_REGIONS, scanPromptWithCiscoAid } from "./ciscoAiDefense";
 import { AIDR_GUARD_PATH, AIDR_REGIONS, scanPromptWithAidr } from "./crowdstrikeAidr";
+import { LAKERA_GUARD_PATH, LAKERA_REGIONS, scanPromptWithLakera } from "./lakeraGuard";
 import { PRISMA_AIRS_REGIONS, PRISMA_AIRS_SCAN_PATH, scanPromptWithPrismaAirs } from "./prismaAirs";
 import type {
   Env,
@@ -46,9 +48,11 @@ interface ProviderSpec {
   regions: readonly { id: string; label: string; url: string }[];
   defaultRegion: string;
   scanPath: string;
-  // Prisma AIRS names an AI security profile in every request; CrowdStrike AIDR
-  // takes its policy from the collector token, so it has nothing to name.
+  // Prisma AIRS names an AI security profile in every request and Lakera Guard a
+  // project; CrowdStrike AIDR and Cisco AI Defense take the policy from the key, so
+  // they have nothing to name. `profileLabel` is what the named thing is called.
   requiresProfile: boolean;
+  profileLabel: string;
   keyLabel: string;
   vendor: string;
 }
@@ -61,6 +65,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     defaultRegion: "us",
     scanPath: PRISMA_AIRS_SCAN_PATH,
     requiresProfile: true,
+    profileLabel: "AI security profile name",
     keyLabel: "API key",
     vendor: "Palo Alto Networks",
   },
@@ -71,8 +76,33 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     defaultRegion: "us-1",
     scanPath: AIDR_GUARD_PATH,
     requiresProfile: false,
+    profileLabel: "",
     keyLabel: "Collector token",
     vendor: "CrowdStrike",
+  },
+  // Not yet verified against a live payload (PROGRESS.md plan, step 6), so listed
+  // but impossible to enable — the same gate CrowdStrike sat behind until it was.
+  "cisco-ai-defense": {
+    label: "Cisco AI Defense",
+    supported: false,
+    regions: CISCO_AID_REGIONS,
+    defaultRegion: "us",
+    scanPath: CISCO_AID_INSPECT_PATH,
+    requiresProfile: false,
+    profileLabel: "",
+    keyLabel: "API key",
+    vendor: "Cisco",
+  },
+  "lakera-guard": {
+    label: "Check Point Lakera Guard",
+    supported: false,
+    regions: LAKERA_REGIONS,
+    defaultRegion: "global",
+    scanPath: LAKERA_GUARD_PATH,
+    requiresProfile: true,
+    profileLabel: "Project ID",
+    keyLabel: "API key",
+    vendor: "Lakera (Check Point)",
   },
 };
 
@@ -128,6 +158,7 @@ export function toPublicConfig(c: StoredConfig) {
     regions: spec.regions.map((r) => ({ id: r.id, label: r.label, url: r.url })),
     profileName: c.profileName,
     requiresProfile: spec.requiresProfile,
+    profileLabel: spec.profileLabel,
     keyLabel: spec.keyLabel,
     vendor: spec.vendor,
     failMode: c.failMode,
@@ -196,7 +227,13 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
   if (next.enabled) {
     const hasKey = newApiKey != null || next.apiKeyEnc != null;
     if (!hasKey) return { ok: false, error: `Cannot enable: save ${spec.keyLabel === "API key" ? "an API key" : `a ${spec.keyLabel.toLowerCase()}`} first` };
-    if (spec.requiresProfile && !next.profileName) return { ok: false, error: "Cannot enable: an AI security profile name is required" };
+    if (spec.requiresProfile && !next.profileName) {
+      // "an AI security profile name" / "a project ID": lowercase the first letter
+      // unless the word is an acronym, and pick the article from the result.
+      const l = spec.profileLabel;
+      const noun = /^[A-Z]{2}/.test(l) ? l : l.charAt(0).toLowerCase() + l.slice(1);
+      return { ok: false, error: `Cannot enable: ${/^[aeiou]/i.test(noun) ? "an" : "a"} ${noun} is required` };
+    }
   }
   return { ok: true, next, newApiKey };
 }
@@ -477,6 +514,13 @@ export async function scanWithKey(
       );
     case "crowdstrike-aidr":
       return scanPromptWithAidr({ baseUrl, token: apiKey, prompt: input.prompt, model: input.model, spanId: ray }, fetchImpl);
+    // Both unreachable while `supported: false` (checked above) — wired, but not
+    // trusted until a real payload has been seen (PROGRESS.md plan, step 6).
+    case "cisco-ai-defense":
+      return scanPromptWithCiscoAid({ baseUrl, apiKey, prompt: input.prompt, transactionId: ray }, fetchImpl);
+    case "lakera-guard":
+      // The project is the policy, as Prisma AIRS's profile is: profileName holds it.
+      return scanPromptWithLakera({ baseUrl, apiKey, projectId: c.profileName, prompt: input.prompt }, fetchImpl);
   }
 }
 

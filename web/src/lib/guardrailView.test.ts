@@ -332,6 +332,30 @@ describe("rule 6: honesty notes", () => {
     expect(a.partial).toBe(true);
   });
 
+  it("Lakera Detect mode is allow with alerts: findings shown, a note, partial — never a clean pass", () => {
+    const v = pipelineView(
+      pipe({
+        results: [
+          result({ provider: "lakera-guard", outcome: "allow", detectOnly: true, detected: ["prompt_attack", "pii/email"] }),
+        ],
+      }),
+      "guardrailOnly",
+    );
+    const a = v.vendors[0]!;
+    expect(a.stateLabel).toBe("allow");
+    expect(a.partial).toBe(true);
+    expect(a.findings).toEqual(["prompt_attack", "pii/email"]);
+    expect(a.notes).toContain("Detect mode — Lakera Guard logged 2 detections but its project only alerts, so it did not block");
+  });
+
+  it("detectOnly on an error is ignored — an error is still not a verdict", () => {
+    const v = pipelineView(
+      pipe({ results: [result({ provider: "lakera-guard", outcome: "error", detectOnly: true, error: "x" })], stoppedBy: "lakera-guard" }),
+      "blocked",
+    );
+    expect(v.vendors[0]!.notes.some((n) => n.startsWith("Detect mode"))).toBe(false);
+  });
+
   it("a clean allow has no notes and is not partial", () => {
     const v = pipelineView(pipe({ results: [result({ provider: AIRS })] }), "guardrailOnly");
     expect(v.vendors[0]!.notes).toEqual([]);
@@ -386,6 +410,38 @@ describe("details and report id", () => {
     ]);
     expect(airs!.reportId).toBe("rep-1");
     expect(aidr!.reportId).toBeNull(); // only Prisma AIRS has a per-request report API
+  });
+});
+
+describe("rule 7: why — case only is folded", () => {
+  it("the same finding in different case is agreement, not a difference", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [
+          result({ provider: AIRS, outcome: "block", detected: ["injection"] }), // labelled "Prompt injection"
+          result({ provider: "cisco-ai-defense", outcome: "block", detected: ["Prompt Injection"] }),
+        ],
+        stoppedBy: AIRS,
+      }),
+      "blocked",
+    );
+    expect(v.why).toBeNull();
+  });
+
+  it("different words stay different, shown in their first spelling", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [
+          result({ provider: AIRS, outcome: "block", detected: ["injection", "dlp"] }),
+          result({ provider: "cisco-ai-defense", outcome: "block", detected: ["PROMPT INJECTION"] }),
+        ],
+        stoppedBy: AIRS,
+      }),
+      "blocked",
+    );
+    expect(v.why).toBe("Prompt injection — both · Sensitive data (DLP) — Prisma AIRS only");
   });
 });
 

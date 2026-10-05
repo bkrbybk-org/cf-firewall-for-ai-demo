@@ -146,6 +146,10 @@ alters what a customer sees in a demo. State it and let them choose.
   PANW's hosts answer a made-up path with the same 403/401 as a real one, so a dummy-credential probe there
   proves nothing about whether an endpoint exists. Also check what a live error *proves*:
   AIDR returns the same 401 with no token as with a bad one, so it cannot confirm a token arrived.
+  Lakera's live error body differs from its own API reference too (`error` is a code like `ErrMissingToken`,
+  the text is in `message`). Cisco AI Defense and Lakera hosts DO answer a made-up path with 404, so a no-key
+  probe there does prove a path exists. A provider stays `supported: false` until a real verdict payload has
+  been seen.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

@@ -457,7 +457,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **392 across 27 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **442 across 29 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +622,64 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — Cisco AI Defense + Lakera Guard: built and locked (plan steps 1–5)
+
+**What.** The plan's steps 1–5 are done; step 6 (live verification) is blocked on credentials.
+- **Registry** (self). The provider union gains `cisco-ai-defense` and `lakera-guard`.
+  - **`PROVIDERS`:** both new entries are `supported: false`, so `validateUpdate` refuses to store anything for
+    them, key included.
+  - **`profileLabel` per provider:** "AI security profile name" / "Project ID". It replaces the hard-coded
+    text on `/guardrails` and in the diagram.
+  - **Hints:** profile and policy hints are now per provider. The page had named Strata Cloud Manager and the
+    Falcon console regardless of the vendor.
+  - **Ordering:** `normalizeOrder` appends the new ids, so prod's stored two-provider order stays valid.
+  - **No migration.**
+- **`src/ciscoAiDefense.ts`** (Sonnet, from a pinned brief; reviewed):
+  - The verdict is `is_safe` alone, and a 2xx without a boolean is an error.
+  - `severity` never overrides `is_safe`, as decided with the user.
+  - Only `client_transaction_id` = ray is sent as metadata.
+- **`src/lakeraGuard.ts`** (Sonnet, parallel, disjoint files; reviewed):
+  - The verdict is `flagged`, and a 2xx without a boolean is an error.
+  - Detect mode with detections is allow + `detectOnly`, as decided with the user.
+  - The body is exactly `messages`, `project_id`, `breakdown`; never `payload` (matched prompt spans) or
+    `metadata`.
+- **Wire-up** (self). `scanWithKey` calls both; `ExternalGuardrailResult.detectOnly` is added to both type
+  files and to openapi.
+  - **`guardrailView`:** a Detect-mode note, and `partial` (amber, never a clean pass).
+  - **Reply chip:** "Lakera Guard · allow · N alerts (Detect mode)".
+  - **Scan-id labels:** `event_id` / `request_uuid`. The *Test connection* id label now comes from the shared
+    `scanIdLabel`; it used to be hard-coded as AIDR-or-AIRS.
+  - **"Where they differ"** now folds case only, so "Prompt injection" and Cisco's "Prompt Injection" read as
+    agreement.
+- **Small fix:** the diagram said "Needs a saved api key"; it now keeps the acronym.
+- **Probes** (self, no key):
+  - Each documented path returns 401 on every listed host (3 Cisco, 4 Lakera); a made-up path returns 404.
+    Unlike PANW, whose hosts return 403 to any path, this proves the paths and hosts are real.
+  - **The live error bodies differ from the docs.** Lakera sends `{error: "ErrMissingToken", message,
+    details, request_id}`, so `error` is a code, not the text. Cisco sends `{code, message, details[]}`.
+  - Both parsers read the live shape first, with tests built from the exact probed bodies.
+
+**Verified.**
+- **Gates:** 442 tests across 29 files, all green.
+- **Mutation testing:** I re-ran one of each agent's four claims myself: dropping `detectOnly`, and letting
+  severity HIGH flip an allow. Both went red.
+- **Browser** (`wrangler dev`):
+  - **`/guardrails`:** all four providers listed, the new two "Not yet supported" and greyed in the flow at
+    steps 3–4.
+  - **Stubbed parallel four-vendor turn:** "Blocked by 3 of 4", three BLOCKED INDEPENDENTLY, and Lakera as
+    allow with the Detect-mode note.
+  - **Guardrail-only turn:** shows the same note.
+  - **Reply chip:** "Lakera Guard · allow · 1 alert (Detect mode)".
+  - **Compact layout at 375 px, light:** four rows, no overflow, and "Prompt injection — Prisma AIRS + Cisco
+    AI Defense only".
+- **Prod** (`6b16bb25-20ef-45bb-a7ee-f5affd27461b`):
+  - Smoke 5/5.
+  - `/api/external-guardrails` shows the user's **parallel AIDR → AIRS pipeline unchanged and both still
+    enabled**, with Cisco and Lakera appended as `supported: false`.
+  - A `PUT` enabling Lakera returned "Check Point Lakera Guard is not supported yet".
+  - The bundle `index-DorSoZRj.js` contains the new strings.
+- **Not verified:** any real verdict from either vendor (step 6).
 
 ### 2026-10-05 — #21: saved runs and "Close the gaps" on the Red Team page (+ #17, #18, #19, a FK bug)
 
@@ -1772,14 +1830,14 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
    providers ship as `supported: false`** (listed but impossible to enable), the same pattern used for
    CrowdStrike before it was verified. Lakera may have a free community tier (third-party sources say so;
    unverified).
-1. [ ] **Registry generalisation** (*self*; hot files `src/types.ts`, `web/src/lib/types.ts`):
+1. [x] **Registry generalisation** (done 2026-10-05) (*self*; hot files `src/types.ts`, `web/src/lib/types.ts`):
    - Extend the `ExternalGuardrailProvider` union and the `openapi.ts` enum.
    - Add a per-provider `profileLabel` ("AI security profile name" / "Project ID"), replacing the hard-coded
      text in `GuardrailsPage.tsx:343` and `PipelineDiagram.tsx:60`.
    - No migration: `external_guardrails.provider` has no CHECK constraint, and `profile_name` holds Lakera's
      `project_id`.
    - Verify: gates; and the order validation (strict permutation) and `normalizeOrder` with 4 providers.
-2. [ ] **`src/ciscoAiDefense.ts` + test** (*sonnet*, disjoint files, parallel with 3). The brief pins:
+2. [x] **`src/ciscoAiDefense.ts` + test** (done 2026-10-05) (*sonnet*, disjoint files, parallel with 3). The brief pins:
    - A 200 without a boolean `is_safe` is an **error**, never an allow.
    - `is_safe: false` is a block, whatever `severity` says.
    - Send no `metadata` beyond `client_transaction_id`, and no user, IP or user agent.
@@ -1787,7 +1845,7 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
    - 401/500 `{message}` parsed; timeout and network failure become error results.
    - `rules[].rule_name` and `classifications` map to `detected`; `event_id` maps to `scanId`.
    - Verify: tests plus a mutation pass, like `crowdstrikeAidr.test.ts`.
-3. [ ] **`src/lakeraGuard.ts` + test** (*sonnet*, parallel with 2). The brief pins:
+3. [x] **`src/lakeraGuard.ts` + test** (done 2026-10-05) (*sonnet*, parallel with 2). The brief pins:
    - A non-boolean `flagged` is an error.
    - `flagged: true` is a block.
    - **`action: "detect"` with detectors that fired is an allow with `detectOnly: true`**: Lakera logged
@@ -1796,7 +1854,7 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
    - Request `breakdown: true`; detected `detector_type` values map to `detected`.
    - 400/401/429/500 bodies parsed; a 429 is an error result, so the fail mode decides.
    - `request_uuid` maps to `scanId`.
-4. [ ] **Wire-up** (*self*; hot `handlers.ts` untouched, since it only calls `scanWithKey`):
+4. [x] **Wire-up** (done 2026-10-05) (*self*; hot `handlers.ts` untouched, since it only calls `scanWithKey`):
    - `scanWithKey` switch and the `PROVIDERS` entries.
    - `ExternalGuardrailResult.detectOnly` in both type files.
    - In `guardrailView.ts`: a `detectOnly` note ("Detect mode — N detections logged, not blocked"), amber
@@ -1807,10 +1865,12 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
    - Verify: gates; `guardrailView` tests for `detectOnly`; a browser check with stubbed four-vendor
      pipelines (sequential, parallel, Detect mode) in both card layouts, plus the diagram and the `/guardrails`
      cards with four providers at 375 px, in dark and light.
-5. [ ] **Unauthenticated probes** (*self*): POST each documented path with no key and record the error
+5. [x] **Unauthenticated probes** (done 2026-10-05) (*self*): POST each documented path with no key and record the error
    shape. CrowdStrike taught us a 401 does not prove a path exists; PANW answers 403 to any path. Record only
    what a probe proves.
-6. [ ] **Live verification on prod** (*self*; needs 0): save each key with the provider **disabled**, then
+6. [ ] **Live verification on prod** (*self*; needs 0). First flip that provider's `supported` to `true` in
+   `PROVIDERS` and deploy: the server refuses to store anything for an unsupported provider, key included. Then
+   save each key with the provider **disabled**, then
    *Test connection* with a benign prompt and an injection prompt. Capture the real payloads and correct the
    parsers and docs to match them before enabling. Then enable in a 4-way parallel run, read the card, and
    switch back to the user's pipeline.

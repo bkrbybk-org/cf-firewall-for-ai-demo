@@ -296,7 +296,7 @@ export interface GatewayAnalytics {
 // ── External guardrails ────────────────────────────────────────────────────
 // Hand-mirrored in web/src/lib/types.ts — read the comments there for the
 // semantics. Kept identical on purpose: the client renders these verbatim.
-export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
+export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr" | "cisco-ai-defense" | "lakera-guard";
 
 export interface ExternalGuardrailResult {
   provider: ExternalGuardrailProvider;
@@ -315,6 +315,7 @@ export interface ExternalGuardrailResult {
   policy?: string;
   summary?: string;
   transformed?: boolean;
+  detectOnly?: boolean;
 }
 
 export interface GuardrailReportDetection {

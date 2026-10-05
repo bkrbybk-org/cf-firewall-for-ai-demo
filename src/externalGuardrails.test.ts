@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decryptSecret,
+  PROVIDERS,
   defaultConfig,
   defaultPipeline,
   encryptSecret,
@@ -48,6 +49,15 @@ describe("validateUpdate", () => {
     const v = validateUpdate({ provider: "prisma-airs", endpoint: "https://evil.example", url: "https://evil.example" }, airs());
     expect(v.ok).toBe(true);
     if (v.ok) expect(JSON.stringify(v.next)).not.toContain("evil.example");
+  });
+
+  // Listed but not yet verified against a live payload (PROGRESS.md plan, step 6):
+  // nothing about them may be stored, so nothing can be enabled.
+  it("refuses every update to Cisco AI Defense and Lakera Guard until they are verified", () => {
+    for (const provider of ["cisco-ai-defense", "lakera-guard"] as const) {
+      const v = validateUpdate({ provider, enabled: true, apiKey: "k", profileName: "p" }, defaultConfig(provider));
+      expect(v, provider).toMatchObject({ ok: false, error: `${PROVIDERS[provider].label} is not supported yet` });
+    }
   });
 
   it("refuses to enable without a key, and without a profile", () => {
@@ -166,18 +176,32 @@ describe("stopsTurn", () => {
 
 describe("pipeline config", () => {
   it("normalises a stored order into a full permutation", () => {
-    expect(normalizeOrder(["crowdstrike-aidr", "prisma-airs"])).toEqual(["crowdstrike-aidr", "prisma-airs"]);
+    const ALL = ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"];
+    expect(normalizeOrder(["lakera-guard", "crowdstrike-aidr", "cisco-ai-defense", "prisma-airs"])).toEqual([
+      "lakera-guard",
+      "crowdstrike-aidr",
+      "cisco-ai-defense",
+      "prisma-airs",
+    ]);
     // Unknown ids dropped, duplicates removed, missing providers appended — a
     // hand-edited row can never make a provider vanish from the pipeline.
-    expect(normalizeOrder(["bogus", "crowdstrike-aidr", "crowdstrike-aidr"])).toEqual(["crowdstrike-aidr", "prisma-airs"]);
-    expect(normalizeOrder([])).toEqual(["prisma-airs", "crowdstrike-aidr"]);
+    // Missing ones are appended in registry order, so an order stored before a
+    // provider existed (2026-10-05: two providers became four) stays valid.
+    expect(normalizeOrder(["bogus", "crowdstrike-aidr", "crowdstrike-aidr"])).toEqual([
+      "crowdstrike-aidr",
+      "prisma-airs",
+      "cisco-ai-defense",
+      "lakera-guard",
+    ]);
+    expect(normalizeOrder([])).toEqual(ALL);
   });
 
   it("accepts a valid update and leaves omitted fields alone", () => {
     const v = validatePipelineUpdate({ mode: "parallel" }, defaultPipeline());
-    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr"] } });
-    const w = validatePipelineUpdate({ guardrailOnly: true, order: ["crowdstrike-aidr", "prisma-airs"] }, defaultPipeline());
-    expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order: ["crowdstrike-aidr", "prisma-airs"] });
+    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"] } });
+    const order = ["crowdstrike-aidr", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
+    const w = validatePipelineUpdate({ guardrailOnly: true, order }, defaultPipeline());
+    expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order });
   });
 
   // Strict on input: silently repairing a bad order would save one the operator never chose.

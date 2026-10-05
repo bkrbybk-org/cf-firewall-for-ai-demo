@@ -55,6 +55,8 @@ src/                    Worker (TypeScript)
   openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
   crowdstrikeAidr.ts    CrowdStrike Falcon AIDR AI Guard client (request, verdict/202/error parsing, timeout)
+  ciscoAiDefense.ts     Cisco AI Defense Inspection API client — built, listed as not yet supported (unverified)
+  lakeraGuard.ts        Check Point Lakera Guard v2 client (Detect mode → allow with alerts) — same status
   prismaAirsReport.ts   Prisma AIRS threat-scan report fetch + allowlist parser (no prompt content leaves it)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
   percentile.ts         nearest-rank percentile (JS + SQL forms) behind every latency p50/p95 (bug #24)
@@ -228,7 +230,7 @@ npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for 
 
 ## External guardrails (Prisma AIRS)
 
-`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Two are implemented: Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) and **CrowdStrike Falcon AIDR** (AI Detection and Response, AI Guard).
+`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Two are live: Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) and **CrowdStrike Falcon AIDR** (AI Detection and Response, AI Guard). Two more — **Cisco AI Defense** and **Check Point Lakera Guard** — are built but locked until verified (below).
 
 **What you configure, per provider:** region (the endpoint), the secret, the fail mode, and the enable toggle — plus, for Prisma AIRS only, the AI security profile name. *Test connection* scans a fixed benign prompt with the **saved** settings, through the same code path as a real chat turn.
 
@@ -249,6 +251,30 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 - **A `blocked` that is not a real boolean is an error** — never an allow.
 - **Redaction is reported, not applied.** When AIDR's policy redacts (`result.transformed`), this app still sends the **original** prompt to the model, and says so: the reply chip reads *allow · redaction not applied* in amber, never a green pass.
 - **Errors** come in the API gateway's shape (`{meta, errors:[{code, message}]}`, seen live) or the spec's Pangea validation shape; both are parsed.
+
+**Built, listed, not yet enableable: Cisco AI Defense and Check Point Lakera Guard** (since 2026-10-05).
+- **Status.** Both clients are written and tested (`src/ciscoAiDefense.ts`, `src/lakeraGuard.ts`) and wired into the pipeline. They appear on `/guardrails` and in the traffic flow as **"Not yet supported"** (`supported: false`): the server refuses to store anything for them.
+- **Why the gate.** No real verdict payload has been seen yet, and both earlier vendors' docs were wrong in places. They are unlocked once a key exists and a real payload confirms the parser (PROGRESS.md, "Plan: Cisco AI Defense + Check Point Lakera Guard", step 6).
+
+| | Cisco AI Defense (Inspection API) | Check Point Lakera Guard (v2) |
+|---|---|---|
+| Endpoint | `POST {region}/api/v1/inspect/chat` | `POST {host}/v2/guard` |
+| Regions | `{us,ap,eu}.api.inspect.aidefense.security.cisco.com` | `api.lakera.ai`, `us.`, `eu.`, `ap-southeast-1.` |
+| Secret | API key in `X-Cisco-AI-Defense-API-Key` | API key as `Authorization: Bearer` |
+| Policy | Attached to the key's application connection — nothing to name | **Project ID** (`project_id`), sent per request |
+| Verdict field | `is_safe`. `severity` **never** overrides it (decided with the user) | `flagged`. **In Detect mode it is always false**, so detections there are shown as **allow with alerts** (`detectOnly`, amber; decided with the user) |
+| Detections shown | `rules[].rule_name`, else `classifications` | `breakdown[].detector_type` where `detected` |
+| Reference id | `event_id` (documented as only on a violation) | `metadata.request_uuid` |
+| Sent besides the prompt | only `metadata.client_transaction_id` = the ray | `project_id`, `breakdown: true`; never `payload` (it returns matched prompt text) or `metadata` |
+
+**What has been checked live** (unauthenticated probes, 2026-10-05):
+- Each documented path answers **401** on every listed host, and a made-up path answers **404**. So the paths and hosts are real.
+- The live error bodies differ from the docs:
+  - Cisco sends `{code, message, details[]}`.
+  - Lakera sends `{error: "ErrMissingToken", message, details, request_id}`, where `error` is a code, not the text.
+- Both parsers read the live shape first.
+
+Everything else is still *documented, not verified*.
 
 ### Prisma AIRS report panel
 
@@ -587,7 +613,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **392 tests across 27 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **442 tests across 29 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -611,12 +637,14 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/edgeBlock.test.ts` (6) | The edge 403 body (bug #4): the real prod PII body maps to `pii` with the rule's message + detail; an unseen `reason_code` keeps its message and code but claims no detection, even when spelled like one; inherited keys (`toString`, `__proto__`) never resolve; the legacy shape still works; HTML / empty / partial bodies are unstructured. **Mutation-verified** (no own-key check; a guessed code mapping) |
 | `web/src/lib/cardLayout.test.ts` (5) | The per-viewer card layout preference: only the exact word `compact` selects compact; missing, unknown or throwing storage reads as the default (columns); a refused write reports failure instead of throwing |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
-| `web/src/lib/guardrailView.test.ts` (32) | The guardrail card's view model: the deciding result is the one `stoppedBy` names (also when it is not `results[0]`); parallel with 2+ blocks marks every blocker "independent" and none "decided" (mutation-verified); an error is `unavailable`/fail-open and never carries findings, even with `detected` set; a fail-closed stop is headlined "Not sent to the model — X unavailable", never as a block; "Blocked by N of M" counts only blocks; `notRun` vendors follow results with their reason; the incomplete / redaction-not-applied / fail-open notes; the "Where they differ" grouping only when findings actually differ |
+| `web/src/lib/guardrailView.test.ts` (36) | The guardrail card's view model: Lakera Detect mode is allow-with-alerts (note, partial, never clean) and an error ignores `detectOnly`; "Where they differ" folds only case; the deciding result is the one `stoppedBy` names (also when it is not `results[0]`); parallel with 2+ blocks marks every blocker "independent" and none "decided" (mutation-verified); an error is `unavailable`/fail-open and never carries findings, even with `detected` set; a fail-closed stop is headlined "Not sent to the model — X unavailable", never as a block; "Blocked by N of M" counts only blocks; `notRun` vendors follow results with their reason; the incomplete / redaction-not-applied / fail-open notes; the "Where they differ" grouping only when findings actually differ |
 | `src/coverage.test.ts` (6) | Row-cap coverage (bug #23): nothing tagged when not capped; buckets before the oldest row read are `none`, its own bucket `partial`, including exactly on a boundary; counts never rewritten; a capped read with no usable timestamp claims nothing rather than full coverage. **Mutation-verified** (ignore the cap flag, drop `partial`, off-by-one boundary, missing timestamp = full — each caught) |
 | `src/percentile.test.ts` (12) | Nearest rank equals ⌈n·p/100⌉ for every n ≤ 1000 at p 1/50/90/95/99/100; never outside 1…n; the six real local partitions that exposed bug #24 pick the hand-calculated p50/p95; the SQL form evaluates to the same rank; and the prompt-analytics handler uses it, with no truncating `CAST(n2*0.95 AS INTEGER)` left |
 | `src/prismaAirsReport.test.ts` (10) | The report parser is an allowlist: a fixture filling every prompt-bearing field (snippets, masked text, URLs, code blocks, grounding explanation, byte offsets) leaks none of it; verdict and action kept apart; matched by `report_id`, never `[0]`; an empty array is `pending`, not "clean"; the id charset stops query injection before any call. **Mutation-verified**: six regressions (leak URLs, leak snippets, take `[0]`, empty = clean, action derived from verdict, leak the explanation) were each caught |
+| `src/ciscoAiDefense.test.ts` (21) | Cisco AI Defense client from its docs: only `messages` + `client_transaction_id` sent; **a 2xx without a boolean `is_safe` is an error**; `severity` never overrides `is_safe` (both directions); rules → `detected`, classifications as fallback; the **live** 401 body (`details`) read. **Mutation-verified** (missing verdict = allow, severity flips it, user metadata sent, classification as verdict) |
+| `src/lakeraGuard.test.ts` (24) | Lakera Guard client from its docs: body is exactly `messages`, `project_id`, `breakdown` — never `payload` or `metadata`; **a 2xx without a boolean `flagged` is an error**; Detect mode with detections is allow + `detectOnly`, never a block or a clean pass; 429 says rate limited; the **live** 401 body (`error` is a code, `message` the text) read. **Mutation-verified** (missing verdict = allow, Detect as block, Detect as clean pass, `payload: true`) |
 | `src/crowdstrikeAidr.test.ts` (15) | The CrowdStrike AIDR client: the `/aidr/aiguard` path (not the spec's 404 one), Bearer collector token, no `user_id`/`source_ip`, the three official hosts; **a 200 without a boolean `blocked`, and a 202, are errors — never an allow**; verdict from `blocked` alone, never the detectors; redaction flagged; the live gateway's error body and the spec's validation errors; timeout and network failure. **Mutation-verified**: five planted regressions (missing `blocked` = allow, 202 as a verdict, verdict from detectors, the spec's path, always-allow) were each caught |
-| `src/externalGuardrails.test.ts` (33) | **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
+| `src/externalGuardrails.test.ts` (34) | **Registry**: Cisco AI Defense and Lakera Guard refuse every update until verified; a stored order from before they existed normalises to all four. **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/zone-rules.test.ts` (4) · `web/src/lib/zonerules.test.ts` (6) | Rule classification by expression rather than name — a renamed rule stays classified, an unrelated rule mentioning "LLM" does not |
 

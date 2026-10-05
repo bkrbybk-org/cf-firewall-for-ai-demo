@@ -109,7 +109,7 @@ export interface ChatResponse {
 // ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
 // Third-party guardrails the Worker forwards each prompt to before calling the
 // model. Any number may be enabled; the pipeline config decides how they run.
-export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
+export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr" | "cisco-ai-defense" | "lakera-guard";
 
 // GET /api/external-guardrails/report — Prisma AIRS's own per-detection report
 // for one scan. Allowlisted on the server: names, categories, verdicts, actions
@@ -205,6 +205,10 @@ export interface ExternalGuardrailResult {
   // the redaction — the model gets the original prompt — so say so, never imply
   // the model saw a cleaned version.
   transformed?: boolean;
+  // Lakera Guard in Detect mode: detectors fired, but the project only logs them, so
+  // `flagged` is forced false and the outcome is allow. "Allow with alerts" — never
+  // rendered as a clean pass, never as a block.
+  detectOnly?: boolean;
 }
 
 export interface ExternalGuardrailRegion {
@@ -221,10 +225,11 @@ export interface ExternalGuardrailConfig {
   region: string; // ExternalGuardrailRegion.id
   endpoint: string; // full scan URL derived from the region (read-only)
   regions: ExternalGuardrailRegion[];
-  profileName: string; // Prisma AIRS AI security profile name (required by the API)
+  profileName: string; // Prisma AIRS: AI security profile name · Lakera Guard: project_id
   // Provider-specific wording, from the server's registry so the page never
   // hard-codes one vendor's terms for another.
-  requiresProfile: boolean; // false for CrowdStrike AIDR: the policy rides on the collector token
+  requiresProfile: boolean; // false for CrowdStrike AIDR and Cisco AI Defense: the policy rides on the key
+  profileLabel: string; // what profileName is called: "AI security profile name" | "Project ID"
   keyLabel: string; // "API key" | "Collector token"
   vendor: string; // "Palo Alto Networks" | "CrowdStrike" — whose hosts the key is sent to
   failMode: "block" | "allow"; // what to do when the provider errors or times out

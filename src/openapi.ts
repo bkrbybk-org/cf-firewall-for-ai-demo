@@ -596,7 +596,11 @@ export const openapi = {
       },
 
       // ── external guardrails ─────────────────────────────────────────────
-      ExternalGuardrailProvider: { type: "string", enum: ["prisma-airs", "crowdstrike-aidr"] },
+      ExternalGuardrailProvider: {
+        type: "string",
+        enum: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"],
+        description: "`cisco-ai-defense` and `lakera-guard` are listed with `supported: false` until verified against a live payload.",
+      },
       ExternalGuardrailResult: obj(
         {
           provider: ref("ExternalGuardrailProvider"),
@@ -623,6 +627,7 @@ export const openapi = {
           policy: str("CrowdStrike AIDR: the policy its collector token evaluated."),
           summary: str("CrowdStrike AIDR: its own one-line summary of the result."),
           transformed: bool("CrowdStrike AIDR redacted part of the prompt. **This app does not apply the redaction** — the model receives the original prompt."),
+          detectOnly: bool("Lakera Guard in Detect mode: detectors fired, but the project only logs them, so the outcome is `allow`. Allow with alerts — not a clean pass."),
         },
         ["provider", "outcome", "latencyMs"],
       ),
@@ -711,7 +716,8 @@ export const openapi = {
           endpoint: str("Full scan URL derived from `region` (read-only)."),
           regions: arr(obj({ id: str(), label: str(), url: str() }, ["id", "label", "url"])),
           profileName: str("Prisma AIRS AI security profile name (required by its API)."),
-          requiresProfile: bool("False for CrowdStrike AIDR, whose policy comes from the collector token."),
+          requiresProfile: bool("True for Prisma AIRS (AI security profile) and Lakera Guard (project ID); false where the policy rides on the key (CrowdStrike AIDR, Cisco AI Defense)."),
+          profileLabel: str("What `profileName` is called for this provider: `AI security profile name` or `Project ID`; empty when `requiresProfile` is false."),
           keyLabel: str("What the secret is called for this provider: `API key` or `Collector token`."),
           vendor: str("Whose official hosts the key is sent to."),
           failMode: { type: "string", enum: ["block", "allow"], description: "What happens when the provider errors or times out." },
@@ -719,7 +725,7 @@ export const openapi = {
           apiKeyLast4: nullable("string", "The only part of the key ever returned."),
           updatedAt: nullable("integer", "Epoch ms."),
         },
-        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "updatedAt"],
+        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "profileLabel", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "updatedAt"],
       ),
       ExternalGuardrailsState: obj(
         {

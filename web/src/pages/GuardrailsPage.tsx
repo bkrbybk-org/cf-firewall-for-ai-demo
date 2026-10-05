@@ -18,6 +18,7 @@ import { Header } from "../components/Header";
 import { PipelineDiagram } from "../components/PipelineDiagram";
 import { Switch } from "../components/Switch";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { scanIdLabel } from "../lib/guardrailView";
 import {
   getExternalGuardrails,
   saveExternalGuardrail,
@@ -47,6 +48,19 @@ function errMsg(e: unknown): string {
 function isState(s: unknown): s is ExternalGuardrailsState {
   return !!s && Array.isArray((s as ExternalGuardrailsState).providers);
 }
+
+// Where each vendor's policy lives — said in that vendor's own terms, so one
+// provider's console is never named on another's card.
+const PROFILE_HINT: Partial<Record<ExternalGuardrailProvider, string>> = {
+  "prisma-airs": "The profile configured in Strata Cloud Manager. Prisma AIRS requires one.",
+  "lakera-guard": "The project in the Lakera dashboard. Its policy, and whether it is in Enforce or Detect mode, decides the verdict.",
+};
+const POLICY_HINT: Partial<Record<ExternalGuardrailProvider, string>> = {
+  "crowdstrike-aidr":
+    "Set in the Falcon console on the collector this token belongs to — the app does not choose it. The policy that ran is shown on each verdict.",
+  "cisco-ai-defense":
+    "Set in AI Defense on the application connection this key belongs to — the app does not choose it.",
+};
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <div className="mt-1 text-[11px] leading-relaxed text-subtle">{children}</div>;
@@ -114,7 +128,7 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
           {r.scanId && (
             <>
               {" "}
-              · {r.provider === "crowdstrike-aidr" ? "request_id" : "scan_id"}{" "}
+              · {scanIdLabel(r.provider)}{" "}
               <span className="font-mono break-all">{r.scanId}</span>
             </>
           )}
@@ -340,7 +354,7 @@ function ProviderCard({
         {config.requiresProfile ? (
           <div>
             <label htmlFor={`${ids}profile`} className="mb-1 block text-[12px] font-semibold text-text">
-              AI security profile name
+              {config.profileLabel || "AI security profile name"}
             </label>
             <input
               id={`${ids}profile`}
@@ -352,17 +366,14 @@ function ProviderCard({
               spellCheck={false}
               className={INPUT_CLS}
             />
-            <Hint>The profile configured in Strata Cloud Manager. Prisma AIRS requires one.</Hint>
+            <Hint>{PROFILE_HINT[config.provider] ?? "Required by this provider."}</Hint>
           </div>
         ) : (
           <div>
             <div className="mb-1 text-[12px] font-semibold text-text">Policy</div>
-            {/* No field: AIDR evaluates the policy attached to the collector in
-                the Falcon console, so there is nothing to name per request. */}
-            <Hint>
-              Set in the Falcon console on the collector this token belongs to — the app does not choose it. The policy
-              that ran is shown on each verdict.
-            </Hint>
+            {/* No field: the policy is attached to the key in the vendor's console, so
+                there is nothing to name per request. */}
+            <Hint>{POLICY_HINT[config.provider] ?? "Set in the vendor's console on this key — the app does not choose it."}</Hint>
           </div>
         )}
 
