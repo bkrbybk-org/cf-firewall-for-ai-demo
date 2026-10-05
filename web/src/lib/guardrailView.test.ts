@@ -46,6 +46,66 @@ describe("rule 1: the deciding result is the one stoppedBy names", () => {
     expect(v.vendors.every((x) => !x.decided)).toBe(true);
   });
 
+  it("parallel with two blocks: both 'independent', none 'decided', whatever stoppedBy names", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [result({ provider: AIDR, outcome: "block" }), result({ provider: AIRS, outcome: "block" })],
+        stoppedBy: AIDR,
+      }),
+      "blocked",
+    );
+    expect(v.vendors.map((x) => [x.provider, x.marker])).toEqual([
+      [AIDR, "independent"],
+      [AIRS, "independent"],
+    ]);
+    // The pipeline's own record is untouched — only what the card shows changes.
+    expect(v.vendors.map((x) => x.decided)).toEqual([true, false]);
+  });
+
+  it("parallel with one block among allows: that block is 'decided'", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [result({ provider: AIDR, outcome: "allow" }), result({ provider: AIRS, outcome: "block" })],
+        stoppedBy: AIRS,
+      }),
+      "blocked",
+    );
+    expect(v.vendors.map((x) => [x.provider, x.marker])).toEqual([
+      [AIDR, null],
+      [AIRS, "decided"],
+    ]);
+  });
+
+  it("parallel with two blocks never marks a non-blocking vendor", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [
+          result({ provider: AIDR, outcome: "block" }),
+          result({ provider: AIRS, outcome: "block" }),
+          result({ provider: "other-vendor" as never, outcome: "error", error: "timeout" }),
+        ],
+        stoppedBy: AIDR,
+      }),
+      "blocked",
+    );
+    expect(v.vendors.map((x) => x.marker)).toEqual(["independent", "independent", null]);
+  });
+
+  it("sequential keeps 'decided' on the stopper", () => {
+    const v = pipelineView(
+      pipe({
+        results: [result({ provider: AIDR, outcome: "block" })],
+        notRun: [{ provider: AIRS, reason: "an earlier guardrail stopped the turn" }],
+        stoppedBy: AIDR,
+      }),
+      "blocked",
+    );
+    expect(v.vendors.map((x) => x.marker)).toEqual(["decided", null]);
+  });
+
   it("never marks a notRun entry decided", () => {
     const v = pipelineView(
       pipe({

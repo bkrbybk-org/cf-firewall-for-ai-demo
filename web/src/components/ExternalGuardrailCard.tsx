@@ -43,6 +43,25 @@ function pillClass(v: VendorView): string {
   return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
 }
 
+// "decided": the one result that stopped the turn. "blocked independently": parallel mode,
+// where two or more blocked and any one alone would have stopped it (VendorView.marker).
+function Marker({ v }: { v: VendorView }) {
+  if (!v.marker) return null;
+  const independent = v.marker === "independent";
+  return (
+    <span
+      title={
+        independent
+          ? "Ran in parallel with the others and blocked on its own — any one of these blocks would have stopped the turn"
+          : "This result is the one that stopped the turn"
+      }
+      className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
+    >
+      {independent ? "blocked independently" : "decided"}
+    </span>
+  );
+}
+
 function VendorColumn({ v }: { v: VendorView }) {
   const [showAll, setShowAll] = useState(false);
   const [open, setOpen] = useState(false);
@@ -55,7 +74,7 @@ function VendorColumn({ v }: { v: VendorView }) {
       className={`min-w-0 rounded-xl border p-2.5 ${
         notRun
           ? "border-dashed border-line"
-          : v.decided
+          : v.marker
             ? "border-cf-amber bg-surface/70 ring-1 ring-cf-amber/30"
             : "border-line bg-surface/70"
       }`}
@@ -67,14 +86,7 @@ function VendorColumn({ v }: { v: VendorView }) {
         <span className={`rounded-full border px-2 py-px text-[10.5px] font-bold whitespace-nowrap ${pillClass(v)}`}>
           {v.stateLabel}
         </span>
-        {v.decided && (
-          <span
-            title="This result is the one that stopped the turn"
-            className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
-          >
-            decided
-          </span>
-        )}
+        <Marker v={v} />
       </div>
 
       {v.findings.length > 0 && (
@@ -210,14 +222,7 @@ function CompactRow({ v }: { v: VendorView }) {
         <span className={`rounded-full border px-2 py-px text-[10.5px] font-bold whitespace-nowrap ${pillClass(v)}`}>
           {v.stateLabel}
         </span>
-        {v.decided && (
-          <span
-            title="This result is the one that stopped the turn"
-            className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
-          >
-            decided
-          </span>
-        )}
+        <Marker v={v} />
         {v.findings.length > 0 && (
           <span className="min-w-0 text-[11.5px] font-semibold break-words text-cf-amber">{v.findings.join(", ")}</span>
         )}

@@ -105,6 +105,13 @@ export interface VendorView {
   // renderer must not paint it as a clean green pass.
   partial: boolean;
   decided: boolean; // true only for the result named by pipeline.stoppedBy
+  // What the card shows about this vendor's part in the stop — kept apart from
+  // `decided` (the pipeline's bookkeeping) because the two differ in one case: in
+  // parallel mode with two or more blocks, every blocker would have stopped the turn
+  // on its own, and stoppedBy names only the first in configured order. Crediting
+  // that one as "decided" would read as if the others did not matter, so each blocker
+  // is "independent" and nothing is "decided".
+  marker: "decided" | "independent" | null;
   findings: string[]; // human labels from `detected`, in order, deduped; never for an error
   latencyMs: number | null; // null for notRun: it never started, so there is no latency
   notes: string[];
@@ -178,6 +185,7 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     stateLabel: STATE_LABELS[state],
     partial: state === "allow" && (!!r.incomplete || !!r.transformed),
     decided,
+    marker: decided ? "decided" : null, // revisited in pipelineView, which sees every result
     // An error is not a verdict: whatever `detected` holds, nothing was found.
     findings: isError ? [] : dedupe((r.detected ?? []).map(detectionLabel)),
     latencyMs: r.latencyMs,
@@ -226,6 +234,7 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
     stateLabel: STATE_LABELS.notRun,
     partial: false,
     decided: false,
+    marker: null,
     findings: [],
     latencyMs: null,
     notes: [],
@@ -235,6 +244,11 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
   const vendors = [...ran, ...notRun];
 
   const blocks = ran.filter((v) => v.state === "block").length;
+  // Parallel + several blocks: no single result decided it (see VendorView.marker).
+  // Sequential never gets here with two blocks — the first one ends the run.
+  if (pipeline.mode === "parallel" && blocks >= 2) {
+    for (const v of ran) v.marker = v.state === "block" ? "independent" : null;
+  }
   // A failed-open guardrail is unavailable too — it just did not stop the turn — and a
   // gap in what was scanned is worth the warning colour.
   const unavailable = ran.filter((v) => v.state === "unavailable" || v.state === "failedOpen").length;

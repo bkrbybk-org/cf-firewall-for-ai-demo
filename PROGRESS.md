@@ -457,7 +457,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **370 across 25 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **374 across 25 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +622,36 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — "decided" is not shown when several guardrails blocked in parallel
+
+**Why.** The user asked what DECIDED meant on a parallel two-block card. In parallel mode `stoppedBy` is the
+first stopping result **in configured order** (`results.find(stopsTurn)`), not a meaningful decider. With
+both blocking, either one alone would have stopped the turn, so marking AIDR "decided" read as if Prisma AIRS
+had not mattered.
+
+**What.** `VendorView` gained `marker: "decided" | "independent" | null`, kept apart from `decided` (the
+pipeline's own record, which the fail-closed headline still uses). In parallel mode with ≥ 2 blocks, every
+blocker gets `independent` ("BLOCKED INDEPENDENTLY", with a tooltip saying any one would have stopped the
+turn), and none gets `decided`. Everything else is unchanged: a sequential stop, a single parallel block and a
+fail-closed error keep "decided". Both layouts render one shared `Marker`, and in Columns both blockers get
+the amber border.
+
+**Verified.**
+- **Gates:** 374 tests, with 4 new in `guardrailView.test.ts`. **Mutation-verified:** disabling the rule
+  turned the two two-block tests red.
+- **Browser** (`wrangler dev`, stubbed), in both layouts:
+  - The user's case (parallel, AIDR first, both block) shows both "BLOCKED INDEPENDENTLY" and no DECIDED.
+  - Parallel with one block shows that block as DECIDED.
+  - A sequential stop shows DECIDED, with AIRS "did not run".
+  - Checked in light at the narrow pane and at 1440 px. Dark was not re-checked; the marker keeps the exact
+    classes the old DECIDED had.
+- **Prod** (`5db30b22-cbd6-4c68-abfc-c17ea74f4862`): smoke 5/5. The deployed bundle is `index-eQ27SbdX.js`,
+  the same hash as the local build, and contains "blocked independently" and the tooltip.
+
+**Not changed, worth knowing.** Parallel with one block plus a fail-closed error earlier in the order puts
+`stoppedBy`, and so DECIDED, on the *unavailable* vendor. The headline still reads "Blocked by 1 of 2".
+Either result alone stops the turn. Left as is: only the two-block case was asked for.
 
 ### 2026-10-05 — guardrail card option A (compact), per-viewer switch; docs re-checked against code
 
