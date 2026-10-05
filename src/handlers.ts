@@ -41,6 +41,7 @@ import {
   validateUpdate,
 } from "./externalGuardrails";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
+import { nearestRankSql } from "./percentile";
 import { fetchPrismaAirsReport, REPORT_ID_RE } from "./prismaAirsReport";
 import {
   listAiGateways,
@@ -1152,14 +1153,15 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       // doc comment above this function for why that's a hard requirement.
       // Window functions (ROW_NUMBER/COUNT OVER) give each row its rank and
       // its partition size; the outer query picks out the ranks that land on
-      // the 50th/95th percentile. MAX(1, ...) is SQLite's 2-arg scalar max,
-      // guarding the n=1 case where CAST(n2*0.50 AS INTEGER) would be 0.
+      // the 50th/95th percentile by NEAREST RANK, ⌈n·p⌉ — src/percentile.ts,
+      // shared with its tests. (It used to truncate, CAST(n*0.95 AS INTEGER),
+      // which under-reported every p50/p95: bug #24.)
       db
         .prepare(
           `SELECT route, guarded, streamed,
                   COUNT(*) AS n,
-                  MAX(CASE WHEN rn = MAX(1, CAST(n2*0.50 AS INTEGER)) THEN v END) AS p50,
-                  MAX(CASE WHEN rn = MAX(1, CAST(n2*0.95 AS INTEGER)) THEN v END) AS p95,
+                  MAX(CASE WHEN rn = ${nearestRankSql("n2", 50)} THEN v END) AS p50,
+                  MAX(CASE WHEN rn = ${nearestRankSql("n2", 95)} THEN v END) AS p95,
                   MAX(v) AS pmax
            FROM (
              SELECT route, guarded, streamed, latency_ms AS v,

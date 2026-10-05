@@ -401,8 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-05 as version `474d3600-549d-4ffd-b5ac-240f10202a2e` (Prisma AIRS report panel); before
-that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
+deployed 2026-10-05 as version `8c607cc6-2f41-4de5-9cd9-cfc3c3eba367` (bug #24, nearest-rank percentiles);
+before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
@@ -599,6 +599,36 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — bug #24 fixed: nearest-rank latency percentiles
+
+**What.** `src/percentile.ts` holds the rule once — `nearestRank(n, p) = ⌈n·p/100⌉`, written as the integer
+ceiling `(n·p + 99) / 100` — and `nearestRankSql()` emits the same expression for D1 (SQLite's `/` on two
+integers truncates, which makes the `+ 99` a ceiling; no `CEIL`, which D1's SQLite may not have). The
+`/api/prompt-analytics` rollup uses it for p50 and p95. Self-implemented: a wrong statistic is invisible.
+
+**Verified, and how** — the check the bug entry asked for, not "it runs":
+- Real local `prompt_log` rows, six (route, guarded, streamed) partitions with n = 7, 3, 3, 2, 4, 1. Hand
+  calculation by nearest rank, then the **old** SQL and the **new** SQL on the same rows:
+
+  | rows (sorted) | n | hand p50/p95 | old SQL | new SQL |
+  |---|---|---|---|---|
+  | 77,115,800,900,1200,1313,2500 | 7 | 900 / 2500 | 800 / 1313 | 900 / 2500 |
+  | 150,180,400 | 3 | 180 / 400 | 150 / 180 | 180 / 400 |
+  | 1100,1300,3000 | 3 | 1300 / 3000 | 1100 / 1300 | 1300 / 3000 |
+  | 220,260 | 2 | 220 / 260 | 220 / 220 | 220 / 260 |
+  | 90,1400,1600,5000 | 4 | 1400 / 5000 | 1400 / 1600 | 1400 / 5000 |
+  | 300 | 1 | 300 / 300 | 300 / 300 | 300 / 300 |
+
+  The old SQL was wrong for p95 in every partition with n ≥ 2 and for p50 at every odd n. The new SQL
+  matches 6/6 — run directly against local D1, then again **through the real handler**
+  (`GET /api/prompt-analytics` on `wrangler dev` with `--var PROMPT_LOG_ENABLED:true`, a new
+  `wrangler-dev-promptlog` launch config on port 8788) → 6/6, and the Analytics → Prompt log latency table
+  renders the corrected values beside each `n`.
+- 12 tests: equality with `Math.ceil` for n ≤ 1000, bounds, the six real partitions, the SQL form, and a
+  source guard that fails if a truncating `CAST(n2*0.x AS INTEGER)` returns to the handler.
+- Prod: smoke 5/5 on `8c607cc6`. **Not observable on prod**: the prompt log is off there, so
+  `/api/prompt-analytics` answers `{configured:false, disabled:true}` — the verification is the local one.
 
 ### 2026-10-05 — Prisma AIRS report panel (and the first real AIDR verdicts)
 
@@ -1338,7 +1368,8 @@ exercised):
     tallies and series from `firewallEventsAdaptiveGroups`, which returned uncapped per-rule totals in the
     measurement for #22. *Verify against Cloudflare's docs first*: "Adaptive" datasets can be sampled, so
     their `count` semantics must be confirmed before they are presented as exact.
-24. **Latency percentiles are biased low.** The rollup ranks with `CAST(n·p AS INTEGER)` — truncation —
+24. ~~**Latency percentiles are biased low.**~~ **FIXED 2026-10-05** (deploy `8c607cc6`) — nearest rank
+    `(n2*p + 99)/100` from `src/percentile.ts`; measured below. Original entry: The rollup ranks with `CAST(n·p AS INTEGER)` — truncation —
     where nearest-rank needs a ceiling. On real local rows `[77, 800, 900, 1200, 1313, 2500]` (n=6) it
     reports **p95 = 1313 ms; nearest-rank p95 is 2500 ms**. For odd n the "p50" falls below the median (at
     n=3 it is the minimum). The panel's own example rows show it: `n=3, p50 150, p95 180, max 400`. Worst
@@ -1396,8 +1427,7 @@ exercised):
 
 - [ ] **#22 compliance attribution** — *self*: it is honesty semantics on a customer-facing page. Decide the
       mitigation with the user first.
-- [ ] **#24 percentile rank** — *self*: two lines of SQL, but a wrong statistic is invisible, so the check
-      against a hand calculation is the work.
+- [x] ~~**#24 percentile rank**~~ — done 2026-10-05, checked against a hand calculation on real rows.
 - [ ] **#23 truncated charts** — *self* for the design (verify the Groups dataset's sampling semantics in
       Cloudflare's docs; choose "mark unread" vs "aggregate uncapped"), then *sonnet* for the chart change
       against a fixed contract.

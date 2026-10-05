@@ -8,6 +8,12 @@
       "port": 8787
     },
     {
+      "name": "wrangler-dev-promptlog",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "source ~/.nvm/nvm.sh && nvm use 24 >/dev/null && npx wrangler dev --port 8788 --var PROMPT_LOG_ENABLED:true"],
+      "port": 8788
+    },
+    {
       "name": "vite-dev",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-lc", "source ~/.nvm/nvm.sh && nvm use 24 >/dev/null && npx vite --port 5173"],

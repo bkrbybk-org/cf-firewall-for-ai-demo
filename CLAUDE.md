@@ -167,6 +167,9 @@ alters what a customer sees in a demo. State it and let them choose.
   "persistence". Use the Edit/Write tools for file edits instead.
 - Local D1: `npx wrangler d1 execute cf-ai-waf-demo-log --local --command "…"`. Local dev sets no
   `cf-ray`, so any test of the prompt-log write path must fake one or it proves nothing.
+- The prompt log is off in `wrangler.jsonc` (and in prod), so `/api/prompt-log` and `/api/prompt-analytics`
+  answer `disabled` on a plain `wrangler dev`. To exercise them, start the **`wrangler-dev-promptlog`** launch
+  config (port 8788, `--var PROMPT_LOG_ENABLED:true`) — never flip the flag in `wrangler.jsonc` to test.
 
 ## House style
 
