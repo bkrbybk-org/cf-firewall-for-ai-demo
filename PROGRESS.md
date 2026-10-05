@@ -1817,11 +1817,12 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
 
-**Open questions for the user:**
-- **(a)** Should Lakera's Detect mode count as "allow with alerts" (planned) or be treated as a block?
-- **(b)** Should Cisco's `severity` ever override `is_safe` (planned: no)?
-- **(c)** Should Cisco events be looked up through the Management API later (a report panel like Prisma
-  AIRS's)? That needs its own research and probably a second key.
+**Decided by the user (2026-10-05):**
+- **(a)** Lakera's Detect mode counts as **allow with alerts**: `outcome: "allow"`, `detectOnly: true`, an amber
+  partial verdict. It is never shown as a clean pass, and never as a block.
+- **(b)** Cisco's `severity` **never overrides** `is_safe`.
+- **(c)** A Cisco event lookup (a report panel through the Management API) is **deferred**, a separate task
+  after steps 1–7.
 
 **Unblock (do first)**
 
