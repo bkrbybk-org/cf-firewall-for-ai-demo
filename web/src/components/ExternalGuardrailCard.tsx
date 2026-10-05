@@ -7,12 +7,14 @@
 // and before the model. A colour of its own is what lets someone looking at a
 // blocked turn tell which layer actually stopped it.
 //
-// Layout "vendor columns": a headline, then one bordered column per vendor. Every
-// fact comes from pipelineView() (lib/guardrailView.ts) so another layout can render
-// the same view model without re-deciding what a result means.
+// Two layouts, chosen per viewer on /guardrails (lib/cardLayout.ts): "columns" — a
+// headline, then one bordered mini card per vendor — and "compact", one row per vendor.
+// Every fact comes from pipelineView() (lib/guardrailView.ts), so neither layout
+// re-decides what a result means.
 import { Fragment, useId, useState } from "react";
 import { ChevronDown, ChevronRight, Shield, ShieldAlert } from "lucide-react";
 import { GuardrailReportPanel } from "./GuardrailReportPanel";
+import { DEFAULT_CARD_LAYOUT, type CardLayout } from "../lib/cardLayout";
 import {
   GUARDRAIL_ONLY_HEADLINE,
   pipelineView,
@@ -191,7 +193,82 @@ function CardShell({
   );
 }
 
-function PipelineBody({ view }: { view: PipelineView }) {
+// Layout "compact rows" (option A): one line per vendor, every id and config name
+// behind a single Details disclosure. Same view model as the columns, so the two
+// cannot disagree on what a result means — only on how much of it is on screen.
+// What compact does NOT hide: the decided marker, every finding (as text, not
+// chips) and the honesty notes, which say a verdict covers less than it reads.
+function CompactRow({ v }: { v: VendorView }) {
+  const notRun = v.state === "notRun";
+  const reason = notRun ? v.details.find((d) => d.label === "reason")?.value : undefined;
+  return (
+    <li className="min-w-0 py-1.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <span title={v.fullName} className={`font-bold ${notRun ? "text-muted" : "text-text"}`}>
+          {v.name}
+        </span>
+        <span className={`rounded-full border px-2 py-px text-[10.5px] font-bold whitespace-nowrap ${pillClass(v)}`}>
+          {v.stateLabel}
+        </span>
+        {v.decided && (
+          <span
+            title="This result is the one that stopped the turn"
+            className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
+          >
+            decided
+          </span>
+        )}
+        {v.findings.length > 0 && (
+          <span className="min-w-0 text-[11.5px] font-semibold break-words text-cf-amber">{v.findings.join(", ")}</span>
+        )}
+        {/* A guardrail that never ran has one thing to say — why — so it stays on the row. */}
+        {reason && <span className="min-w-0 text-[11.5px] break-words text-muted">{reason}</span>}
+        {v.latencyMs != null && <span className="ml-auto font-mono text-[11px] text-muted">{v.latencyMs} ms</span>}
+      </div>
+      {v.notes.length > 0 && (
+        <ul className="mt-0.5 flex flex-col gap-0.5 text-[11px] text-cf-amber">
+          {v.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function CompactDetails({ vendors }: { vendors: VendorView[] }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  // A notRun vendor's only detail is its reason, already on its row.
+  const withDetails = vendors.filter((v) => v.state !== "notRun" && v.details.length > 0);
+  if (withDetails.length === 0) return null;
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        aria-controls={id}
+        className="inline-flex items-center gap-1 rounded-md text-[11.5px] font-semibold text-muted transition-colors hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        Details
+      </button>
+      {open && (
+        <div id={id} className="mt-1 flex flex-col gap-2">
+          {withDetails.map((v) => (
+            <div key={v.provider} className="min-w-0">
+              <div className="text-[11px] font-semibold text-text">{v.name}</div>
+              <DetailList details={v.details} className="mt-0.5" />
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PipelineBody({ view, layout }: { view: PipelineView; layout: CardLayout }) {
   const withReport = view.vendors.filter((v) => v.reportId);
   return (
     <>
@@ -201,7 +278,17 @@ function PipelineBody({ view }: { view: PipelineView }) {
           <span className="font-semibold text-text">Where they differ:</span> {view.why}
         </div>
       )}
-      {view.vendors.length > 0 && (
+      {view.vendors.length > 0 && layout === "compact" && (
+        <>
+          <ul className="mt-2 divide-y divide-line border-y border-line">
+            {view.vendors.map((v) => (
+              <CompactRow key={v.provider} v={v} />
+            ))}
+          </ul>
+          <CompactDetails vendors={view.vendors} />
+        </>
+      )}
+      {view.vendors.length > 0 && layout === "columns" && (
         <div className="@container mt-3">
           <ul
             className={`grid grid-cols-1 gap-2 ${view.vendors.length > 1 ? "@[26rem]:grid-cols-2" : ""}`}
@@ -222,11 +309,17 @@ function PipelineBody({ view }: { view: PipelineView }) {
   );
 }
 
-export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: GuardrailPipelineResult }) {
+export function ExternalGuardrailBlockedCard({
+  pipeline,
+  layout = DEFAULT_CARD_LAYOUT,
+}: {
+  pipeline: GuardrailPipelineResult;
+  layout?: CardLayout;
+}) {
   const view = pipelineView(pipeline, "blocked");
   return (
     <CardShell view={view} explainer={EXPLAIN_BLOCKED}>
-      <PipelineBody view={view} />
+      <PipelineBody view={view} layout={layout} />
     </CardShell>
   );
 }
@@ -235,7 +328,13 @@ export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: Guardrail
 // guardrail and the model was deliberately NOT called. This is a test result,
 // not an answer. Neutral unless a guardrail blocked or was unreachable — when
 // nothing external ran, no amber control did anything.
-export function GuardrailOnlyCard({ pipeline }: { pipeline?: GuardrailPipelineResult }) {
+export function GuardrailOnlyCard({
+  pipeline,
+  layout = DEFAULT_CARD_LAYOUT,
+}: {
+  pipeline?: GuardrailPipelineResult;
+  layout?: CardLayout;
+}) {
   if (!pipeline) {
     return (
       <CardShell
@@ -249,7 +348,7 @@ export function GuardrailOnlyCard({ pipeline }: { pipeline?: GuardrailPipelineRe
   const view = pipelineView(pipeline, "guardrailOnly");
   return (
     <CardShell view={view} explainer={EXPLAIN_GUARDRAIL_ONLY}>
-      <PipelineBody view={view} />
+      <PipelineBody view={view} layout={layout} />
     </CardShell>
   );
 }

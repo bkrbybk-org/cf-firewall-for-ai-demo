@@ -23,7 +23,7 @@ export interface Env {
   // API token used by both features above. Needs BOTH "Zone Analytics: Read"
   // (for /api/verdict) and "Account Analytics: Read" (for /api/neurons).
   CF_ANALYTICS_TOKEN?: string; // set as a secret
-  // AI Gateway name for /api/gateway/chat. "default" auto-creates on first use.
+  // Gateway used by the AI Gateway route of /api/chat (gateway: true). "default" auto-creates on first use.
   CF_AI_GATEWAY_ID?: string; // plain var in wrangler.jsonc
   // Second gateway with Guardrails enabled in the dashboard. Optional — the
   // Guardrails toggle in the UI only appears when this is set.
@@ -54,18 +54,19 @@ export interface ChatRequestBody {
   systemPrompt?: unknown;
   history?: unknown; // ChatTurn[] — validated server-side
   stream?: unknown; // true → SSE response instead of JSON
-  // AI Gateway routing (optional). When gateway is true the Worker calls
-  // env.AI.run(..., { gateway }) instead of a direct Workers AI call. The
-  // request still hits the same cf-llm-labeled /api/chat path, so the edge
-  // WAF scan (and thus the verdict) applies to both routes identically.
+  // AI Gateway routing (optional). When gateway is true the Worker calls AI
+  // Gateway's OpenAI-compatible REST endpoint (handlers.ts, "AI Gateway routing
+  // (REST)") instead of the env.AI.run() binding. The request still hits the
+  // same cf-llm-labeled /api/chat path, so the edge WAF scan (and thus the
+  // verdict) applies to both routes identically.
   gateway?: unknown; // true → route the inference through AI Gateway
   gatewayId?: unknown; // gateway only — which configured gateway to use
   skipCache?: unknown; // gateway only
   // Dynamic Routing: a route name configured in the gateway dashboard. When
-  // set (and gateway is true) the Worker calls the OpenAI-compatible REST
-  // endpoint instead of the binding, because routes are addressed as a model
-  // name and the binding rejects anything that isn't a real model id. Absent
-  // → the binding path, i.e. today's behaviour, unchanged.
+  // set (and gateway is true) the route name goes in the REST call's `model`
+  // field — routes are addressed as a model name, which is why the gateway
+  // route uses REST rather than the binding (it only accepts real model ids).
+  // Absent → the model picked in the UI, on the same REST endpoint.
   dynamicRoute?: unknown;
   // Custom metadata for ANY gateway request (not just dynamic routes): tags
   // land in the AI Gateway logs and a dynamic route's Conditional nodes can

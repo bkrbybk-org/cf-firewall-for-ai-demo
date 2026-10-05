@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-10-01 — external guardrails (Prisma AIRS) shipped; code review found Open bugs #22–#24, one live in prod_
+_Last updated: 2026-10-05 — guardrail card layouts (columns / compact, per viewer); docs re-checked against the code; #23 and #24 fixed, #22 still live in prod_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -12,10 +12,13 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 --local` and faking a `cf-ray` header via curl where the edge-verdict / prompt-log join needs one
 (local dev never sets a real one). Node ≥ 22 (`nvm use 24`).
 
-> **Reading this doc**: it is organised by topic, not chronologically. Dated sessions under
-> **Implemented** run newest-first — **2026-09** (latency, saved runs, gap recommender, compliance
-> evidence, prompt-log flag, CI), then 2026-08-01 (Red Team page, analytics honesty pass, chart
-> rework), then 2026-07-31 (AI Gateway REST migration, verdict window, prompt-log rewrite).
+> **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
+> **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
+> comes first, then the **2026-10** entries newest-first (guardrail card layouts, #23/#24 fixes, the
+> Prisma AIRS report panel, CrowdStrike AIDR, the guardrail pipeline, OpenAPI 3.0, Prisma AIRS), then
+> 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
+> migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
+> true that day; the Architecture, Pages and Open bugs sections describe what is true now.
 > The prod AI Gateway outage found on 2026-09-30 was **resolved the same day** (Open bug #1).
 > **⚠️ The Compliance page's MEASURE 2.7 "blocked" count is wrong in prod (Open bug #22) — it counts every
 > WAF block in the zone, not AI Security's. Read #22 before showing that page to a customer.**
@@ -28,7 +31,10 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   - API routes: `/api/models`, `/api/chat` (unified — direct or AI Gateway routing), `/api/verdict`
     (anchored + retention-aware, see below), `/api/neurons`, `/api/analytics` (zone),
     `/api/gateway-analytics` (account, per gateway), `/api/prompt-log` (GET list / DELETE clear —
-    D1), `/api/prompt-analytics` (D1 rollups). Everything else → static assets (SPA fallback).
+    D1), `/api/prompt-analytics` (D1 rollups), `/api/zone-rules` (Rulesets API), `/api/redteam-runs`
+    (saved runs, D1), `/api/external-guardrails` + `/test` · `/pipeline` · `/report` (third-party
+    guardrails), `/api/openapi.json` + `/api/openapi-3.0.json`. `src/index.ts` is the authoritative list
+    (and `openapi.test.ts` fails if the spec drifts from it). Everything else → static assets (SPA fallback).
 - **The prompt log is behind a feature flag, off by default (2026-09-03).** `PROMPT_LOG_ENABLED`
   in `wrangler.jsonc`; `promptLogEnabled()` in `src/config.ts` is the single check. Requested
   deliberately — the log stores a redacted copy of every prompt that reaches the Worker, which is
@@ -287,9 +293,10 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   present, else a rolling `hours` (0/absent = all time — the 1h/24h/7d/all preset buttons). Both
   `/api/prompt-log` and `/api/prompt-analytics` use it, so the table and its rollup tiles/chart
   above always describe the same range.
-- **Sorting and text-search on the prompt log are client-side; route/outcome/time filters are
-  server-side.** The former only reorder or narrow the page already fetched (200-row cap), so a
-  round trip would add latency for nothing; the latter change which rows are fetched at all.
+- **Sorting, text search, paging and the route/outcome/time filters on the prompt log are all
+  server-side** (`src/promptlog.ts`: `q` → an escaped LIKE, `sort`/`dir` → a whitelisted ORDER BY,
+  `offset`). This superseded an earlier client-side sort/search, which could only reorder or narrow the
+  200-row page already fetched — so a search silently missed every older match (bug #9).
 - **One send pipeline** (`useChat` hook) drives both manual chat and the demo autopilot; shared
   verdict poller/cache in `web/src/lib/verdict.ts` powers the Verdict chip, the prompt log's
   one-shot lookups, and autopilot scoring. Chat session state lives in a **module-level store**
@@ -316,9 +323,10 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   1h/24h/7d range picker; **prompt log has its own independent range** (1h/24h/7d/**all**/**custom**
   date-time picker), defaulting to **1h**, since it's reviewed differently (recent activity vs. "the
   whole demo session"). Prompt log is a **sortable, paginated table** (click any column header;
-  defaults to Time, newest first; 10/25/50/100 rows per page, default 25) with a client-side text
-  filter (prompt/reply/model/ray) and a **multi-select** outcome filter (toggle any combination of
-  replied/guardrails-blocked/error). 60s auto-refresh on all three tabs.
+  defaults to Time, newest first; 10/25/50/100 rows per page, default 25) with a text search
+  (prompt/reply/model/ray — server-side `q`, a LIKE in SQL) and a **multi-select** outcome filter (toggle
+  any combination of replied / guardrails-blocked / external-guardrail-blocked / model skipped / error).
+  60s auto-refresh on all three tabs.
   **Drill-through**: clicking a rule or an injection-score bucket on the edge tab switches to the
   prompt log with the window matched and a context banner. For a *blocking* rule the banner says
   outright that those prompts never reached the Worker and cannot appear in the log — otherwise the
@@ -334,7 +342,11 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   detail cards. **Six frameworks**: NIST AI RMF · ISO 42001 · OWASP LLM Top 10 · MITRE ATLAS ·
   Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025). The OWASP LLM01 and
   MITRE AML.T0051 cards link to `/redteam`.
-- **Page width**: `/analytics`, `/redteam` and `/compliance` run to `max-w-[1600px]`; the chat page
+- **`/guardrails` — External Guardrails** (2026-10): the traffic-flow diagram (enable/disable each
+  provider, order, sequential/parallel, guardrail-only), the per-viewer **Chat card layout** switch
+  (columns / compact, browser storage only), then one settings card per provider (region, key — write-only,
+  profile, fail mode, *Test connection*).
+- **Page width**: `/analytics`, `/redteam`, `/compliance` and `/guardrails` run to `max-w-[1600px]`; the chat page
   keeps its own three-pane shell.
 
 ---
@@ -393,10 +405,19 @@ rendered by any page yet**), `web/src/lib/complianceEvidence.ts`, `scripts/prod-
 `raw-imports.d.ts`), `scripts/copy-swagger-ui.mjs` and `web/public/api-docs/` (the API reference). `web/src/lib/redteam.ts`
 gained `attackKey` / `corpusFingerprint` / `diffRuns`; `handlers.ts` gained `handleRedTeamRuns`.
 
+New in 2026-10: `src/openapi30.ts` (OAS 3.0.3 for API Shield), the external-guardrail stack —
+`src/prismaAirs.ts`, `src/crowdstrikeAidr.ts`, `src/prismaAirsReport.ts`, `src/externalGuardrails.ts`,
+`migrations/0005_external_guardrails.sql` · `0006_guardrail_pipeline.sql`, `web/src/pages/GuardrailsPage.tsx`,
+`components/PipelineDiagram.tsx`, `ExternalGuardrailCard.tsx`, `GuardrailReportPanel.tsx`,
+`CardLayoutPicker.tsx`, `web/src/lib/guardrailView.ts` + `cardLayout.ts`, `hooks/useGuardrailCardLayout.ts` —
+and the honesty fixes `src/percentile.ts` (#24) and `src/coverage.ts` (#23). README's layout is the
+up-to-date one; the tree above predates all of this.
+
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
 dev:worker` / `npm run dev:web` · `npm run smoke:prod` (5 authenticated checks against prod through
-Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
+Access). `.claude/launch.json` has `wrangler-dev` (8787), `wrangler-dev-promptlog` (8788, prompt log
+on via `--var`) and `vite-dev` configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
@@ -436,7 +457,9 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **270 across 18 files** (measured 2026-10-01; README's Tests table has the per-file counts).
+**Tests** — `npm test`, **370 across 25 files** (measured 2026-10-05; README's Tests table has the
+current per-file counts — the per-file numbers in the list below are from when each was written and have
+grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
 (reintroduce the bug → red). The 2026-09 additions (`redteamruns`, `gapControls`, `complianceEvidence`, the
 latency sort, `promptLogEnabled`, and the `redteam.test.ts` growth 15 → 37) were written with their code and
@@ -599,6 +622,92 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — guardrail card option A (compact), per-viewer switch; docs re-checked against code
+
+**Decision.** The user chose a **per-viewer** layout choice over a presenter-wide one. So it lives in browser
+storage (`localStorage` `guardrailCardLayout`), not D1: it changes nothing on the server or for anyone else,
+and the house rule keeps browser storage for exactly this kind of per-viewer convenience.
+
+**What.** `ExternalGuardrailCard.tsx` gained the compact layout (`CompactRow` / `CompactDetails`), selected by
+a `layout` prop on both cards (default `columns`). One row per vendor: name · state pill · "decided" · every
+finding as text · the not-run reason · latency. The honesty notes stay **visible under the row** — they say a
+verdict covers less than it reads, so they are not metadata — and only ids, policy, summary and error go
+behind one **Details** disclosure. The report panel stays its own collapsed line below (the plan had put it
+inside Details; a disclosure inside a disclosure was clumsy). `lib/cardLayout.ts`: pure parse/read/write; only
+the exact string `compact` selects compact, and missing, unknown or throwing storage reads as columns.
+`hooks/useGuardrailCardLayout.ts`: a `useSyncExternalStore` store with an in-memory copy, so a refused save
+still applies until reload; it follows the `storage` event, so another tab's change is picked up.
+`CardLayoutPicker.tsx` sits on `/guardrails` under the traffic-flow diagram; `Chat.tsx` reads the hook once
+and passes `layout` to both cards. Reply chips are unchanged.
+
+**Who.** Self, not the planned Sonnet split: the renderer was ~100 lines on an existing view model and writing
+the brief would have cost as much.
+
+**Verified, and how.**
+- **Gates:** `npm run check`, web `tsc -b`, and 370 tests across 25 files, including 5 new in
+  `cardLayout.test.ts`.
+- **Browser** (`wrangler dev`):
+  - The switch saves `compact` and is still pressed after a reload.
+  - In compact, the same stubbed pipelines as option B render as follows:
+    - Parallel two-block: "Blocked by 2 of 2", AIDR DECIDED, the "Where they differ" line.
+    - Sequential stop: Prisma AIRS "did not run · An earlier guardrail stopped the turn" on its row.
+    - Fail-closed error: "Not sent to the model — Prisma AIRS unavailable" with both notes visible, and
+      **no finding text although the stub carried `detected: ["dlp"]`**.
+    - Guardrail-only with two partial allows: amber "allow" pills with the redaction-not-applied and
+      incomplete-scan notes visible.
+    - Guardrail-only with zero results: "Passed the edge WAF; no external guardrail is enabled".
+  - Details opened to every vendor's ids, and the report panel listed "2 other checks passed".
+  - A `storage` event flipped all four cards from compact lists to column grids without losing the chat.
+  - With `setItem` made to throw, picking Columns still applied it, the page said "This browser would not save
+    the choice — it applies until you reload", and storage kept the old value.
+  - Dark and light; 1440 px; 375 px with no element overflowing its card and no horizontal scroll.
+  - Console: no errors from this bundle (the only errors are from an earlier server's stale bundle).
+- **Prod** (`c702a8af-f31d-4fbf-807e-6eb8ce3fc630`):
+  - Smoke 5/5.
+  - The deployed bundle is `index-CI7SeZRk.js`, the same hash as the local build checked above, and contains
+    `guardrailCardLayout`, "Chat card layout" and the refused-save text.
+  - `/api/openapi.json` serves the corrected outcome and enable-rule text.
+- **Not seen:** the compact card on prod in a browser (Access-gated).
+
+**Docs-vs-code audit (same day).** A read-only Sonnet audit of README, PROGRESS, CLAUDE.md, `openapi.ts` and the
+memory file listed 24 discrepancies. I checked each against the code before changing anything.
+
+It found no drift between response shapes and handlers; the router has 16 paths and so does the spec.
+
+Fixed:
+- **README:**
+  - The "default HTML block page" warning was stale; the rules return Custom JSON, in a shape the client still
+    ignores (bug #4).
+  - Router and page lists were missing `/guardrails`.
+  - The result table still used the old card wording.
+  - The setup steps lacked `GUARDRAIL_SECRET_KEY`.
+  - The `/api/prompt-log` parameters were incomplete.
+  - Test totals and rows: added `openapi30.test.ts` (9) and `cardLayout.test.ts` (5).
+  - Added `queryZoneRules`, `percentile.ts` and `coverage.ts` to the layout.
+  - Added a callout that the PII rules are on Log (#28), where the rule table and demo step 2 still promised a
+    403.
+- **PROGRESS:**
+  - The architecture route list was 8 of 16.
+  - "Sort and search are client-side" was wrong; both run server-side since bug #9.
+  - `/guardrails` was missing from Pages.
+  - The 2026-10 files were missing from the layout.
+  - The launch configs and the test count were out of date.
+  - #27's status and header name were stale.
+  - "Next tasks" items gated on #1 or #16 were obsolete; both bugs are fixed.
+  - The fresh-zone setup lacked the migrations and the guardrail secret.
+- **`openapi.ts`:** the outcome filter now lists `skipped`; enabling needs a profile only where
+  `requiresProfile` is set (Prisma AIRS), not for AIDR.
+- **Code comments:**
+  - In `src/types.ts`, the gateway route was still described as the `env.AI.run()` binding. It has been REST
+    since 2026-07-31.
+  - `src/types.ts` and `wrangler.jsonc` still named the removed `/api/gateway/chat`.
+- **CLAUDE.md:** CI also runs `npm ci` and `npm run build`.
+
+Left as is:
+- The applied migration `0001`'s outcome comment, since applied migrations are not edited.
+- #25's dated "13 sites" count (now about 19). The bug stands either way.
+- Two missing 405 responses in the spec. Trivial.
 
 ### 2026-10-05 — guardrail card redesign: option B (vendor columns)
 
@@ -1463,7 +1572,11 @@ exercised):
     **Since 2026-10-03 the same callers can also switch guardrail-only on** (`/api/external-guardrails/pipeline`),
     which stops every chat from getting a model reply until someone switches it off — visible (amber banner on
     `/guardrails`, "Model skipped" cards in chat) but disruptive mid-demo. Same remedy.
-27. **A real verdict has never been exercised** — no valid Prisma AIRS key was available. First thing to do
+27. ~~**A real verdict has never been exercised**~~ **Mostly resolved (2026-10-05):** real Prisma AIRS and
+    CrowdStrike AIDR block *and* allow verdicts have been seen on prod, and the rendered block card (parallel
+    mode, both vendors) in the user's own browser screenshot. Still never seen live: a real `incomplete`
+    (timeout/error flag) verdict. The header is now `x-external-guardrails` (plural; the whole pipeline).
+    Original entry: no valid Prisma AIRS key was available. First thing to do
     with one: save it, *Test connection*, enable, and send one benign and one injection prompt from the
     Attack Library; confirm the green chip and the "Blocked by Prisma AIRS" card with detections and `scan_id`.
     **Partly exercised 2026-10-01:** the user enabled a real key (profile `CW-LAB Security Profile`). The smoke
@@ -1502,27 +1615,8 @@ exercised):
 - [x] ~~**#24 percentile rank**~~ — done 2026-10-05, checked against a hand calculation on real rows.
 - [x] ~~**#23 capped charts**~~ — done 2026-10-05: "mark unread" chosen (Groups datasets are sampled).
 
-**Guardrail card: let the viewer choose option A (compact rows)** — planned 2026-10-05, not started. The user
-picked option B (vendor columns) to build first and asked for a plan to offer A as a selectable layout later.
-Mockups of A, B and C were shown in chat on 2026-10-05.
-- **Groundwork already in B:** both layouts render the same pure view model, `pipelineView()` in
-  `web/src/lib/guardrailView.ts` (headline, per-vendor state/findings/latency/notes/details, and a `why`
-  line that only A shows). All honesty rules live and are tested there, so A cannot drift from B on them.
-- [ ] **A renderer** — *sonnet*: `CompactPipelineCard` in `ExternalGuardrailCard.tsx`: headline + subline,
-      one row per vendor (name · state pill · findings joined · latency), the `why` line when non-null, one
-      "Details" disclosure holding every vendor's `details`/`notes` and the report panel. Same props as B.
-      Must render `notes` (incomplete scan, redaction not applied, fail-open) visibly, not only in Details —
-      they are honesty notes, not metadata.
-- [ ] **The switch** — *self* (a design decision): a "Card layout: columns / compact" segmented control on
-      `/guardrails`, stored in `localStorage` (`guardrailCardLayout`), read through a small hook with
-      try/catch and a `columns` default — a per-viewer presentation preference, so browser storage is the
-      right home (CLAUDE.md/house rule), not D1. Open question for the user when this is picked up: should a
-      presenter's choice apply to everyone viewing the demo (then it is a D1 pipeline setting instead)?
-- [ ] **Wire-up** — *self*: `Chat.tsx` picks the renderer from the hook for the blocked and guardrail-only
-      cards; reply chips stay as they are in both layouts.
-- [ ] **Verify** — both layouts with the same stubbed pipelines (parallel two-block, sequential stop with
-      `notRun`, fail-closed error, guardrail-only with zero results), dark and light, 375 px; switch persists
-      across reload and survives blocked storage (private window) by falling back to columns.
+- [x] ~~**Guardrail card option A (compact rows), viewer-selectable**~~ — done 2026-10-05, per viewer (the
+      user's choice over a presenter-wide D1 setting). See Implemented.
 
 **Unblock (do first)**
 
@@ -1533,8 +1627,8 @@ Mockups of A, B and C were shown in chat on 2026-10-05.
       list/pick two, render `diffRuns` with its comparability warning, drop
       `<GapControls corpus={corpus} results={results} />` where the hardcoded `CONTROLS` table is, and
       fix the stale prompt-log copy (#17). Outstanding since the features were built in early September.
-- [ ] Fix bug #16 (add `dynamic_route` to both `SELECT`s) and #18 (server-side ordering for the
-      prune) together with a test each, once #1 lets the prod gate pass.
+- [ ] Fix bug #18 (server-side ordering for the prune) with a test. (#16 is already fixed, and #1 no longer
+      blocks the prod gate — it was resolved 2026-09-30.)
 - [ ] Apply the recommended Zero Trust Access restructuring for the AI red-team service (Open bug
       #2): path-scoped `/api/chat` app, `Service Auth` + service token, `Allow` policy alongside it
       for human logins. Re-verify the app still works for a normal browser session afterward.
@@ -1554,7 +1648,8 @@ Mockups of A, B and C were shown in chat on 2026-10-05.
 
 **Then verify what is currently unproven**
 
-- [ ] Prod smoke test once #1 is fixed: a plain AI Gateway send, then a Dynamic Route send with
+- [ ] Dynamic Route on prod (the plain AI Gateway send is smoke check [3], passing since #1 was fixed
+      2026-09-30): a Dynamic Route send with
       `tier=free` (isolates routing from third-party billing) before `tier=pro`. Confirm the reply
       reports the *route's* model + blue `ROUTE` badge, not the Model picker's value.
 - [ ] Confirm custom metadata actually lands in the gateway logs — outstanding for two sessions now.
@@ -1574,8 +1669,8 @@ Mockups of A, B and C were shown in chat on 2026-10-05.
       the code ships and falls back cleanly, but `/api/zone-rules` returns 403 here today, so the
       flow trace still runs on the static mirror (Open bug #12).
 - [ ] Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message
-      instead of dumping the raw Cloudflare error JSON into the chat bubble — directly relevant now
-      that bug #1 can surface on every gateway send, not just Dynamic Routes.
+      instead of dumping the raw Cloudflare error JSON into the chat bubble — every gateway send goes
+      through REST now, so a rejected token (as in bug #1, fixed 2026-09-30) surfaces on any of them.
 - [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
       buildHistory, cost calc). The SSE line parser is now covered (`src/sse.test.ts`).
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
@@ -1633,7 +1728,10 @@ prompt log + SQL rollups · Dynamic Routing call path · metadata transport fix.
    bare `{"code":10000,"message":"Authentication error"}`. Kept apart from the read-only analytics
    token on purpose. Without it, any AI Gateway request returns a 501 naming the missing secret;
    the direct Workers AI route is unaffected (still the plain binding, no token needed).
-9. If exempting any endpoint from Cloudflare Access for automated callers (e.g. a red-team
+9. D1: `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (all of `migrations/`), and
+   `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` for `/guardrails` — without it
+   the page shows a setup hint and refuses to store any guardrail key.
+10. If exempting any endpoint from Cloudflare Access for automated callers (e.g. a red-team
    scanner), scope the Access application to that **exact path** and use a **Service Auth** policy
    with a service token — not `Bypass`. `Bypass` disables Access logging entirely and is separately
    documented as unreliable behind a Worker (which this app always is). A Service-Auth-only app

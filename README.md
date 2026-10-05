@@ -42,7 +42,8 @@ src/                    Worker (TypeScript)
   config.ts             reply/history limits, pricing, gateway + dynamic-route constants,
                         verdict window/retention helpers (verdictWindow, isBeyondRetention)
   cloudflare.ts         gqlFetch, queryVerdict (anchored), queryVerdictRetention,
-                        queryNeuronUsage, queryAnalytics, queryGatewayLogs, listAiGateways
+                        queryNeuronUsage, queryAnalytics, queryGatewayLogs, queryZoneRules,
+                        listAiGateways
   handlers.ts           one handler per endpoint; handleChat unifies direct (binding) +
                         AI Gateway (REST, incl. Dynamic Routing); runGatewayRest,
                         appendRestGatewayEvent, parseTimeWindow, extractReply/stripThink,
@@ -56,6 +57,8 @@ src/                    Worker (TypeScript)
   crowdstrikeAidr.ts    CrowdStrike Falcon AIDR AI Guard client (request, verdict/202/error parsing, timeout)
   prismaAirsReport.ts   Prisma AIRS threat-scan report fetch + allowlist parser (no prompt content leaves it)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
+  percentile.ts         nearest-rank percentile (JS + SQL forms) behind every latency p50/p95 (bug #24)
+  coverage.ts           markReadCoverage — tags chart buckets a capped read never reached (bug #23)
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
   *.test.ts             vitest — see Tests
@@ -77,7 +80,7 @@ web/                    React app (Vite root)
   index.html            SPA entry + pre-paint theme script
   public/api-docs/      the Swagger UI page (index.html + swagger-initializer.js); vendor files are copied in at build
   src/
-    main.tsx            router: /, /analytics, /redteam, /compliance ( /gateway → / )
+    main.tsx            router: /, /analytics, /redteam, /compliance, /guardrails ( /gateway → / )
     index.css           Tailwind + CSS-var design tokens (light/dark, validated palette)
     lib/
       data.ts           *** EDIT THIS for demo content: CATEGORIES, PRESET_SYSTEM_PROMPTS,
@@ -97,18 +100,23 @@ web/                    React app (Vite root)
       sessionStore.ts   module-level chat store (survives tab switch, cleared on reload)
       format.ts icons.ts
     hooks/              useTheme, useNeurons, useChat (send pipeline), useRedTeam (3-phase runner),
-                        useZoneRules (live rules + static-mirror fallback)
+                        useZoneRules (live rules + static-mirror fallback),
+                        useGuardrailCardLayout (per-viewer chat card layout, synced across tabs)
     components/         Header, NavTabs, ThemeToggle, NeuronChip, SystemPromptPanel,
                         GatewaySettingsPanel, Switch, AttackLibrary, Chat, Verdict,
                         FlowTrace, DemoMode, ExportButton
       analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
                         GatewayTab, PromptLogTab
       redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
-      ExternalGuardrailCard.tsx   vendor-column cards (blocked / unavailable / model skipped) + reply chips, from guardrailView
+      ExternalGuardrailCard.tsx   guardrail cards (blocked / unavailable / model skipped) in two layouts —
+                                  columns or compact — + reply chips, all from guardrailView
       (lib/guardrailView.ts         pure view model for those cards: headline, per-vendor state, findings, honesty notes)
+      (lib/cardLayout.ts            which layout: per-viewer, localStorage `guardrailCardLayout`, default columns;
+                                   read through hooks/useGuardrailCardLayout)
+      CardLayoutPicker.tsx        the "Chat card layout" switch on /guardrails
       GuardrailReportPanel.tsx    collapsed "Prisma AIRS report" panel (verdict vs action per detection), fetched on open
       PipelineDiagram.tsx         /guardrails traffic-flow diagram + mode / order / guardrail-only controls
-    pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
+    pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage, GuardrailsPage
 dist/                   Vite build output (gitignored) → wrangler assets
 ```
 
@@ -143,7 +151,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
 | `GET /api/analytics?hours=` | Aggregated zone security events + AI scores (edge tab) |
 | `GET /api/gateway-analytics?gatewayId=&hours=` | Aggregated AI Gateway logs (gateway tab) |
-| `GET /api/prompt-log?limit=&route=&outcome=&hours=\|since=&until=` | Recent PII-redacted prompts (D1). Answers `{configured:false, disabled:true}` while `PROMPT_LOG_ENABLED` is off |
+| `GET /api/prompt-log?limit=&offset=&route=&outcome=&q=&sort=&dir=&hours=\|since=&until=` | Recent PII-redacted prompts (D1). Answers `{configured:false, disabled:true}` while `PROMPT_LOG_ENABLED` is off |
 | `DELETE /api/prompt-log` | Clears the prompt log |
 | `GET /api/prompt-analytics?hours=\|since=&until=` | SQL `GROUP BY` rollups over the whole prompt log, incl. per-route/guarded/streamed latency percentiles |
 | `GET /api/openapi.json` | This API as an OpenAPI 3.1 document — the hand-written source (see **API reference** below) |
@@ -244,7 +252,9 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 
 ### Prisma AIRS report panel
 
-**The chat card (option B, "vendor columns", 2026-10-05).** A stopped or guardrail-only turn shows a headline that answers first — "Blocked by 2 of 2 guardrails", "Not sent to the model — Prisma AIRS unavailable", "Model skipped — guardrail-only mode" — with the mode and pipeline latency, then one mini card per vendor: state pill (block / allow / unavailable / unscanned (fail open) / did not run), up to three finding chips, latency, honesty notes (incomplete scan, redaction not applied, fail open — always visible), and a collapsed "details" list (policy, profile, ids, AIDR's summary, the error). The vendor whose result decided the turn (`stoppedBy`) is marked "decided"; when two vendors flag different things a "Where they differ" line groups the findings. Cards stack in a narrow chat column and sit side by side once the card is ≥ 26 rem wide (a container query, not a viewport breakpoint). Everything renders from `pipelineView()` (`web/src/lib/guardrailView.ts`), where the honesty rules live and are tested: an error is never a verdict and never carries findings, a fail-closed stop is never worded as a block, and anything unrecognised counts as "no verdict". A compact-rows layout (option A) is planned as a viewer-selectable alternative on the same view model — see PROGRESS "Next tasks".
+**The chat card — two layouts, chosen per viewer (2026-10-05).** **Columns** (option B, the default): a stopped or guardrail-only turn shows a headline that answers first — "Blocked by 2 of 2 guardrails", "Not sent to the model — Prisma AIRS unavailable", "Model skipped — guardrail-only mode" — with the mode and pipeline latency, then one mini card per vendor: state pill (block / allow / unavailable / unscanned (fail open) / did not run), up to three finding chips, latency, honesty notes (incomplete scan, redaction not applied, fail open — always visible), and a collapsed "details" list (policy, profile, ids, AIDR's summary, the error). The vendor whose result decided the turn (`stoppedBy`) is marked "decided"; when two vendors flag different things a "Where they differ" line groups the findings. Cards stack in a narrow chat column and sit side by side once the card is ≥ 26 rem wide (a container query, not a viewport breakpoint). Everything renders from `pipelineView()` (`web/src/lib/guardrailView.ts`), where the honesty rules live and are tested: an error is never a verdict and never carries findings, a fail-closed stop is never worded as a block, and anything unrecognised counts as "no verdict".
+
+**Compact** (option A): the same headline, then one row per vendor — name · state pill · "decided" · every finding as text · the not-run reason · latency — with the honesty notes still visible under their row, and every id, policy, summary and error behind a single **Details** disclosure. Both layouts render the same `pipelineView()`, so they cannot disagree on what a result means. The switch is **Chat card layout: Columns / Compact** on `/guardrails`. It is a per-viewer presentation preference stored in this browser (`localStorage` key `guardrailCardLayout`), not a server setting: it changes nothing anyone else sees, follows a change made in another tab, and falls back to Columns when storage is unavailable (a refused save still applies until reload, and the page says so). Reply chips are the same in both layouts.
 
 Every chat turn Prisma AIRS scanned — blocked, allowed, or guardrail-only — has a collapsed **Prisma AIRS report** link. Opening it fetches PANW's own report for that scan (`GET /v1/scan/reports`, through `/api/external-guardrails/report`, with the **saved** key and region) and lists the **flagged** detection services first — each with its verdict (what the detector concluded) and, in plain words, what the AI security profile does: **blocks**, or **alerts only** (malicious verdict, action allow). They differ in practice: a real report on prod showed `agent_security` **malicious + alerts only** while DLP and prompt injection were the actual blocks. Checks that are benign **and** allowed fold into one line, "N other checks passed" (expandable); a detection with any unrecognised verdict or action stays in the flagged group with its raw values, never folded into "passed". Details are names and counts: DLP profile and rule results, matched pattern names with high/medium/low match counts, toxic categories, matched topics, URL categories and risk, code types.
 
@@ -272,8 +282,8 @@ Saved via `PUT /api/external-guardrails/pipeline` (`mode`, `guardrailOnly`, `ord
 | Prisma AIRS says | What happens | Shown as |
 |---|---|---|
 | `allow` | model runs | green chip on the reply: `Prisma AIRS · allow · benign · 312 ms` (amber "incomplete scan" if a detection service timed out) |
-| `block` | model does **not** run; HTTP **200** `externalGuardrailBlocked` | amber card "Blocked by Prisma AIRS" with the detections, profile, `scan_id` / `report_id` for Strata Cloud Manager |
-| unreachable / error, fail mode **block** (default) | model does not run | amber card "Prisma AIRS unavailable — prompt not sent", stating it is **not a verdict** |
+| `block` | model does **not** run; HTTP **200** `externalGuardrailBlocked` | amber card "Blocked by N of M guardrails" with the detections, profile, `scan_id` / `report_id` for Strata Cloud Manager (see "The chat card" below) |
+| unreachable / error, fail mode **block** (default) | model does not run | amber card "Not sent to the model — Prisma AIRS unavailable", stating it is **not a verdict** |
 | unreachable / error, fail mode **allow** | model runs **unscanned** | amber chip "sent unscanned" |
 
 A block is deliberately a **200**, never a 403: 403 on this route means the edge WAF, and both the chat and the red-team runner attribute it that way. External blocks are their own outcome everywhere — `external` in the prompt log, the red-team state `external` (excluded from the "reached the model" denominator like AI Gateway Guardrails), the amber chart series — so no control is credited with another's block. With several guardrails, the deciding result is the one named by `externalGuardrails.stoppedBy` — never simply the first. The whole pipeline result rides in the `x-external-guardrails` response header (URI-encoded JSON) as well, because a streamed reply has no JSON body. The edge verdict under an external block now reads *"Passed the edge …, then an external guardrail stopped it. The model never ran."* — before this it wrongly said "Reached the model".
@@ -343,7 +353,7 @@ Source: [AI Security for Apps — unsafe topics](https://developers.cloudflare.c
 
 Every blocked card has a **▸ View raw response** toggle showing exactly what the browser received — pretty-printed JSON if the rule returns a custom JSON body, raw HTML otherwise.
 
-⚠️ **Current live state**: the deployed rules return Cloudflare's **default HTML block page**, not Custom JSON, so the card's reason text is a generic fallback. The accurate detail comes from the edge verdict below it. Set each block rule's response type to **Custom JSON** to fix.
+⚠️ **Current live state**: the deployed block rules return **Custom JSON** (since 2026-08-03), but in a shape the chat does not read yet — `{"error":"request_blocked","reason_code":"LLM_PII_BLOCKED","message":…}` rather than `{blocked, detection, reason}` — so the red card's reason text is still a generic fallback (PROGRESS Open bug #4). The viewer pretty-prints the real body, and the accurate detail comes from the edge verdict below the card; attribution does not depend on the body.
 
 ## Analytics page (`/analytics`)
 
@@ -483,7 +493,7 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
 
 1. **Enable the feature** — Security → Settings → **AI Security for Apps**.
 2. **Label the endpoint** — Security → Web Assets: ensure `POST <host>/api/chat` exists and carries the managed label **`cf-llm`**. Detection only runs on labeled endpoints with `application/json` bodies.
-3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}`.
+3. **Create the custom rules** — Security → WAF → Custom rules on `cf.llm.*` fields. Set each *block* rule's response type to **Custom JSON** (status 403) so the raw-response viewer renders structured JSON. The UI's reason text understands `{"blocked": true, "detection": "pii|injection|unsafe_topic", "reason": "…"}`; the deployed zone's `{error, reason_code, message}` body is not mapped yet (Open bug #4), so it shows the generic reason.
 
    The deployed zone currently runs these 10 rules. **The app reads them live** from the Rulesets API (`GET /api/zone-rules`) when `CF_ANALYTICS_TOKEN` carries **Zone → WAF → Read**, and classifies each as AI Security or not by whether its *expression* references `cf.llm.*` — so renaming a rule in the dashboard can no longer misfile it. Without that scope it falls back to the `ZONE_RULES` mirror in `web/src/lib/data.ts`, and the flow trace says so explicitly ("static mirror — may be stale") rather than passing hand-maintained data off as live. Keep the mirror updated as the fallback.
 
@@ -500,10 +510,12 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
    | Monitor LLM Custom Topics - Politics and Election | **block** | custom topic score ≤ 40 |
    | Monitor LLM Custom Topics - Telco Use Cases | log | custom topic score ≤ 50 |
 
+   ⚠️ **Live exception (since 2026-10-01, on purpose):** the zone's PII rules are set to **Log** (every matching rule acted `log` on a measured credit-card prompt), so PII prompts pass the edge and reach the external guardrails (to show Prisma AIRS blocking them). Until they are switched back, demo step 2 below ends at the amber external-guardrail card (or a reply), not a 403. PROGRESS Open bug #28.
+
    `injection_score` is 1–99 and **low = likely attack**; `100` means *not scored*. Custom-topic scores invert the same way — lower = stronger match.
 
 4. **AI Gateway** — create the two demo gateways; set `CF_AI_GATEWAY_ID` (Guardrails **off**) and `CF_AI_GATEWAY_GUARDED_ID` (Guardrails **on**) in `wrangler.jsonc`.
-5. **Secrets** — `wrangler secret put CF_ANALYTICS_TOKEN` and `wrangler secret put CF_AIG_TOKEN` (scopes above).
+5. **Secrets** — `wrangler secret put CF_ANALYTICS_TOKEN` and `wrangler secret put CF_AIG_TOKEN` (scopes above), and — for `/guardrails` — `openssl rand -base64 32 | npx wrangler secret put GUARDRAIL_SECRET_KEY` (see External guardrails → Setup).
 6. **D1** — `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote`.
 7. **Cloudflare Access** — if exempting an endpoint for an automated caller (e.g. a red-team scanner), scope the Access application to that **exact path** and use a **Service Auth** policy with a service token — *not* `Bypass`. `Bypass` disables Access logging and is documented as unreliable behind a Worker (which this app always is). A Service-Auth-only app still needs a companion `Allow` policy for human IdP logins on the same path.
 
@@ -547,7 +559,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 | Step | Category (right panel) | Expected |
 |---|---|---|
 | 1 | Baseline → "Legit product question" | LLM answers. Verdict shows `cf-llm` labeled, scored, nothing flagged. |
-| 2 | PII → "Credit card + email" | 403 → red card. Verdict shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. |
+| 2 | PII → "Credit card + email" | 403 → red card. Verdict shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. (While the PII rules are on Log — Open bug #28 — the edge only logs it.) |
 | 3 | Prompt Injection → "Ignore instructions" | 403 → red card, low `injection_score`. |
 | 4 | System Prompt Leakage → "Dump the system prompt" | 403 → red card. OWASP LLM07 / ATLAS AML.T0056. |
 | 5 | Unsafe Topics → "Non-violent crime (S2)" | 403 → red card, S-category shown. |
@@ -557,7 +569,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **365 tests across 24 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **370 tests across 25 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -576,6 +588,8 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
+| `src/openapi30.test.ts` (9) | The OAS 3.0.3 down-conversion API Shield needs: type arrays → `nullable`, `const` → `enum`, numeric `exclusiveMinimum` → boolean + `minimum`, `examples` → `example`, no 3.1-only keyword left anywhere, one absolute `servers` URL, every path and the chat request schema preserved, the source document untouched, and a union 3.0 cannot express refused rather than silently narrowed |
+| `web/src/lib/cardLayout.test.ts` (5) | The per-viewer card layout preference: only the exact word `compact` selects compact; missing, unknown or throwing storage reads as the default (columns); a refused write reports failure instead of throwing |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
 | `web/src/lib/guardrailView.test.ts` (28) | The guardrail card's view model: the deciding result is the one `stoppedBy` names (also when it is not `results[0]`); an error is `unavailable`/fail-open and never carries findings, even with `detected` set; a fail-closed stop is headlined "Not sent to the model — X unavailable", never as a block; "Blocked by N of M" counts only blocks; `notRun` vendors follow results with their reason; the incomplete / redaction-not-applied / fail-open notes; the "Where they differ" grouping only when findings actually differ |
 | `src/coverage.test.ts` (6) | Row-cap coverage (bug #23): nothing tagged when not capped; buckets before the oldest row read are `none`, its own bucket `partial`, including exactly on a boundary; counts never rewritten; a capped read with no usable timestamp claims nothing rather than full coverage. **Mutation-verified** (ignore the cap flag, drop `partial`, off-by-one boundary, missing timestamp = full — each caught) |

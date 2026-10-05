@@ -19,7 +19,7 @@
   // Read" (this zone) AND "Account Analytics: Read" (this account):
   //   npx wrangler secret put CF_ANALYTICS_TOKEN
   "vars": {
-    // AI Gateway name for /api/gateway/chat. "default" auto-creates on first use.
+    // Gateway used by the AI Gateway route of /api/chat (gateway: true). "default" auto-creates on first use.
     "CF_AI_GATEWAY_ID": "cf-ai-sec-demo-gw-no-guardrail",
     // Second gateway with Guardrails ENABLED (create it in dashboard → AI →
     // AI Gateway, then turn on Guardrails). Powers the Guardrails toggle on

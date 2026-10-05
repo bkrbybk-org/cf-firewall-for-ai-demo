@@ -13,6 +13,7 @@
 //    key exists and its last four characters.
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info, Loader2, ShieldAlert } from "lucide-react";
+import { CardLayoutPicker } from "../components/CardLayoutPicker";
 import { Header } from "../components/Header";
 import { PipelineDiagram } from "../components/PipelineDiagram";
 import { Switch } from "../components/Switch";
@@ -568,6 +569,8 @@ export function GuardrailsPage() {
             <PipelineDiagram state={state} onToggle={toggleProvider} onPipeline={savePipeline} />
           )}
 
+          {/* Shown whatever the server state: it is a browser-side preference. */}
+          <CardLayoutPicker />
           {state?.configured && (
             <div className="grid items-start gap-4 xl:grid-cols-2">
               {state.providers.map((c) => (

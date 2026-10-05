@@ -279,7 +279,7 @@ export const openapi = {
           {
             name: "outcome",
             in: "query",
-            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `error`.",
+            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `skipped`, `error`. Unknown values are ignored.",
             schema: { type: "string" },
             example: "guardrails,error",
           },
@@ -344,7 +344,7 @@ export const openapi = {
         operationId: "updateExternalGuardrail",
         summary: "Update one provider",
         description: [
-          "Omitted fields are unchanged. Any number of providers may be enabled; `PUT /api/external-guardrails/pipeline` decides how they run. Enabling is refused until an API key and an AI security profile name are saved, and for a provider that is not supported yet.",
+          "Omitted fields are unchanged. Any number of providers may be enabled; `PUT /api/external-guardrails/pipeline` decides how they run. Enabling is refused until the provider's key is saved (Prisma AIRS: API key; CrowdStrike AIDR: collector token), plus an AI security profile name for a provider that requires one (`requiresProfile` — Prisma AIRS), and for a provider that is not supported yet.",
           "",
           "The endpoint is chosen by `region` from the provider's official hosts only. There is no free-text URL: the stored key travels in a request header, so a typed endpoint would let anyone who can reach this API redirect it.",
           "",

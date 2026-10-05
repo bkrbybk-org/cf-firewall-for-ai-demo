@@ -6,6 +6,7 @@ import type { Msg, Route, RequestConfig } from "../hooks/useChat";
 import { ExportButton } from "./ExportButton";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard } from "./ExternalGuardrailCard";
 import { GuardrailReports } from "./GuardrailReportPanel";
+import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 
@@ -204,6 +205,8 @@ export function Chat({
   systemPrompt: string;
 }) {
   const gateway = route === "gateway";
+  // Per-viewer choice made on /guardrails; read here so both guardrail cards follow it.
+  const [cardLayout] = useGuardrailCardLayout();
   const endRef = useRef<HTMLDivElement>(null);
   const userMsgRefs = useRef(new Map<number, HTMLDivElement>());
   const modelLabels = useMemo(() => Object.fromEntries(models.map((m) => [m.id, m.label])), [models]);
@@ -359,7 +362,7 @@ export function Chat({
           if (m.kind === "external")
             return (
               <div key={m.id} className="contents">
-                <ExternalGuardrailBlockedCard pipeline={m.pipeline} />
+                <ExternalGuardrailBlockedCard pipeline={m.pipeline} layout={cardLayout} />
                 <Stamp side="assistant" ts={m.ts} />
                 {/* The edge scan ran before the Worker, so its verdict exists
                     for this request too — both layers stay visible. */}
@@ -371,7 +374,7 @@ export function Chat({
           if (m.kind === "guardrailOnly")
             return (
               <div key={m.id} className="contents">
-                <GuardrailOnlyCard pipeline={m.pipeline} />
+                <GuardrailOnlyCard pipeline={m.pipeline} layout={cardLayout} />
                 <Stamp side="assistant" ts={m.ts} />
                 {/* stoppedInWorker, or the edge verdict would headline "Reached
                     the model" for a turn the model never saw. */}

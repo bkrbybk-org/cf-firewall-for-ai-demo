@@ -56,8 +56,11 @@ failure stops the chain, and the fix comes before moving on.
    console errors, the actual rendered result, both light and dark. Never ask the user to check
    something manually.
 
-   CI (`.github/workflows/ci.yml`) runs exactly these commands on every PR and every push to
-   `main`, so a green local run is a green CI run. It does not deploy — see step 5 for why.
+   CI (`.github/workflows/ci.yml`) runs these commands on every PR and every push to `main`, after
+   `npm ci`, and then `npm run build`. The three commands above do not build, so a break that only shows
+   in the bundle (Vite/Tailwind, the Swagger copy) surfaces at `npm run deploy` or in CI — for front-end
+   work, `npm run build` locally (you need it anyway: `wrangler dev` serves `dist/`). CI does not deploy —
+   see step 5 for why.
 
 2. **Deploy to prod.**
    ```bash
