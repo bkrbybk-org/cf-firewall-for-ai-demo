@@ -5,6 +5,7 @@ import type {
   ChatTurn,
   ExternalGuardrailProvider,
   GuardrailPipelineResult,
+  GuardrailReportResponse,
   GuardrailPipelineUpdate,
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
@@ -272,6 +273,19 @@ export interface ChatStreamResult {
   // to carry them, so the Worker sends them in the `x-external-guardrails`
   // response header (URI-encoded JSON). null when the pipeline did not run.
   externalGuardrails: GuardrailPipelineResult | null;
+}
+
+// GET /api/external-guardrails/report — Prisma AIRS's per-detection report for
+// one scan, allowlisted server-side. `pending` means PANW has no report under
+// that id yet; retry rather than treating it as "nothing detected".
+export async function getGuardrailReport(reportId: string): Promise<GuardrailReportResponse> {
+  const q = new URLSearchParams({ provider: "prisma-airs", reportId });
+  const r = await fetch(`/api/external-guardrails/report?${q}`);
+  try {
+    return (await r.json()) as GuardrailReportResponse;
+  } catch {
+    return { ok: false, error: `HTTP ${r.status}`, httpStatus: r.status };
+  }
 }
 
 // PUT /api/external-guardrails/pipeline — returns the new state on success;

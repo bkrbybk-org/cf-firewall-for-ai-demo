@@ -401,7 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-03 as version `674a8c93-0f61-4a57-a880-96fd356fc2ee` (CrowdStrike AIDR); before that
+deployed 2026-10-05 as version `474d3600-549d-4ffd-b5ac-240f10202a2e` (Prisma AIRS report panel); before
+that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
@@ -598,6 +599,51 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — Prisma AIRS report panel (and the first real AIDR verdicts)
+
+**Feasibility first** (asked to check, not build): per-prompt vendor detail and policy detail for both
+vendors. Findings, from the vendors' specs + docs + FalconPy's endpoint list:
+- **Prisma AIRS reports: feasible with the key already saved** — `GET /v1/scan/reports` / `/v1/scan/results`
+  on the scan host, `x-pan-token`. **Profiles** (`GET /v1/mgmt/profiles`, `api.sase.paloaltonetworks.com/aisec`)
+  need a new SCM OAuth service account, and that API also creates/deletes profiles and API keys.
+- **CrowdStrike AIDR: no policy API** (the AIDR spec has only `guard_chat_completions` and `unredact`;
+  Falcon's `/aidr/*` endpoints are the endpoint-agent product). Logs are `AIDRPromptDataEvent` in LogScale,
+  reachable only through Falcon NGSIEM query jobs — a credential that can search the whole SIEM — and
+  whether an event carries our `span_id` is undocumented.
+- Live dummy-credential probes proved nothing for PANW: its hosts answer a made-up path exactly like a real
+  one (403/401), so endpoint existence rests on the specs.
+
+**Built (option 1, the user's pick):** `src/prismaAirsReport.ts` + `GET /api/external-guardrails/report`
++ `GuardrailReportPanel.tsx` (collapsed "Prisma AIRS report" under blocked, allowed and guardrail-only
+turns, fetched on open). Self-implemented: the report can echo the prompt, so the parser is an
+**allowlist** — names, verdicts, actions, categories, counts; no snippets, masked text, URLs, code or the
+grounding explanation. Verdict and action stay separate pills. An empty answer is `pending` (retry), never
+"clean". Not built: persisting vendor ids in D1 — nothing would read them yet.
+
+**Verified, and how.**
+- 10 parser tests (319 total); six planted regressions (leak URLs / snippets / explanation, take `[0]`,
+  empty = clean, action derived from verdict) all caught. Local: endpoint validation (wrong provider, a
+  `&report_ids=` injection attempt, missing id, POST) all refused; the panel rendered from in-page stubbed
+  responses in dark and light — **which exposed a real layout bug**: a 3-column grid crushed in the narrow
+  chat column ("DETECTIONVERDICT", word-per-line details). Rebuilt as stacked, labelled pills; re-checked.
+- Prod (deploys `721a636d`, then `474d3600` with the fixes below), with the user's real keys: a benign
+  prompt's report returned 8 detection services, all benign/allow; the 2026-10-01 PII block's report —
+  **still retrievable four days later** — returned `agent_security` **malicious + allow** (alert-only),
+  `dlp` malicious + block with "Credit Card Number — 1 high, 1 medium, 1 low confidence", `pi` malicious +
+  block. `grep 4111` on every report response: 0.
+- **Spec vs live, corrected after measuring:** live service names are `agent_security`, `pi`, `tc`, `uf`,
+  `source_code`, `topic_guardrails` (labels added; the spec's spellings kept too). `transaction_id` is
+  PANW's own `pan_…` id, **not** our `tr_id` — I had written the opposite into `src/openapi.ts` before
+  checking; fixed. Also seen: the 10-01 sync verdict flagged `source_code`, but its report calls
+  `source_code` benign — PANW disagreeing with itself; recorded, not "fixed".
+- **First real CrowdStrike AIDR verdicts** (the user had saved a real collector token and put AIDR first,
+  sequential): the PII prompt → `block`, detectors `confidential_and_pii_entity`, `language`, `topic`, policy
+  `ntt_th_aidr_application_sdk_api_policy_input_policy`, summary "Topic was detected and blocked.",
+  `transformed: true`, `request_id` `prq_…`, 325 ms — AIRS correctly `notRun`. The benign prompt → AIDR
+  `allow` (language detected and allowed, 346 ms) → AIRS `allow` (406 ms) → the model answered: **a full
+  two-vendor sequential pipeline, live**. Not verified: the rendered panel on prod (Access-gated; bundle grep
+  only); parallel mode with both vendors live.
 
 ### 2026-10-03 — CrowdStrike Falcon AIDR guardrail
 
@@ -1337,12 +1383,12 @@ exercised):
     back to Block before a customer demo of the WAF.** Also seen the same run: `/api/zone-rules` →
     `source: fallback`, `Ruleset list failed (HTTP 403)` — the rules token cannot list rulesets, so the app
     shows its static mirror, not live rules.
-29. **CrowdStrike AIDR has never returned a real verdict** (2026-10-03) — no collector token available.
-    The prod 401 check proves host, path and error parsing, but not token delivery (no token gets the same
-    401). First thing to do with a token: save it on `/guardrails` (AIDR **disabled**), *Test connection*
-    (expect `allow` with a `request_id` and `policy`), then enable and send an injection prompt; confirm the
-    amber block card lists AIDR detectors. Also unverified: what AIDR does with `transformed` in practice
-    (the app does not apply redactions — see the 2026-10-03 entry).
+29. ~~CrowdStrike AIDR has never returned a real verdict~~ — **resolved 2026-10-05**: real `block` and
+    `allow` verdicts on prod with the user's collector token (see that entry), which also proves the token
+    is delivered. Still open: AIDR returned `transformed: true` on the PII prompt, and the app does **not**
+    apply AIDR's redaction — on a turn AIDR allows-but-redacts, the model receives the original prompt (the
+    chip says so in amber). Whether to apply it is an unmade design decision. The block card's rendering of
+    AIDR detectors has not been seen in a browser on prod.
 
 ## Next tasks
 

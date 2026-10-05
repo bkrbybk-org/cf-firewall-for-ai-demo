@@ -316,6 +316,23 @@ export interface ExternalGuardrailResult {
   transformed?: boolean;
 }
 
+export interface GuardrailReportDetection {
+  service: string;
+  dataType: string | null;
+  verdict: string | null;
+  action: string | null;
+  details: string[];
+}
+
+export interface GuardrailReport {
+  provider: "prisma-airs";
+  reportId: string;
+  scanId: string | null;
+  transactionId: string | null;
+  source: string | null;
+  detections: GuardrailReportDetection[];
+}
+
 export type GuardrailPipelineMode = "sequential" | "parallel";
 
 export interface GuardrailPipelineConfig {

@@ -5,6 +5,7 @@ import type { GatewayOption, Model } from "../lib/types";
 import type { Msg, Route, RequestConfig } from "../hooks/useChat";
 import { ExportButton } from "./ExportButton";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard } from "./ExternalGuardrailCard";
+import { GuardrailReports } from "./GuardrailReportPanel";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 
@@ -339,6 +340,9 @@ export function Chat({
                         </span>
                       )}
                     </div>
+                    {/* An allowed prompt still has a Prisma AIRS report: which
+                        detectors looked, and any that flagged it but only alert. */}
+                    {m.meta.externalGuardrails && <GuardrailReports pipeline={m.meta.externalGuardrails} />}
                     {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
                   </>
                 )}

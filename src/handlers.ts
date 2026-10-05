@@ -41,6 +41,7 @@ import {
   validateUpdate,
 } from "./externalGuardrails";
 import { ALLOWED_IDS, DEFAULT_MODEL, MODEL_BY_ID, MODEL_REGISTRY } from "./models";
+import { fetchPrismaAirsReport, REPORT_ID_RE } from "./prismaAirsReport";
 import {
   listAiGateways,
   queryAnalytics,
@@ -1510,6 +1511,45 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return guardrailState(env);
     return Response.json({ configured: true, error: message }, { status: 502 });
+  }
+}
+
+// GET /api/external-guardrails/report?provider=prisma-airs&reportId=R… — PANW's
+// own per-detection report for one scan, fetched with the SAVED key from the
+// saved region's official host (never a key or host from the request). The
+// report is passed through an allowlist (src/prismaAirsReport.ts) because it can
+// echo the prompt's content; only names, verdicts, actions and counts leave here.
+// Prisma AIRS only: CrowdStrike AIDR has no per-request report API (its logs are
+// in Next-Gen SIEM, behind a far broader credential).
+export async function handleExternalGuardrailReport(request: Request, url: URL, env: Env): Promise<Response> {
+  if (request.method !== "GET") return Response.json({ error: "Use GET" }, { status: 405 });
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ ok: false, error: hint }, { status: 400 });
+  const provider = url.searchParams.get("provider");
+  const reportId = url.searchParams.get("reportId") ?? "";
+  if (provider !== "prisma-airs") {
+    return Response.json({ ok: false, error: "Reports are available for prisma-airs only" }, { status: 400 });
+  }
+  if (!REPORT_ID_RE.test(reportId)) return Response.json({ ok: false, error: "Invalid reportId" }, { status: 400 });
+  try {
+    const c = (await loadAll(env.DB!)).find((x) => x.provider === provider)!;
+    if (!c.apiKeyEnc) return Response.json({ ok: false, error: "No API key saved" }, { status: 400 });
+    let apiKey: string;
+    try {
+      apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
+    } catch {
+      return Response.json({ ok: false, error: "Stored API key could not be decrypted — re-enter it." }, { status: 400 });
+    }
+    const baseUrl = PROVIDERS[c.provider].regions.find((r) => r.id === c.region)?.url;
+    if (!baseUrl) return Response.json({ ok: false, error: `Unknown region "${c.region}"` }, { status: 400 });
+    const r = await fetchPrismaAirsReport({ baseUrl, apiKey, reportId });
+    // "Not there yet" is a normal 200 the client can retry; only a failed call
+    // to PANW is a 502.
+    const status = r.ok || r.pending ? 200 : 502;
+    return Response.json(r, { status, headers: { "cache-control": "no-store" } });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return Response.json({ ok: false, error: message }, { status: 502 });
   }
 }
 

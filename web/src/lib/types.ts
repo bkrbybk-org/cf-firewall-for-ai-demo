@@ -111,6 +111,35 @@ export interface ChatResponse {
 // model. Any number may be enabled; the pipeline config decides how they run.
 export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr";
 
+// GET /api/external-guardrails/report — Prisma AIRS's own per-detection report
+// for one scan. Allowlisted on the server: names, categories, verdicts, actions
+// and counts only — never snippets, URLs, code or masked text from the prompt.
+export interface GuardrailReportDetection {
+  service: string; // PANW's detection_service, e.g. "dlp", "urlf", "prompt injection"
+  dataType: string | null; // "prompt" | "response" | "tool_event"
+  // What the detector CONCLUDED ("malicious" | "benign") and what the AI
+  // security profile DOES about it ("block" | "allow"). Different facts: a
+  // malicious verdict with action allow means the profile only alerts. Never
+  // collapse them into one word.
+  verdict: string | null;
+  action: string | null;
+  details: string[];
+}
+
+export interface GuardrailReport {
+  provider: "prisma-airs";
+  reportId: string;
+  scanId: string | null;
+  transactionId: string | null;
+  source: string | null;
+  detections: GuardrailReportDetection[];
+}
+
+// `pending`: PANW has no report under this id yet — not an error, not "clean".
+export type GuardrailReportResponse =
+  | { ok: true; report: GuardrailReport }
+  | { ok: false; pending?: boolean; error: string; httpStatus?: number };
+
 // How enabled guardrails run, between the edge WAF (always first, before the
 // Worker) and the model (where AI Gateway Guardrails run, gateway route only):
 //   sequential — in `order`; the first one that stops the turn ends it, and the

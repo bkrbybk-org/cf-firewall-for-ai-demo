@@ -7,6 +7,7 @@
 // and before the model. A colour of its own is what lets someone looking at a
 // blocked turn tell which layer actually stopped it.
 import { ShieldAlert, ShieldBan, SkipForward } from "lucide-react";
+import { GuardrailReports } from "./GuardrailReportPanel";
 import type {
   ExternalGuardrailProvider,
   ExternalGuardrailResult,
@@ -262,6 +263,7 @@ export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: Guardrail
           <NotRunList notRun={pipeline.notRun} />
         </div>
       )}
+      <GuardrailReports pipeline={pipeline} />
       <PipelineFooter pipeline={pipeline} />
     </div>
   );
@@ -305,6 +307,7 @@ export function GuardrailOnlyCard({ pipeline }: { pipeline?: GuardrailPipelineRe
         </div>
       )}
       <ResultList results={results} />
+      {pipeline && <GuardrailReports pipeline={pipeline} />}
       {pipeline ? (
         <PipelineFooter pipeline={pipeline} />
       ) : (

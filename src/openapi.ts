@@ -382,6 +382,35 @@ export const openapi = {
         },
       },
     },
+    "/api/external-guardrails/report": {
+      get: {
+        tags: ["External guardrails"],
+        operationId: "getExternalGuardrailReport",
+        summary: "Prisma AIRS's own per-detection report for one scan",
+        description: [
+          "Fetches `GET /v1/scan/reports` from the **saved** region's official Prisma AIRS host with the **saved** key — the request never supplies a key or host. Use the `reportId` from an `ExternalGuardrailResult`.",
+          "",
+          "**Allowlisted, not passed through.** A PANW report can echo the prompt (DLP / toxic / injection snippets, masked text, URLs, code blocks, the grounding explanation). Only detector names, verdicts, actions, categories and counts are returned — never prompt content.",
+          "",
+          "`verdict` (what a detector concluded) and `action` (what the AI security profile does) are separate facts: a malicious verdict with action `allow` means the profile only alerts.",
+          "",
+          "CrowdStrike AIDR has no per-request report API, so this is Prisma AIRS only.",
+        ].join("\n"),
+        parameters: [
+          { name: "provider", in: "query", required: true, schema: { type: "string", enum: ["prisma-airs"] } },
+          { name: "reportId", in: "query", required: true, schema: { type: "string", pattern: "^[A-Za-z0-9-]{1,80}$" }, example: "R126fe3c6-7a24-4d02-8e26-70966b14d573" },
+        ],
+        responses: {
+          "200": json(
+            "The report, or `pending: true` when PANW has no report under this id yet (retry — this is neither an error nor \"nothing detected\").",
+            { oneOf: [obj({ ok: { const: true }, report: ref("GuardrailReport") }, ["ok", "report"]), obj({ ok: { const: false }, pending: { const: true }, error: str() }, ["ok", "pending", "error"])] },
+          ),
+          "400": json("Not set up, no key saved, a provider other than prisma-airs, or a malformed reportId.", obj({ ok: { const: false }, error: str() }, ["ok", "error"])),
+          "405": error("Not a GET."),
+          "502": json("Prisma AIRS could not be reached or answered with an error.", obj({ ok: { const: false }, error: str(), httpStatus: int() }, ["ok", "error"])),
+        },
+      },
+    },
     "/api/external-guardrails/test": {
       post: {
         tags: ["External guardrails"],
@@ -596,6 +625,27 @@ export const openapi = {
           transformed: bool("CrowdStrike AIDR redacted part of the prompt. **This app does not apply the redaction** — the model receives the original prompt."),
         },
         ["provider", "outcome", "latencyMs"],
+      ),
+      GuardrailReportDetection: obj(
+        {
+          service: str("PANW's `detection_service`, e.g. `dlp`, `urlf`, `prompt injection`."),
+          dataType: nullable("string", "`prompt`, `response` or `tool_event`."),
+          verdict: nullable("string", "What the detector concluded: `malicious` or `benign`."),
+          action: nullable("string", "What the AI security profile does about it: `block` or `allow`."),
+          details: arr({ type: "string", description: "Allowlisted facts — profile and pattern names with match counts, categories, risk levels. Never prompt content." }),
+        },
+        ["service", "dataType", "verdict", "action", "details"],
+      ),
+      GuardrailReport: obj(
+        {
+          provider: { type: "string", enum: ["prisma-airs"] },
+          reportId: str(),
+          scanId: nullable("string"),
+          transactionId: nullable("string", "PANW's own `transaction_id` (e.g. `pan_…`). **Not** the `tr_id` this app sends — measured on prod, PANW does not echo it here."),
+          source: nullable("string", "e.g. `AI-Runtime-API`."),
+          detections: arr(ref("GuardrailReportDetection")),
+        },
+        ["provider", "reportId", "scanId", "transactionId", "source", "detections"],
       ),
       GuardrailPipelineMode: { type: "string", enum: ["sequential", "parallel"] },
       GuardrailPipelineConfig: obj(

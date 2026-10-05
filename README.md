@@ -54,6 +54,7 @@ src/                    Worker (TypeScript)
   openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
   crowdstrikeAidr.ts    CrowdStrike Falcon AIDR AI Guard client (request, verdict/202/error parsing, timeout)
+  prismaAirsReport.ts   Prisma AIRS threat-scan report fetch + allowlist parser (no prompt content leaves it)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
   raw-imports.d.ts      types `?raw` imports so tests can read source without Node types
   sse.ts                Worker-side SSE reader that recovers streamed replies for the log
@@ -104,6 +105,7 @@ web/                    React app (Vite root)
                         GatewayTab, PromptLogTab
       redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
       ExternalGuardrailCard.tsx   blocked/unavailable + "model skipped" cards and reply chips for the guardrail pipeline
+      GuardrailReportPanel.tsx    collapsed "Prisma AIRS report" panel (verdict vs action per detection), fetched on open
       PipelineDiagram.tsx         /guardrails traffic-flow diagram + mode / order / guardrail-only controls
     pages/              FirewallPage, AnalyticsPage, RedTeamPage, CompliancePage
 dist/                   Vite build output (gitignored) → wrangler assets
@@ -146,6 +148,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/openapi.json` | This API as an OpenAPI 3.1 document — the hand-written source (see **API reference** below) |
 | `GET /api/openapi-3.0.json` | The same document as OpenAPI 3.0.3, `servers` = the requesting origin. **Upload this one to API Shield**; Swagger UI renders it |
 | `GET/PUT /api/external-guardrails` | External-guardrail configuration; API keys are write-only and never returned |
+| `GET /api/external-guardrails/report?provider=prisma-airs&reportId=` | Prisma AIRS's own per-detection report for one scan (saved key, allowlisted fields only) |
 | `PUT /api/external-guardrails/pipeline` | How enabled guardrails run: `mode` (sequential/parallel), `guardrailOnly`, `order` |
 | `POST /api/external-guardrails/test` | Scan a fixed benign prompt with the **saved** configuration |
 | `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
@@ -154,7 +157,7 @@ Everything else falls through to the static assets (SPA fallback).
 
 ### API reference (OpenAPI + Swagger UI)
 
-The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, down-converted to **OpenAPI 3.0.3** at **`/api/openapi-3.0.json`**, which **Swagger UI at `/api-docs/`** renders (`/api-docs` redirects; every page links it as **API docs ↗** at the right end of the tab strip). It documents all 15 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
+The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, down-converted to **OpenAPI 3.0.3** at **`/api/openapi-3.0.json`**, which **Swagger UI at `/api-docs/`** renders (`/api-docs` redirects; every page links it as **API docs ↗** at the right end of the tab strip). It documents all 16 paths — every parameter, request body, response and error shape — including the conventions that are easy to get wrong: a missing secret is HTTP 200 `{configured:false}` not an error; a WAF block is a **403 written by the zone's rule before the Worker runs** (its body is operator-configured) while a Guardrails block is a **200**; `hours` is clamped; latency is Worker-observed only and never averaged across `streamed`.
 
 - **Why a 3.0 copy.** Cloudflare API Shield Schema Validation parses uploads with OAS 3.0 semantics only and rejects relative server URLs; the 3.1 file fails at upload with `cannot unmarshal 'number' in field 'components.schemas.properties.exclusiveMinimum' of type 'bool'`. `src/openapi30.ts` rewrites only the 3.1-only forms, each preserving what the schema accepts: `type: [T, "null"]` → `nullable`, `const` → one-value `enum`, numeric `exclusiveMinimum` → `minimum` + `exclusiveMinimum: true`, `examples` → `example`, `servers` → the absolute origin. It walks schemas only (never example payloads or property *names*) and refuses a union 3.0 cannot express; `src/openapi30.test.ts` checks the result is valid 3.0, holds no 3.1-only keyword, and leaves every `ChatRequest` field equivalent. **Before enforcing** Schema Validation: some request bounds are stricter than the Worker, which clamps instead (`systemPrompt` over 2000 chars, `maxAttempts` outside 1–5), so such requests would be flagged. Watch `cf.schema_validation.uploaded.violated` first.
 - **Swagger targets its own origin.** The initializer replaces `servers` with `window.location.origin` before rendering: under `wrangler dev` the Worker sees the *route's* hostname over http, so an unpatched Try it out on localhost would send real requests to prod.
@@ -237,6 +240,15 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 - **A `blocked` that is not a real boolean is an error** — never an allow.
 - **Redaction is reported, not applied.** When AIDR's policy redacts (`result.transformed`), this app still sends the **original** prompt to the model, and says so: the reply chip reads *allow · redaction not applied* in amber, never a green pass.
 - **Errors** come in the API gateway's shape (`{meta, errors:[{code, message}]}`, seen live) or the spec's Pangea validation shape; both are parsed.
+
+### Prisma AIRS report panel
+
+Every chat turn Prisma AIRS scanned — blocked, allowed, or guardrail-only — has a collapsed **Prisma AIRS report** link. Opening it fetches PANW's own report for that scan (`GET /v1/scan/reports`, through `/api/external-guardrails/report`, with the **saved** key and region) and lists every detection service with two separate pills: **verdict** (what the detector concluded) and **action** (what the AI security profile does). They differ in practice: a real report on prod showed `agent_security` **malicious + allow** — the profile only alerts on it — while DLP and prompt injection were the actual blocks. Details are names and counts: DLP profile and rule results, matched pattern names with high/medium/low match counts, toxic categories, matched topics, URL categories and risk, code types.
+
+- **Allowlisted, never passed through.** A PANW report can echo the prompt — DLP / toxic / injection snippets, masked text, every URL, extracted code, a model-written grounding explanation. The prompt log redacts PII before storing anything, so showing the report verbatim would undo that in the browser; `src/prismaAirsReport.ts` copies only names, verdicts, actions, categories and counts, and drops any field PANW adds later. A test fills every content-bearing field and asserts none of it survives.
+- **"No report yet" is its own state** (`pending`, with a Retry), never an empty "clean" panel.
+- **Live names differ from PANW's spec:** reports say `agent_security`, `pi`, `tc`, `uf`, `source_code`, `topic_guardrails`; the UI labels both spellings. `transaction_id` is PANW's own `pan_…` id, **not** the `tr_id` (Cloudflare ray) the app sends.
+- Reports are still retrievable days later (a 2026-10-01 report fetched on 2026-10-05). CrowdStrike AIDR has no per-request report API — its logs live in Next-Gen SIEM behind a much broader credential — so it has no panel; its verdict already carries `policy`, `summary` and `request_id`.
 
 ### Traffic flow (the pipeline)
 
@@ -542,7 +554,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **309 tests across 20 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **319 tests across 21 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -562,6 +574,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |
+| `src/prismaAirsReport.test.ts` (10) | The report parser is an allowlist: a fixture filling every prompt-bearing field (snippets, masked text, URLs, code blocks, grounding explanation, byte offsets) leaks none of it; verdict and action kept apart; matched by `report_id`, never `[0]`; an empty array is `pending`, not "clean"; the id charset stops query injection before any call. **Mutation-verified**: six regressions (leak URLs, leak snippets, take `[0]`, empty = clean, action derived from verdict, leak the explanation) were each caught |
 | `src/crowdstrikeAidr.test.ts` (15) | The CrowdStrike AIDR client: the `/aidr/aiguard` path (not the spec's 404 one), Bearer collector token, no `user_id`/`source_ip`, the three official hosts; **a 200 without a boolean `blocked`, and a 202, are errors — never an allow**; verdict from `blocked` alone, never the detectors; redaction flagged; the live gateway's error body and the spec's validation errors; timeout and network failure. **Mutation-verified**: five planted regressions (missing `blocked` = allow, 202 as a verdict, verdict from detectors, the spec's path, always-allow) were each caught |
 | `src/externalGuardrails.test.ts` (33) | **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |

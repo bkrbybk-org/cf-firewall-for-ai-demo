@@ -136,8 +136,12 @@ alters what a customer sees in a demo. State it and let them choose.
   never affected.
 - Facts about a third-party API come from its own OpenAPI spec (PANW's is in the public
   `PaloAltoNetworks/pan.dev` repo; CrowdStrike's is `aidr-docs.crowdstrike.com/docs/openapi/aidr_openapi.json`),
-  then get checked against the live endpoint — **both vendors' specs were wrong**: PANW's error body, and
-  CrowdStrike's path (`/v1/…` is 404; `/aidr/aiguard/v1/…` is real). Also check what a live error *proves*:
+  then get checked against the live endpoint — **both vendors' specs were wrong**: PANW's error body and
+  its report service names (`pi`, `tc`, `uf`, `agent_security`… not the spec's), and CrowdStrike's path
+  (`/v1/…` is 404; `/aidr/aiguard/v1/…` is real). Never document a vendor field's meaning before seeing a
+  real payload: PANW's `transaction_id` looked like our `tr_id` echoed back and is not.
+  PANW's hosts answer a made-up path with the same 403/401 as a real one, so a dummy-credential probe there
+  proves nothing about whether an endpoint exists. Also check what a live error *proves*:
   AIDR returns the same 401 with no token as with a bad one, so it cannot confirm a token arrived.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
