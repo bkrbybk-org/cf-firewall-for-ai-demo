@@ -6,314 +6,251 @@
 // this is a third control that runs inside the Worker after both the edge scan
 // and before the model. A colour of its own is what lets someone looking at a
 // blocked turn tell which layer actually stopped it.
-import { ShieldAlert, ShieldBan, SkipForward } from "lucide-react";
-import { GuardrailReports } from "./GuardrailReportPanel";
-import type {
-  ExternalGuardrailProvider,
-  ExternalGuardrailResult,
-  GuardrailPipelineResult,
-} from "../lib/types";
+//
+// Layout "vendor columns": a headline, then one bordered column per vendor. Every
+// fact comes from pipelineView() (lib/guardrailView.ts) so another layout can render
+// the same view model without re-deciding what a result means.
+import { Fragment, useId, useState } from "react";
+import { ChevronDown, ChevronRight, Shield, ShieldAlert } from "lucide-react";
+import { GuardrailReportPanel } from "./GuardrailReportPanel";
+import {
+  GUARDRAIL_ONLY_HEADLINE,
+  pipelineView,
+  providerLabel,
+  type PipelineView,
+  type VendorView,
+} from "../lib/guardrailView";
+import type { ExternalGuardrailResult, GuardrailPipelineResult } from "../lib/types";
 
-const PROVIDER_LABELS: Record<ExternalGuardrailProvider, string> = {
-  "prisma-airs": "Prisma AIRS",
-  "crowdstrike-aidr": "CrowdStrike AIDR",
-};
+// Where this control sits — what the old card said in a paragraph, now carried by
+// the header icon's tooltip and a screen-reader description so the card stays short.
+const WHERE_IT_RUNS =
+  "This check runs after the Cloudflare edge scan, inside the Worker — a separate control from both the edge WAF and AI Gateway Guardrails.";
+const EXPLAIN_BLOCKED = `${WHERE_IT_RUNS} The prompt was not sent to the model.`;
+// Guardrail-only is a test result, not an answer: no reply, tokens or cost exist, and
+// AI Gateway Guardrails did not run either — they are part of the model call.
+const EXPLAIN_GUARDRAIL_ONLY = `${WHERE_IT_RUNS} The model was not called, so there is no reply, no tokens and no cost. AI Gateway Guardrails did not run either — they are part of the model call.`;
 
-// The long form for running prose; the chips and lists use the short one.
-const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
-  "prisma-airs": "Palo Alto Networks Prisma AIRS",
-  "crowdstrike-aidr": "CrowdStrike Falcon AIDR",
-};
+const MAX_CHIPS = 3;
 
-// What the provider's own reference id is called, so it can be searched for in
-// that vendor's console.
-const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
-  "prisma-airs": "scan_id",
-  "crowdstrike-aidr": "request_id",
-};
-
-// The provider name is data, not a constant: the second provider reuses this
-// card, and a server newer than this bundle may send a key we don't know yet.
-function providerLabel(p: ExternalGuardrailProvider): string {
-  return PROVIDER_LABELS[p] ?? p;
+function pillClass(v: VendorView): string {
+  if (v.state === "notRun") return "border-dashed border-line text-muted";
+  // An allow that covers less than it reads (incomplete scan, redaction not applied)
+  // is amber, never the green of a complete pass.
+  if (v.state === "allow" && !v.partial) return "border-cf-green/50 bg-cf-green/10 text-cf-green";
+  return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
 }
 
-function providerFullLabel(p: ExternalGuardrailProvider): string {
-  return PROVIDER_FULL_LABELS[p] ?? p;
-}
-
-const DETECTION_LABELS: Record<string, string> = {
-  url_cats: "Malicious URL",
-  dlp: "Sensitive data (DLP)",
-  injection: "Prompt injection",
-  toxic_content: "Toxic content",
-  malicious_code: "Malicious code",
-  agent: "Agent threat",
-  topic_violation: "Topic violation",
-  // CrowdStrike AIDR detector names (result.detectors keys in its OpenAPI spec).
-  malicious_prompt: "Malicious prompt",
-  confidential_and_pii_entity: "Confidential / PII",
-  malicious_entity: "Malicious entity",
-  custom_entity: "Custom entity",
-  secret_and_key_entity: "Secret or key",
-  competitors: "Competitors",
-  language: "Language",
-  topic: "Topic",
-  emoji: "Emoji",
-  code: "Code",
-  mcp_validation: "MCP validation",
-};
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function VendorColumn({ v }: { v: VendorView }) {
+  const [showAll, setShowAll] = useState(false);
+  const [open, setOpen] = useState(false);
+  const detailsId = useId();
+  const notRun = v.state === "notRun";
+  const chips = showAll ? v.findings : v.findings.slice(0, MAX_CHIPS);
+  const hidden = v.findings.length - MAX_CHIPS;
   return (
-    <span>
-      {label} {children}
-    </span>
+    <li
+      className={`min-w-0 rounded-xl border p-2.5 ${
+        notRun
+          ? "border-dashed border-line"
+          : v.decided
+            ? "border-cf-amber bg-surface/70 ring-1 ring-cf-amber/30"
+            : "border-line bg-surface/70"
+      }`}
+    >
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span title={v.fullName} className="font-bold text-text">
+          {v.name}
+        </span>
+        <span className={`rounded-full border px-2 py-px text-[10.5px] font-bold whitespace-nowrap ${pillClass(v)}`}>
+          {v.stateLabel}
+        </span>
+        {v.decided && (
+          <span
+            title="This result is the one that stopped the turn"
+            className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
+          >
+            decided
+          </span>
+        )}
+      </div>
+
+      {v.findings.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {chips.map((f) => (
+            <span
+              key={f}
+              className="max-w-full rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold break-words text-cf-amber"
+            >
+              {f}
+            </span>
+          ))}
+          {hidden > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowAll((s) => !s)}
+              aria-expanded={showAll}
+              className="rounded-full border border-line px-2 py-0.5 text-[10.5px] text-muted hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {showAll ? "show fewer" : `+${hidden} more`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {v.latencyMs != null && <div className="mt-1.5 font-mono text-[11px] text-muted">{v.latencyMs} ms</div>}
+
+      {v.notes.length > 0 && (
+        <ul className="mt-1.5 flex flex-col gap-1 text-[11.5px] text-cf-amber">
+          {v.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+      )}
+
+      {v.details.length > 0 &&
+        (notRun ? (
+          // One short reason: shown outright, a collapsed disclosure would hide the
+          // only thing worth saying about a guardrail that never ran.
+          <DetailList details={v.details} className="mt-1.5" />
+        ) : (
+          <div className="mt-1.5">
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              aria-controls={detailsId}
+              className="inline-flex items-center gap-1 rounded-md text-[11.5px] font-semibold text-muted transition-colors hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              details
+            </button>
+            {open && <DetailList id={detailsId} details={v.details} className="mt-1" />}
+          </div>
+        ))}
+    </li>
   );
 }
 
-// One line per result: what the Worker saw from that provider. An error is
-// worded "unavailable" and never as a block or a verdict — the provider did not
-// look at the prompt — and `failedOpen` says the turn went on unscanned by it.
-function resultSummary(r: ExternalGuardrailResult): { text: string; cls: string } {
-  if (r.outcome === "allow") {
-    if (r.transformed) return { text: "allow — redaction not applied", cls: "text-cf-amber" };
-    return r.incomplete
-      ? { text: "allow (incomplete scan)", cls: "text-cf-amber" }
-      : { text: "allow", cls: "text-cf-green" };
-  }
-  if (r.outcome === "block") return { text: "block", cls: "text-cf-amber" };
-  return r.failedOpen
-    ? { text: "unavailable — ran unscanned (fail open)", cls: "text-cf-amber" }
-    : { text: "unavailable — not a verdict", cls: "text-muted" };
-}
-
-function ResultList({ results }: { results: ExternalGuardrailResult[] }) {
-  if (results.length === 0) return null;
+function DetailList({ details, className, id }: { details: VendorView["details"]; className?: string; id?: string }) {
   return (
-    <ul className="mt-2 flex flex-col gap-1 text-[11.5px]">
-      {results.map((r) => {
-        const s = resultSummary(r);
-        return (
-          <li key={r.provider} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-            <span className="font-semibold text-text">{providerLabel(r.provider)}</span>
-            <span className={`font-semibold ${s.cls}`}>{s.text}</span>
-            <span className="font-mono text-muted">{r.latencyMs} ms</span>
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function NotRunList({ notRun }: { notRun: GuardrailPipelineResult["notRun"] }) {
-  if (notRun.length === 0) return null;
-  return (
-    <ul className="mt-1.5 flex flex-col gap-1 text-[11.5px] text-muted">
-      {notRun.map((n) => (
-        <li key={n.provider}>
-          <span className="font-semibold text-text">{providerLabel(n.provider)}</span> did not run — {n.reason}
-        </li>
+    // The ids here are what you search for in the vendor's console (Strata Cloud
+    // Manager, the Falcon console) to open its own report, so they are shown whole.
+    <dl id={id} className={`grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-[11px] ${className ?? ""}`}>
+      {details.map((d) => (
+        <Fragment key={d.label}>
+          <dt className="text-subtle">{d.label}</dt>
+          <dd className={`m-0 ${d.mono ? "font-mono break-all text-text" : "break-words text-muted"}`}>{d.value}</dd>
+        </Fragment>
       ))}
-    </ul>
+    </dl>
   );
 }
 
-// Mode + wall-clock for the whole pipeline. Parallel latency is the slowest
-// guardrail, sequential is the sum — saying which keeps the number honest.
-function PipelineFooter({ pipeline }: { pipeline: GuardrailPipelineResult }) {
-  const n = pipeline.results.length;
+// Shared frame: tone decides amber vs neutral, and the explanatory sentence lives in
+// the icon's tooltip + a screen-reader description rather than as visible prose.
+function CardShell({
+  view,
+  explainer,
+  children,
+}: {
+  view: Pick<PipelineView, "headline" | "tone" | "subline">;
+  explainer: string;
+  children?: React.ReactNode;
+}) {
+  const headId = useId();
+  const descId = useId();
+  const warn = view.tone === "warning";
   return (
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted">
-      <Field label="mode">
-        <b className="font-mono text-text">{pipeline.mode}</b>
-        {pipeline.mode === "parallel" ? " (waited for all)" : ""}
-      </Field>
-      <Field label="guardrails run">
-        <b className="font-mono text-text">{n}</b>
-      </Field>
-      <Field label="pipeline total">
-        <b className="font-mono text-text">{pipeline.latencyMs} ms</b>
-      </Field>
-    </div>
+    // A definite width (not max-width) so the vendor grid below can query the card's
+    // own size: the chat column is ~380px on a desktop split, where a viewport
+    // breakpoint would still squeeze two columns side by side.
+    <section
+      aria-labelledby={headId}
+      aria-describedby={descId}
+      className={`animate-rise w-[min(92%,720px)] self-start rounded-2xl border p-4 text-sm shadow-sm ${
+        warn ? "border-cf-amber/60 bg-cf-amber/10" : "border-line bg-surface-2"
+      }`}
+    >
+      <div className="flex items-start gap-2">
+        <span title={explainer} className={`mt-0.5 shrink-0 cursor-help ${warn ? "text-cf-amber" : "text-muted"}`}>
+          {warn ? <ShieldAlert size={16} aria-hidden="true" /> : <Shield size={16} aria-hidden="true" />}
+        </span>
+        <div className="min-w-0">
+          <div id={headId} className={`font-bold ${warn ? "text-cf-amber" : "text-text"}`}>
+            {view.headline}
+          </div>
+          <div className="text-[11.5px] text-muted">{view.subline}</div>
+        </div>
+      </div>
+      <span id={descId} className="sr-only">
+        {explainer}
+      </span>
+      {children}
+    </section>
+  );
+}
+
+function PipelineBody({ view }: { view: PipelineView }) {
+  const withReport = view.vendors.filter((v) => v.reportId);
+  return (
+    <>
+      {view.caveat && <div className="mt-2 text-[11.5px] text-cf-amber">{view.caveat}</div>}
+      {view.why && (
+        <div className="mt-2 text-[11.5px] text-muted">
+          <span className="font-semibold text-text">Where they differ:</span> {view.why}
+        </div>
+      )}
+      {view.vendors.length > 0 && (
+        <div className="@container mt-3">
+          <ul
+            className={`grid grid-cols-1 gap-2 ${view.vendors.length > 1 ? "@[26rem]:grid-cols-2" : ""}`}
+          >
+            {view.vendors.map((v) => (
+              <VendorColumn key={v.provider} v={v} />
+            ))}
+          </ul>
+        </div>
+      )}
+      {/* Full width below the columns, not inside one: the report lists several
+          detections with details, which a ~200px column would crush into
+          word-per-line text, and the panel already names its vendor. */}
+      {withReport.map((v) => (
+        <GuardrailReportPanel key={v.reportId} reportId={v.reportId!} />
+      ))}
+    </>
   );
 }
 
 export function ExternalGuardrailBlockedCard({ pipeline }: { pipeline: GuardrailPipelineResult }) {
-  // The DECIDING result is the one `stoppedBy` names. Never results[0]: in a
-  // sequential run an earlier guardrail may have allowed, and in parallel the
-  // configured order says nothing about which one stopped the turn.
-  const result = pipeline.results.find((r) => r.provider === pipeline.stoppedBy);
-  const others = pipeline.results.filter((r) => r !== result);
-  if (!result) {
-    return (
-      <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-amber/60 bg-cf-amber/10 p-4 text-sm shadow-sm">
-        <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-amber">
-          <ShieldAlert size={16} />
-          Stopped by an external guardrail
-        </div>
-        <div className="leading-relaxed text-text">
-          The pipeline reports the turn was stopped
-          {pipeline.stoppedBy ? <> by {providerLabel(pipeline.stoppedBy)}</> : null}, but no result for it came back,
-          so no verdict is shown. The prompt was not sent to the model.
-        </div>
-        <ResultList results={others} />
-        <NotRunList notRun={pipeline.notRun} />
-        <PipelineFooter pipeline={pipeline} />
-      </div>
-    );
-  }
-  const name = providerLabel(result.provider);
-  const isError = result.outcome === "error";
+  const view = pipelineView(pipeline, "blocked");
   return (
-    <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-amber/60 bg-cf-amber/10 p-4 text-sm shadow-sm">
-      <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-amber">
-        {isError ? <ShieldAlert size={16} /> : <ShieldBan size={16} />}
-        {isError ? `${name} unavailable — prompt not sent` : `Blocked by ${name}`}
-      </div>
-
-      {isError ? (
-        // Deliberately no category, no detection pills and no "malicious": the
-        // provider never looked at the prompt, so there is nothing to claim about it.
-        <>
-          <div className="leading-relaxed text-text">
-            This is <b>not a verdict</b>. {name} could not be consulted, so nothing is known about this prompt. The
-            guardrail is set to <b>fail closed</b>, which blocks the prompt whenever the check cannot complete — it
-            was not sent to the model.
-          </div>
-          {result.error && <div className="mt-2 font-mono text-[11px] break-words text-muted">{result.error}</div>}
-          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted">
-            {result.httpStatus != null && (
-              <Field label="HTTP">
-                <b className="font-mono text-text">{result.httpStatus}</b>
-              </Field>
-            )}
-            <Field label="after">
-              <b className="font-mono text-text">{result.latencyMs} ms</b>
-            </Field>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="leading-relaxed text-text">
-            The prompt was stopped by <b>{providerFullLabel(result.provider)}</b> before reaching the model. This check runs{" "}
-            <b>after</b> the Cloudflare edge scan, inside the Worker — a separate control from both the edge WAF and
-            AI Gateway Guardrails.
-          </div>
-          {result.detected && result.detected.length > 0 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {result.detected.map((d) => (
-                <span
-                  key={d}
-                  title={d}
-                  className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
-                >
-                  {DETECTION_LABELS[d] ?? d}
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted">
-            {result.category && (
-              <Field label="category">
-                <b className="font-mono text-text">{result.category}</b>
-              </Field>
-            )}
-            {result.profileName && (
-              <Field label="profile">
-                <b className="font-mono text-text">{result.profileName}</b>
-              </Field>
-            )}
-            {result.policy && (
-              <Field label="policy">
-                <b className="font-mono text-text">{result.policy}</b>
-              </Field>
-            )}
-            <Field label="latency">
-              <b className="font-mono text-text">{result.latencyMs} ms</b>
-            </Field>
-          </div>
-          {result.incomplete && (
-            <div className="mt-1.5 text-[11.5px] text-muted">
-              At least one detection service timed out or errored, so this verdict is based on the checks that
-              completed.
-            </div>
-          )}
-          {result.summary && <div className="mt-1.5 text-[11.5px] text-muted">“{result.summary}”</div>}
-          {(result.scanId || result.reportId) && (
-            // These ids are what you search for in the vendor's console (Strata
-            // Cloud Manager, the Falcon console) to open its own report, so they
-            // are shown whole.
-            <div className="mt-1.5 flex flex-col gap-0.5 font-mono text-[11px] break-all text-muted">
-              {result.scanId && (
-                <span>
-                  {SCAN_ID_LABEL[result.provider] ?? "id"} {result.scanId}
-                </span>
-              )}
-              {result.reportId && <span>report_id {result.reportId}</span>}
-            </div>
-          )}
-        </>
-      )}
-
-      {(others.length > 0 || pipeline.notRun.length > 0) && (
-        <div className="mt-3 border-t border-cf-amber/30 pt-2">
-          <div className="text-[10.5px] font-bold tracking-wider text-subtle uppercase">Rest of the pipeline</div>
-          <ResultList results={others} />
-          <NotRunList notRun={pipeline.notRun} />
-        </div>
-      )}
-      <GuardrailReports pipeline={pipeline} />
-      <PipelineFooter pipeline={pipeline} />
-    </div>
+    <CardShell view={view} explainer={EXPLAIN_BLOCKED}>
+      <PipelineBody view={view} />
+    </CardShell>
   );
 }
 
 // Guardrail-only mode: the prompt passed the edge and every enabled external
 // guardrail and the model was deliberately NOT called. This is a test result,
-// not an answer — no reply, tokens or cost exist, and AI Gateway Guardrails did
-// not run either (they are part of the model call). Neutral when nothing
-// external ran, since then no amber control did anything.
+// not an answer. Neutral unless a guardrail blocked or was unreachable — when
+// nothing external ran, no amber control did anything.
 export function GuardrailOnlyCard({ pipeline }: { pipeline?: GuardrailPipelineResult }) {
-  const results = pipeline?.results ?? [];
-  const unscanned = results.filter((r) => r.outcome === "error");
-  const tone =
-    results.length > 0 ? "border-cf-amber/60 bg-cf-amber/10" : "border-line bg-surface-2";
-  return (
-    <div className={`animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border p-4 text-sm shadow-sm ${tone}`}>
-      <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-amber">
-        <SkipForward size={16} /> Model skipped — guardrail-only mode
-      </div>
-      <div className="leading-relaxed text-text">
-        {results.length > 0 ? (
-          <>
-            The prompt passed the edge WAF and every enabled external guardrail. <b>The model was not called</b>, so
-            there is no reply, no tokens and no cost.
-          </>
-        ) : (
-          <>
-            Passed the edge WAF; <b>no external guardrail is enabled</b>. <b>The model was not called</b>, so there is
-            no reply, no tokens and no cost.
-          </>
-        )}{" "}
-        AI Gateway Guardrails did not run either — they are part of the model call.
-      </div>
-      {unscanned.length > 0 && (
-        // A failed-open provider let the turn through without ever scanning it;
-        // "passed every guardrail" would otherwise overstate what was checked.
-        <div className="mt-2 text-[11.5px] text-cf-amber">
-          {unscanned.map((r) => providerLabel(r.provider)).join(", ")} could not be reached and is set to fail open, so
-          this prompt was <b>not scanned</b> by {unscanned.length === 1 ? "it" : "them"}.
-        </div>
-      )}
-      <ResultList results={results} />
-      {pipeline && <GuardrailReports pipeline={pipeline} />}
-      {pipeline ? (
-        <PipelineFooter pipeline={pipeline} />
-      ) : (
+  if (!pipeline) {
+    return (
+      <CardShell
+        view={{ headline: GUARDRAIL_ONLY_HEADLINE, tone: "neutral", subline: "model not called" }}
+        explainer={EXPLAIN_GUARDRAIL_ONLY}
+      >
         <div className="mt-2 text-[11px] text-muted">The response carried no pipeline detail.</div>
-      )}
-    </div>
+      </CardShell>
+    );
+  }
+  const view = pipelineView(pipeline, "guardrailOnly");
+  return (
+    <CardShell view={view} explainer={EXPLAIN_GUARDRAIL_ONLY}>
+      <PipelineBody view={view} />
+    </CardShell>
   );
 }
 

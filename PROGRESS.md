@@ -401,8 +401,8 @@ Access). `.claude/launch.json` has `wrangler-dev` + `vite-dev` configs.
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-05 as version `b51a5897-0fee-4d88-a010-55bf119ace99` (bug #23, capped-chart coverage);
-before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
+deployed 2026-10-05 as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
+that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
 `a49adbd0` (2026-09-30, the OpenAPI spec + Swagger UI); before
@@ -599,6 +599,40 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — guardrail card redesign: option B (vendor columns)
+
+**Asked for:** an easier-to-read response card. Three mockups were shown (A compact rows, B vendor
+columns, C pipeline timeline); the user picked **B now, A selectable later** (plan in "Next tasks").
+
+**What.** `web/src/lib/guardrailView.ts` — a pure view model, `pipelineView(pipeline, kind)`, that both
+layouts render: headline ("Blocked by N of M guardrails" / "Not sent to the model — X unavailable" /
+"Model skipped — guardrail-only mode"), subline (mode · latency), one vendor entry per result then per
+`notRun` (state, findings, latency, notes, details, report id), a "Where they differ" line, and a caveat for
+a `stoppedBy` with no matching result. `ExternalGuardrailCard.tsx` renders it as B: header, then one mini
+card per vendor (state pill, "decided" marker on the `stoppedBy` vendor, ≤3 finding chips + "+N more",
+latency, always-visible honesty notes, collapsed details), the report panel full-width below. Grid is a
+container query (`@[26rem]:grid-cols-2`) so it stacks in the ~380 px chat column and goes side by side when
+the card is wide. The old explanatory paragraph moved to the header icon's `title` + an `aria-describedby`
+sr-only span. `GuardrailReportPanel` lists flagged detections first with "blocks" / "alerts only" and folds
+benign+allow into "N other checks passed"; unrecognised values stay flagged with raw values.
+
+**Who.** Sonnet built the view model, tests and both components from a brief that pinned seven honesty
+rules; I reviewed the view model's core (decider from `stoppedBy`, errors carry no findings, unknown outcome
+= no verdict, fail-closed never worded as a block), re-ran every gate, and did the browser check.
+
+**Verified, and how.** `npm run check`, web `tsc -b`, 365 tests / 24 files (28 new in
+`guardrailView.test.ts`). `wrangler dev` + Browser pane with four stubbed pipelines injected in-page:
+parallel two-block → "Blocked by 2 of 2 guardrails · parallel (waited for all) · 946 ms", AIDR marked
+DECIDED, "Where they differ: Confidential / PII, Language, Topic — CrowdStrike AIDR only · Sensitive data
+(DLP) — Prisma AIRS only"; sequential stop → "1 of 1 guardrail", Prisma AIRS "did not run" with its reason;
+fail-closed error → "Not sent to the model — Prisma AIRS unavailable", "Not a verdict…", and **no finding
+chips although the stubbed error carried `detected: ["dlp"]`**; guardrail-only with nothing enabled →
+"Model skipped". Report panel: "Sensitive data (DLP) · malicious · blocks" + its DLP lines, then "7 other
+checks passed". Layout: stacked in the narrow pane, side by side at 1440 px, no horizontal scroll at 375 px;
+dark and light. Prod (`f5de7ba2`): smoke 5/5; deployed bundle contains the headline, "Where they differ",
+"alerts only", "did not run", "Not a verdict" and the passed-checks template. Not seen: the card on prod in
+a browser (Access-gated).
 
 ### 2026-10-05 — bug #23 fixed: capped charts say "not read", not zero
 
@@ -1467,6 +1501,28 @@ exercised):
       mitigation with the user first.
 - [x] ~~**#24 percentile rank**~~ — done 2026-10-05, checked against a hand calculation on real rows.
 - [x] ~~**#23 capped charts**~~ — done 2026-10-05: "mark unread" chosen (Groups datasets are sampled).
+
+**Guardrail card: let the viewer choose option A (compact rows)** — planned 2026-10-05, not started. The user
+picked option B (vendor columns) to build first and asked for a plan to offer A as a selectable layout later.
+Mockups of A, B and C were shown in chat on 2026-10-05.
+- **Groundwork already in B:** both layouts render the same pure view model, `pipelineView()` in
+  `web/src/lib/guardrailView.ts` (headline, per-vendor state/findings/latency/notes/details, and a `why`
+  line that only A shows). All honesty rules live and are tested there, so A cannot drift from B on them.
+- [ ] **A renderer** — *sonnet*: `CompactPipelineCard` in `ExternalGuardrailCard.tsx`: headline + subline,
+      one row per vendor (name · state pill · findings joined · latency), the `why` line when non-null, one
+      "Details" disclosure holding every vendor's `details`/`notes` and the report panel. Same props as B.
+      Must render `notes` (incomplete scan, redaction not applied, fail-open) visibly, not only in Details —
+      they are honesty notes, not metadata.
+- [ ] **The switch** — *self* (a design decision): a "Card layout: columns / compact" segmented control on
+      `/guardrails`, stored in `localStorage` (`guardrailCardLayout`), read through a small hook with
+      try/catch and a `columns` default — a per-viewer presentation preference, so browser storage is the
+      right home (CLAUDE.md/house rule), not D1. Open question for the user when this is picked up: should a
+      presenter's choice apply to everyone viewing the demo (then it is a D1 pipeline setting instead)?
+- [ ] **Wire-up** — *self*: `Chat.tsx` picks the renderer from the hook for the blocked and guardrail-only
+      cards; reply chips stay as they are in both layouts.
+- [ ] **Verify** — both layouts with the same stubbed pipelines (parallel two-block, sequential stop with
+      `notRun`, fail-closed error, guardrail-only with zero results), dark and light, 375 px; switch persists
+      across reload and survives blocked storage (private window) by falling back to columns.
 
 **Unblock (do first)**
 

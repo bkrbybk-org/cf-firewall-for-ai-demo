@@ -41,23 +41,121 @@ const SERVICE_LABELS: Record<string, string> = {
   ungrounded: "Contextual grounding",
 };
 
-// Labelled ("verdict malicious", "action block") rather than column-headed: the
-// chat column is narrow, and a three-column grid crushed into word-per-line
-// details. The label also keeps the two facts unmistakable on their own.
-function Pill({ value, kind }: { value: string | null; kind: "verdict" | "action" }) {
-  const v = (value ?? "").toLowerCase();
-  // Amber for anything a detector flagged or a profile blocks — the external
-  // guardrail's colour, never the WAF's red. Neutral otherwise.
-  const hot = kind === "verdict" ? v === "malicious" : v === "block";
+type Detection = GuardrailReport["detections"][number];
+
+function norm(value: string | null): string {
+  return (value ?? "").trim().toLowerCase();
+}
+
+// Only a benign verdict with an allow action is "passed". Everything else — a
+// malicious verdict, a block, and any value this code does not recognise (a null,
+// or a word a newer PANW version adds) — is flagged and shown with its raw values:
+// folding an unknown value into "passed" would claim a clean check nobody verified.
+function isPassed(d: Detection): boolean {
+  return norm(d.verdict) === "benign" && norm(d.action) === "allow";
+}
+
+function detectionLabel(d: Detection): string {
+  return SERVICE_LABELS[d.service] ?? d.service;
+}
+
+// The two columns of the report are different facts and stay different: what the
+// detector CONCLUDED (verdict) and what the profile DOES about it (action).
+// "malicious" + "allow" is a real, common state — the profile only alerts on that
+// detector — and is worded "alerts only" so it is never mistaken for a block.
+function VerdictPill({ value }: { value: string | null }) {
+  const v = norm(value);
+  const known = v === "malicious" || v === "benign";
+  // Amber for anything a detector flagged — the external guardrail's colour,
+  // never the WAF's red. An unrecognised value is shown raw and labelled as such.
   return (
     <span
-      title={kind === "verdict" ? "What the detector concluded" : "What the AI security profile does about it"}
+      title="What the detector concluded"
       className={`rounded-full border px-1.5 py-px text-[10.5px] whitespace-nowrap ${
-        hot ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber" : "border-line bg-surface text-muted"
+        v === "malicious" ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber" : "border-line bg-surface text-muted"
       }`}
     >
-      {kind} <b className="font-mono">{value ?? "—"}</b>
+      {known ? <b className="font-mono">{v}</b> : <>verdict <b className="font-mono">{value ?? "—"}</b></>}
     </span>
+  );
+}
+
+function ActionWord({ d }: { d: Detection }) {
+  const v = norm(d.verdict);
+  const a = norm(d.action);
+  const title = "What the AI security profile does about it";
+  if (a === "block") {
+    return (
+      <span title={title} className="font-bold text-cf-amber">
+        blocks
+      </span>
+    );
+  }
+  if (v === "malicious" && a === "allow") {
+    return (
+      <span title={title} className="text-cf-amber">
+        alerts only
+      </span>
+    );
+  }
+  return (
+    <span title={title} className="text-muted">
+      action <b className="font-mono">{d.action ?? "—"}</b>
+    </span>
+  );
+}
+
+function DetectionRow({ d }: { d: Detection }) {
+  return (
+    <li className="min-w-0">
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <span className="font-semibold text-text">
+          {detectionLabel(d)}
+          {d.dataType && d.dataType !== "prompt" && <span className="ml-1 font-normal text-subtle">({d.dataType})</span>}
+        </span>
+        <VerdictPill value={d.verdict} />
+        <ActionWord d={d} />
+      </div>
+      {d.details.length > 0 && (
+        <ul className="mt-0.5 text-[11px] break-words text-muted">
+          {d.details.map((x) => (
+            <li key={x}>{x}</li>
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+// "N other checks passed", labels inline: the checks that found nothing are the
+// long tail of a report and not what was asked about, so they fold into a line
+// that still names them and opens to the full rows.
+function PassedChecks({ passed, allPassed }: { passed: Detection[]; allPassed: boolean }) {
+  const [open, setOpen] = useState(false);
+  const n = passed.length;
+  const summary = allPassed ? `All ${n} ${n === 1 ? "check" : "checks"} passed` : `${n} other ${n === 1 ? "check" : "checks"} passed`;
+  const labels = passed.map((d) => `${detectionLabel(d)}${d.dataType && d.dataType !== "prompt" ? ` (${d.dataType})` : ""}`);
+  return (
+    <div className="text-[11.5px]">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="inline-flex items-center gap-1 rounded-md font-semibold text-muted transition-colors hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {summary}
+      </button>
+      {open ? (
+        <ul className="mt-1 flex flex-col gap-2">
+          {passed.map((d, i) => (
+            <DetectionRow key={`${d.service}:${d.dataType}:${i}`} d={d} />
+          ))}
+        </ul>
+      ) : (
+        <div className="mt-0.5 break-words text-[11px] text-subtle">{labels.join(", ")}</div>
+      )}
+    </div>
   );
 }
 
@@ -65,29 +163,18 @@ function ReportBody({ report }: { report: GuardrailReport }) {
   if (report.detections.length === 0) {
     return <div className="text-[11.5px] text-muted">The report lists no detection results for this scan.</div>;
   }
+  const flagged = report.detections.filter((d) => !isPassed(d));
+  const passed = report.detections.filter(isPassed);
   return (
     <div className="flex flex-col gap-1.5">
-      <ul className="flex flex-col gap-2 text-[11.5px]">
-        {report.detections.map((d, i) => (
-          <li key={`${d.service}:${d.dataType}:${i}`} className="min-w-0">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
-              <span className="font-semibold text-text">
-                {SERVICE_LABELS[d.service] ?? d.service}
-                {d.dataType && d.dataType !== "prompt" && <span className="ml-1 font-normal text-subtle">({d.dataType})</span>}
-              </span>
-              <Pill value={d.verdict} kind="verdict" />
-              <Pill value={d.action} kind="action" />
-            </div>
-            {d.details.length > 0 && (
-              <ul className="mt-0.5 text-[11px] break-words text-muted">
-                {d.details.map((x) => (
-                  <li key={x}>{x}</li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
-      </ul>
+      {flagged.length > 0 && (
+        <ul className="flex flex-col gap-2 text-[11.5px]">
+          {flagged.map((d, i) => (
+            <DetectionRow key={`${d.service}:${d.dataType}:${i}`} d={d} />
+          ))}
+        </ul>
+      )}
+      {passed.length > 0 && <PassedChecks passed={passed} allPassed={flagged.length === 0} />}
       <div className="text-[10.5px] text-subtle">
         From Prisma AIRS · report_id <span className="font-mono break-all">{report.reportId}</span>
         {report.transactionId && (
