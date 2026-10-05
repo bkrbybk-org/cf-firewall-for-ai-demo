@@ -6,7 +6,6 @@
 // The headline metric is "reached the model" (edge miss rate), NOT the scan's
 // ASR (model compliance) — the two are deliberately kept apart in the UI.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import {
   ArrowDown,
   ArrowUp,
@@ -20,16 +19,19 @@ import {
   Swords,
   Trash2,
   Upload,
-  Wrench,
 } from "lucide-react";
 import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
+import { GapControls } from "../components/redteam/GapControls";
+import { SavedRuns } from "../components/redteam/SavedRuns";
 import { Scorecard } from "../components/redteam/Scorecard";
+import { STATE_PILL } from "../components/redteam/StatePill";
 import { useRedTeam, type RtAttackState } from "../hooks/useRedTeam";
 import { getModels } from "../lib/api";
 import { CSV_TEMPLATE, parseAttackCsv } from "../lib/attackCsv";
 import { customCorpusStore } from "../lib/customCorpus";
 import { downloadFile } from "../lib/export";
+import { buildRunSaveRequest, type RunContext } from "../lib/savedRuns";
 import { useStore } from "../lib/sessionStore";
 import type { GatewayOption } from "../lib/types";
 import {
@@ -44,21 +46,6 @@ import {
   type RtRunResult,
   type RtSeverity,
 } from "../lib/redteam";
-
-// ── state → pill ────────────────────────────────────────────────────────────
-const STATE_PILL: Record<string, { label: string; cls: string }> = {
-  allow: { label: "reached", cls: "border-cf-red/50 text-cf-red" },
-  log: { label: "reached · logged", cls: "border-cf-amber/50 text-cf-amber" },
-  block: { label: "blocked", cls: "border-cf-green/50 text-cf-green" },
-  challenge: { label: "challenged", cls: "border-cf-green/50 text-cf-green" },
-  denied: { label: "denied (non-WAF)", cls: "border-line text-muted" },
-  guardrails: { label: "guardrails", cls: "border-cf-purple/50 text-cf-purple" },
-  // Amber, matching the chat's external-guardrail card — never the WAF's red or
-  // AI Gateway Guardrails' purple, so the three controls cannot be confused.
-  external: { label: "external guardrail", cls: "border-cf-amber/50 text-cf-amber" },
-  pending: { label: "no verdict", cls: "border-line text-subtle" },
-  error: { label: "failed", cls: "border-line text-subtle" },
-};
 
 const SEV_PILL: Record<RtSeverity, string> = {
   critical: "border-cf-red/60 text-cf-red",
@@ -195,26 +182,6 @@ const DELAY_OPTIONS: { ms: number; label: string }[] = [
   { ms: 30000, label: "30s" },
 ];
 
-const CONTROLS: { finding: string; count: string; control: string }[] = [
-  {
-    finding: "Brand Tarnishing / Self-Criticism",
-    count: "53 in the scan",
-    control: "Add a Custom Topic — “Self-criticism” → BLOCK (this is the scan's top gap; no rule covers it today).",
-  },
-  {
-    finding: "Political / Political Endorsements",
-    count: "21 in the scan",
-    control: "Rule 9 “Custom Topics Politics & Election” already blocks at score ≤ 40 — raise the threshold to catch more.",
-  },
-  { finding: "Hate / Toxic / Abuse", count: "2 in the scan", control: "Rules 5/6 Unsafe Categories (S1–S14) already cover this." },
-  {
-    finding: "Malware Generation / RCE",
-    count: "Security domain",
-    control: "Enable AI Gateway Malicious Code Detection → Block on the guarded gateway.",
-  },
-  { finding: "PII disclosure", count: "—", control: "Rules 3/4 PII Categories already block CREDIT_CARD/EMAIL/IBAN/CRYPTO." },
-];
-
 export function RedTeamPage() {
   const { phase, attackStates, results, settleLeftMs, pacingLeftMs, run, stop, reset } = useRedTeam();
   const [sortKey, setSortKey] = useState<SortKey>("severity");
@@ -305,6 +272,37 @@ export function RedTeamPage() {
 
   const running = phase === "sending" || phase === "settling" || phase === "resolving";
 
+  // What the run was started with, captured at the Run press: by the time it is
+  // saved the operator may have changed the route or delay controls, and the saved
+  // run must describe the run that produced the results, not the controls now.
+  const [runCtx, setRunCtx] = useState<
+    | (Omit<RunContext, "corpusName" | "corpus" | "label"> & {
+        key: number;
+      })
+    | null
+  >(null);
+  const corpusName = isCustom ? custom!.name : "AI Red Team Sample";
+
+  function startRun() {
+    const cfg = {
+      route,
+      gatewayId: route === "gateway" ? gatewayId : undefined,
+      dynamicRoute: route === "gateway" ? dynamicRoute.trim() || undefined : undefined,
+      delayMs,
+    };
+    setRunCtx((prev) => ({
+      key: (prev?.key ?? 0) + 1,
+      ts: Date.now(),
+      fired: toRun.length,
+      route,
+      gatewayId: cfg.gatewayId ?? null,
+      guarded: route === "gateway" && !!gateways.find((g) => g.id === gatewayId)?.guarded,
+      dynamicRoute: cfg.dynamicRoute ?? null,
+      delayMs,
+    }));
+    void run(cfg, toRun);
+  }
+
   const resultList: RtRunResult[] = useMemo(() => [...results.values()], [results]);
   // The subset a Run press would send. Everything downstream — the button
   // label, the time estimate, the progress denominators — reads this rather
@@ -368,9 +366,14 @@ export function RedTeamPage() {
   else if (phase === "settling") phaseText = `waiting for edge ingestion — ${Math.ceil(settleLeftMs / 1000)}s`;
   else if (phase === "resolving") phaseText = `resolving verdicts ${results.size}/${toRun.length}…`;
   else if (phase === "done")
-    phaseText = `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})${
-      score.skipped > 0 ? `, ${score.skipped} not sent to it (guardrail-only)` : ""
-    }`;
+    // Nothing scored is "no data", never 0%: a run whose verdicts all stayed pending or
+    // failed measured nothing about the edge.
+    phaseText =
+      score.scored === 0
+        ? "done — nothing scored (no edge verdict came back for any attack)"
+        : `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})${
+            score.skipped > 0 ? `, ${score.skipped} not sent to it (guardrail-only)` : ""
+          }`;
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
@@ -398,11 +401,8 @@ export function RedTeamPage() {
               is{" "}
               <b className="text-text">“reached the model”</b> — how often the Cloudflare edge did <i>not</i> stop the
               request. It is <b className="text-text">not</b> the scan's ASR, which measures whether the model actually
-              complied; the scan's own ASR is shown per row for reference only. Runs land in the{" "}
-              <Link to="/analytics" className="text-accent hover:underline">
-                prompt log
-              </Link>{" "}
-              (D1) as evidence.
+              complied; the scan's own ASR is shown per row for reference only. To show a gap closing,{" "}
+              <b className="text-text">save a run</b> (below), change a rule, re-run, and compare the two.
             </p>
           </div>
 
@@ -419,17 +419,7 @@ export function RedTeamPage() {
             ) : (
               <button
                 type="button"
-                onClick={() =>
-                  run(
-                    {
-                      route,
-                      gatewayId: route === "gateway" ? gatewayId : undefined,
-                      dynamicRoute: route === "gateway" ? dynamicRoute.trim() || undefined : undefined,
-                      delayMs,
-                    },
-                    toRun,
-                  )
-                }
+                onClick={startRun}
                 disabled={toRun.length === 0}
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
               >
@@ -766,36 +756,18 @@ export function RedTeamPage() {
             </div>
           </section>
 
-          {/* Recommended controls — the actionable half */}
-          <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
-            <div className="flex items-center gap-2">
-              <Wrench size={15} className="text-cf-green" />
-              <h2 className="text-[13px] font-bold text-text">Close the gaps</h2>
-            </div>
-            <div className="mt-0.5 text-[11.5px] text-muted">
-              Each scan finding → the Cloudflare control that addresses it (dashboard config, not code)
-            </div>
-            <div className="mt-3 overflow-x-auto">
-              <table className="w-full min-w-[640px] text-left text-[12px]">
-                <thead className="text-[10px] uppercase tracking-wider text-subtle">
-                  <tr>
-                    <th className="px-2.5 py-1.5 font-semibold">Finding</th>
-                    <th className="px-2.5 py-1.5 font-semibold">Volume</th>
-                    <th className="px-2.5 py-1.5 font-semibold">Recommended control</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {CONTROLS.map((c) => (
-                    <tr key={c.finding} className="border-t border-line align-top">
-                      <td className="px-2.5 py-1.5 whitespace-nowrap font-medium text-text">{c.finding}</td>
-                      <td className="px-2.5 py-1.5 whitespace-nowrap text-subtle">{c.count}</td>
-                      <td className="px-2.5 py-1.5 text-muted">{c.control}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+          {/* Recommended controls — the actionable half, derived from THIS run's results
+              and checked against the zone's rules (the static scan-finding table it
+              replaces could not say whether a rule already existed). */}
+          <GapControls corpus={corpus} results={results} />
+
+          <SavedRuns
+            runKey={runCtx?.key ?? 0}
+            canSave={!!runCtx && !running && hasResults}
+            buildSave={(label) =>
+              runCtx ? buildRunSaveRequest({ ...runCtx, corpusName, corpus, label }, results) : null
+            }
+          />
         </div>
       </main>
     </div>

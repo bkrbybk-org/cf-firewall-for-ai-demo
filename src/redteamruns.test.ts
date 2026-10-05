@@ -124,6 +124,15 @@ describe("validateRedTeamRunPayload — caps", () => {
     }
   });
 
+  it("never stores reached + stopped above scored (bug #19)", () => {
+    const v = validateRedTeamRunPayload(validBody({ total: 10, scored: 10, reached: 8, stopped: 9 }));
+    expect(v.ok).toBe(true);
+    if (v.ok) {
+      expect(v.run.reached).toBe(8);
+      expect(v.run.stopped).toBe(2);
+    }
+  });
+
   it("clamps a negative or absurd delayMs", () => {
     const v = validateRedTeamRunPayload(validBody({ delayMs: -1000 }));
     expect(v.ok).toBe(true);

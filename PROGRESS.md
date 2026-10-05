@@ -457,7 +457,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **380 across 26 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **392 across 27 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +622,69 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-05 — #21: saved runs and "Close the gaps" on the Red Team page (+ #17, #18, #19, a FK bug)
+
+**What.** `RedTeamPage` now renders `GapControls`, which replaced the hardcoded `CONTROLS` table of PDF scan
+findings, and a new `SavedRuns` panel (`components/redteam/SavedRuns.tsx`).
+- **Save:** saves the finished run, with an optional label.
+- **List:** shows reached/scored, the external-guardrail and AI Gateway Guardrails counts, the excluded count,
+  and a "model skipped" note.
+- **Compare:** tick two runs; the earlier is treated as "before".
+- **Delete**, with a confirm.
+
+`lib/savedRuns.ts` holds the pure parts:
+- **`buildRunSaveRequest`:** the run as *started* (`runCtx` is captured at the Run press, so changing controls
+  afterwards does not relabel it). It fingerprints only the attacks that produced a result, and names a
+  partial run "(N of M)".
+- **`toSavedRun`:** converts what the API returns into the shape `diffRuns` takes.
+- **`summarizeDiff`.** A bare `reachedDelta` was misleading: an attack that goes from reached to *pending* also
+  leaves `reached`, so a run whose verdicts never resolved would read as "N fewer reached the model". The
+  first version of the view said exactly that, until the seeded test showed a reached → external change
+  counted as an edge-style win. `summarizeDiff` splits the changes:
+  - **closed:** reached before, stopped now — counted by the control that stopped it (edge, external
+    guardrail, AI Gateway Guardrails);
+  - **opened:** now reaches the model;
+  - **unknown:** reached before, no verdict now;
+  - **other changes.**
+- **The view:** a different-corpus warning first, then a different-route note, and a footer saying a saved run
+  does not record guardrail settings.
+- **Shared pill:** `StatePill` is used by both the table and the diff.
+
+Also fixed:
+- **`RedTeamRunSaveRequest`** lacked `external`/`skipped`, which the server would have stored as 0.
+- **The phase line** read "done — 0% reached the model (0/0)" when nothing was scored. It now says nothing was
+  scored.
+- **#17's text.**
+- **Server:**
+  - #18: prune and list by `id`.
+  - #19: a failed batch deletes its run row, and `stopped` is clamped to `scored − reached`.
+  - **The FK bug:** the prune deleted runs before results, and D1 enforces the foreign key, so every save
+    failed once 50 runs existed. The results are now deleted first.
+
+**Verified.**
+- **Gates:** 392 tests across 27 files, including 11 new in `savedRuns.test.ts` and 1 new in
+  `redteamruns.test.ts`.
+- **Mutation-verified:** clamping `stopped` to `scored` again, and fingerprinting the whole corpus, were each
+  caught.
+- **Local Worker and local D1:**
+  - **Seeded runs:** the comparison read "2 closed — 1 at the edge, 1 by an external guardrail". A
+    different-corpus pair showed the warning, the route note and "share no attacks".
+  - **A real 1-attack run:** "Save this run" stored "AI Red Team Sample (1 of 36)", `corpusSize` 1, the
+    Run-press `ts`, and a 200-character preview. After saving, the button read "Saved as #5" and was
+    disabled.
+  - **Delete:** removed the run; `GET ?id=` returned `null`.
+  - **Prune:** a run saved with `ts: 9e15` plus 50 normal saves reproduced the FK failure (`502 D1_ERROR:
+    FOREIGN KEY constraint failed`) before the fix. After it, each save returned 201 with `pruned: 1`; the
+    far-future run was pruned and the `ts: 1` run kept. There were 0 orphaned results.
+  - **Display:** no horizontal scroll, no console errors, dark and light.
+- **Prod** (`373315d8-100e-4e32-ba3f-9b88c5e7b70f`):
+  - Smoke 5/5.
+  - Remote D1 had 0 saved runs beforehand.
+  - A POST → GET → DELETE round trip worked: 201 as id 1; `stopped: 5` was stored as 0; the card number was
+    stored as `[card ****1111]`; the run was deleted.
+  - The bundle `index-uOyaCHa7.js` contains the new strings.
+- **Not seen:** a real prod before/after comparison; this is the new item in Next tasks.
 
 ### 2026-10-05 — bug #4: the red card reads the zone's real block body
 
@@ -1555,18 +1618,18 @@ exercised):
     runs). Fix: add `dynamic_route AS dynamicRoute` to both `SELECT`s, plus a test. *Found by grep,
     confirmed by reading the handler; not exercised.* Blocked behind bug #1 only because of the workflow's
     prod-smoke gate.
-17. **`RedTeamPage` still says "Runs land in the prompt log (D1) as evidence"** (with a link to
+17. ~~**`RedTeamPage` still says "Runs land in the prompt log (D1) as evidence"**~~ **FIXED 2026-10-05** (deploy `373315d8`): reworded to "save a run, change a rule, re-run, and compare". (with a link to
     `/analytics`) and its file header says the same. The prompt log is off by default, so that tab does
     not exist and the link lands on the edge tab. Copy should be conditional on the flag or reworded.
     *Found by grep.*
-18. **The run-save endpoint orders its prune by a client-supplied `ts`.** `DELETE … NOT IN (SELECT id …
+18. ~~**The run-save endpoint orders its prune by a client-supplied `ts`.**~~ **FIXED 2026-10-05** (deploy `373315d8`): prune and list order by the server-assigned `id`. Exercised locally: a run saved with `ts: 9e15` was pruned in turn, and one saved with `ts: 1` was kept as the newest. The same test found a worse bug (see the note under #21). `DELETE … NOT IN (SELECT id …
     ORDER BY ts DESC LIMIT 50)` uses `body.ts`, which is validated only as a non-negative integer up to
     `MAX_SAFE_INTEGER`. A run posted with a far-future `ts` is never pruned and, repeated 50 times,
     evicts every real run; one posted with an old `ts` prunes *itself* and still returns 201 with an id
     that no longer exists. Prod is Access-gated, but `wrangler dev` is not, and the endpoint's header
     claims hostile-input hardening. Fix: order by server time, or clamp `ts` to now ± skew. *Found by
     reading the code; not exercised.*
-19. **Two smaller integrity gaps in the same handler.** The run row is inserted *outside* the batch (its
+19. ~~**Two smaller integrity gaps in the same handler.**~~ **FIXED 2026-10-05:** a failed results batch now deletes its run row; `stopped` is clamped to `scored − reached` (test + mutation; on prod a body with `stopped: 5` was stored as 0). The run row is inserted *outside* the batch (its
     id is needed first), so a failed batch leaves a run with zero results — the code comment claims a
     crash cannot leave a half-written run. And `reached` and `stopped` each clamp to `scored`
     independently, so `reached + stopped > scored` is storable. `diffRuns` reads results, not stored
@@ -1576,7 +1639,7 @@ exercised):
     Output Handling` (about unsafe *downstream handling* of model output, not the model generating
     malware) and ATLAS `AML.T0048 External Harms`. Verify or drop before regulated-customer use — the
     compliance page's own rule is not to overstate a mapping. The README table flags it ⚠️.
-21. **Built, deployed and unreachable:** `GapControls`, the saved-run API and `diffRuns` have no
+21. ~~**Built, deployed and unreachable:**~~ **FIXED 2026-10-05** (deploy `373315d8`): wired into the page; see Implemented. **Found while wiring it:** every save failed with `SQLITE_CONSTRAINT_FOREIGNKEY` once 50 runs existed, because the prune deleted runs before their results and D1 enforces the `REFERENCES` in migration 0003. Prod had 0 saved runs, so it never hit there. Fixed by deleting the results first. Original entry: `GapControls`, the saved-run API and `diffRuns` have no
     consumer in any page (confirmed by grep for each symbol outside its own file and tests). Prod
     carries dead code, and the feature they exist for still cannot be done in the app.
 
@@ -1691,12 +1754,10 @@ exercised):
 - [x] ~~**Replace prod's rejected `CF_AIG_TOKEN`**~~ (Open bug #1) — done 2026-09-30. Original entry: new API token with
       `AI Gateway - Read`, `AI Gateway - Edit`, `Workers AI - Read`, then `wrangler secret put` and
       `npm run smoke:prod`. Until then the gateway route errors in prod. **Do this before any demo.**
-- [ ] **Wire `RedTeamPage` to saved runs and `GapControls`** (Open bug #21): save a finished run,
-      list/pick two, render `diffRuns` with its comparability warning, drop
-      `<GapControls corpus={corpus} results={results} />` where the hardcoded `CONTROLS` table is, and
-      fix the stale prompt-log copy (#17). Outstanding since the features were built in early September.
-- [ ] Fix bug #18 (server-side ordering for the prune) with a test. (#16 is already fixed, and #1 no longer
-      blocks the prod gate — it was resolved 2026-09-30.)
+- [x] ~~**Wire `RedTeamPage` to saved runs and `GapControls`** (#21, #17)~~ — done 2026-10-05, with #18 and
+      #19.
+- [ ] **Run the corpus on prod twice and compare**: the first real before/after. Every verdict in the saved-run
+      flow so far was local (pending/error) or seeded through the API.
 - [ ] Apply the recommended Zero Trust Access restructuring for the AI red-team service (Open bug
       #2): path-scoped `/api/chat` app, `Service Auth` + service token, `Allow` policy alongside it
       for human logins. Re-verify the app still works for a normal browser session afterward.

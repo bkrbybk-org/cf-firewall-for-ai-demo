@@ -170,6 +170,11 @@ alters what a customer sees in a demo. State it and let them choose.
   "persistence". Use the Edit/Write tools for file edits instead. A second policy blocks any shell command
   containing the SQL keyword that empties a table — **including the word inside `truncated`** (a field
   name here). Grep for `runcated`, or build the key as `j["trunc"+"ated"]`.
+- **D1 enforces foreign keys.** A batch that deletes a parent row before its children fails whole with
+  `SQLITE_CONSTRAINT_FOREIGNKEY`: delete children first. The red-team prune did this the other way round and
+  every save failed once 50 runs existed; nothing noticed for a month because no page called it. An
+  endpoint with no consumer is untested however good its unit tests are: exercise it end to end on a real
+  (local) D1 before calling it done.
 - Local D1: `npx wrangler d1 execute cf-ai-waf-demo-log --local --command "…"`. Local dev sets no
   `cf-ray`, so any test of the prompt-log write path must fake one or it proves nothing.
 - The prompt log is off in `wrangler.jsonc` (and in prod), so `/api/prompt-log` and `/api/prompt-analytics`

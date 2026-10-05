@@ -177,6 +177,10 @@ export interface RedTeamRunSaveRequest {
   stopped: number;
   denied: number;
   guardrails: number;
+  // Without these the server stores 0 — it defaults a missing count rather than
+  // rejecting the body — and a saved run would lose its external-guardrail blocks.
+  external: number;
+  skipped: number;
   pending: number;
   error: number;
   reachedPct: number;

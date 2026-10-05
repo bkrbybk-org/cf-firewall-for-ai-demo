@@ -1338,7 +1338,9 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
 
       // One batch for every result row plus the two prune deletes, so a
       // crash mid-write can't leave a run with only half its results stored,
-      // or leave pruned runs' results behind as orphans.
+      // or leave pruned runs' results behind as orphans. The run row itself is
+      // outside it (its id is needed first), so a failed batch removes that row
+      // below rather than leaving a run with zero results (bug #19).
       const resultStmt = env.DB.prepare(
         `INSERT INTO redteam_results
            (run_id, attack_key, attack_id, category, severity, state, ray, ts, prompt_preview)
@@ -1349,15 +1351,30 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       );
       // Prune to the newest REDTEAM_RUNS_MAX_STORED runs so this table — sitting
       // behind an unauthenticated write in dev — cannot grow without bound.
+      // "Newest" is by id (AUTOINCREMENT = insertion order, set by the server), never
+      // by `ts`, which the client sends: a far-future ts made a run unprunable and 50
+      // of them evicted every real run; an old ts pruned the run just saved (bug #18).
+      // Results go FIRST: redteam_results.run_id REFERENCES redteam_runs(id) and D1
+      // enforces foreign keys, so deleting the runs first failed the whole batch with
+      // SQLITE_CONSTRAINT_FOREIGNKEY — every save failed once 50 runs existed
+      // (measured locally 2026-10-05; unnoticed because no page saved runs yet).
+      const keep = `SELECT id FROM redteam_runs ORDER BY id DESC LIMIT ?`;
       statements.push(
-        env.DB.prepare(
-          `DELETE FROM redteam_runs WHERE id NOT IN
-             (SELECT id FROM redteam_runs ORDER BY ts DESC LIMIT ?)`,
-        ).bind(REDTEAM_RUNS_MAX_STORED),
-        env.DB.prepare(`DELETE FROM redteam_results WHERE run_id NOT IN (SELECT id FROM redteam_runs)`),
+        env.DB.prepare(`DELETE FROM redteam_results WHERE run_id NOT IN (${keep})`).bind(REDTEAM_RUNS_MAX_STORED),
+        env.DB.prepare(`DELETE FROM redteam_runs WHERE id NOT IN (${keep})`).bind(REDTEAM_RUNS_MAX_STORED),
       );
-      const batchResults = await env.DB.batch(statements);
-      const pruned = batchResults[run.results.length]?.meta.changes ?? 0;
+      let batchResults: D1Result[];
+      try {
+        batchResults = await env.DB.batch(statements);
+      } catch (err) {
+        // A D1 batch is one transaction, so none of its rows landed: drop the run
+        // row too. Best effort — if this fails as well, the original error is the
+        // one worth reporting.
+        await env.DB.prepare("DELETE FROM redteam_runs WHERE id = ?").bind(runId).run().catch(() => {});
+        throw err;
+      }
+      // The runs DELETE is the last statement: results inserts, results prune, runs prune.
+      const pruned = batchResults[run.results.length + 1]?.meta.changes ?? 0;
 
       return Response.json({ configured: true, id: runId, pruned }, { status: 201 });
     } catch (err) {
@@ -1396,7 +1413,8 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       return Response.json({ configured: true, run, results: results ?? [] });
     }
 
-    // List: metadata only. A run can carry up to REDTEAM_RUN_MAX_ATTACKS (500)
+    // List: newest SAVED first — by id, since `ts` is client-supplied (bug #18).
+    // Metadata only. A run can carry up to REDTEAM_RUN_MAX_ATTACKS (500)
     // result rows, so the list view — read far more often than any one run's
     // detail — must never pull results just to render a table of totals.
     const { results } = await env.DB.prepare(
@@ -1406,7 +1424,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
               corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
               total, scored, reached, stopped, denied, guardrails, external, skipped, pending, error,
               reached_pct AS reachedPct
-       FROM redteam_runs ORDER BY ts DESC LIMIT ?`,
+       FROM redteam_runs ORDER BY id DESC LIMIT ?`,
     )
       .bind(REDTEAM_RUNS_LIST_LIMIT)
       .all<RedTeamRunRow>();

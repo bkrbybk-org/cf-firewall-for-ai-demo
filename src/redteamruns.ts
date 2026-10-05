@@ -212,7 +212,9 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
   const total = int(body.total, 0, REDTEAM_RUN_MAX_ATTACKS, results.length);
   const scored = int(body.scored, 0, total, 0);
   const reached = int(body.reached, 0, scored, 0);
-  const stopped = int(body.stopped, 0, scored, 0);
+  // Bounded by what `reached` left of `scored`, so reached + stopped can never exceed
+  // scored (Open bug #19: each used to clamp to scored on its own).
+  const stopped = int(body.stopped, 0, scored - reached, 0);
   const denied = int(body.denied, 0, total, 0);
   const guardrails = int(body.guardrails, 0, total, 0);
   const external = int(body.external, 0, total, 0);

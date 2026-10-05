@@ -107,7 +107,7 @@ web/                    React app (Vite root)
                         FlowTrace, DemoMode, ExportButton
       analytics/        primitives, EventSeries (measured line+area chart), EdgeTab,
                         GatewayTab, PromptLogTab
-      redteam/          Scorecard, GapControls (built and tested, but not yet rendered by any page)
+      redteam/          Scorecard, GapControls (this run → controls), SavedRuns (save / list / compare), StatePill
       ExternalGuardrailCard.tsx   guardrail cards (blocked / unavailable / model skipped) in two layouts —
                                   columns or compact — + reply chips, all from guardrailView
       (lib/guardrailView.ts         pure view model for those cards: headline, per-vendor state, findings, honesty notes)
@@ -160,7 +160,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/external-guardrails/report?provider=prisma-airs&reportId=` | Prisma AIRS's own per-detection report for one scan (saved key, allowlisted fields only) |
 | `PUT /api/external-guardrails/pipeline` | How enabled guardrails run: `mode` (sequential/parallel), `guardrailOnly`, `order` |
 | `POST /api/external-guardrails/test` | Scan a fixed benign prompt with the **saved** configuration |
-| `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals, prune to newest 50, redacted prompt previews. **No UI calls it yet** |
+| `GET/POST/DELETE /api/redteam-runs` | Saved red-team runs (D1). POST takes a client-scored run and treats it as hostile input: attack cap, state whitelist, clamped totals (`reached + stopped ≤ scored`), prune to the 50 most recently saved (by server `id`, never the client `ts`), redacted prompt previews. Used by the Red Team page's **Saved runs** panel |
 
 Everything else falls through to the static assets (SPA fallback).
 
@@ -393,7 +393,20 @@ Replays a curated **36 of the 116** enumerated attacks from a Prisma AIRS scan (
 - **Run a subset.** Every row has a tick box and Run sends the ticked attacks; **nothing ticked means all**, so there is no "0 selected" dead end. Selection is keyed by attack id, not row index, so re-sorting cannot move it onto different attacks. The button label, time estimate and send/resolve progress all read the subset. The severity/category breakdowns are scoped to attacks that actually produced a result — `Bars` fills each group by `reached/total`, so scoring a 5-attack subset against the full 36 would have drawn the miss rate as a fraction of prompts never sent (this was already wrong for a *stopped* run).
 - **Dynamic Route** (gateway route only). Free text, because nothing this app calls enumerates a gateway's routes; the Worker accepts `demo-routes` or the dashboard's `dynamic/demo-routes`. Dropped entirely on the direct route — verified on the wire: gateway sends `dynamicRoute`, direct sends only `prompt` + `stream`. A route **chooses the model**, so a run through one is not measuring the default model.
 - **A run that scored nothing is not "0%".** If every send fails (a mistyped route, a gateway token without the right scopes, rate limiting) `scored` is 0 and `reachedPct` would read "0% reached the model" — indistinguishable from a perfect block rate. The scorecard shows `—` and says nothing was measured, naming the likely causes.
-- ⚠️ **Built and deployed but not reachable from the UI yet:** saved runs (`/api/redteam-runs`, `attackKey`/`corpusFingerprint`/`diffRuns` in `lib/redteam.ts`) and the gap-to-rule recommender (`lib/gapControls.ts`, `components/redteam/GapControls.tsx`). Nothing in `RedTeamPage` saves, lists or compares a run or renders the recommender, so today a scorecard still disappears on reload and the before/after comparison the feature exists for cannot be done in the app. The design is in PROGRESS.md; the page wiring is the open task.
+- **Close the gaps** (`GapControls`, since 2026-10-05): built from **this run's** results, not the PDF scan. Each category that reached the model gets the Cloudflare control that addresses it and a copy-paste expression where one can be written. Each is checked against the zone's rules and labelled by how sure that check is: live expression, live name, static mirror, or no match. It is read-only: nothing writes to the zone. It replaced a static table of scan findings that could not say whether a rule already existed.
+- **Saved runs** (`SavedRuns`, since 2026-10-05), so you can show a gap closing: save a run (with an optional label), change a rule or guardrail, re-run, tick the two saved runs and compare them.
+  - **What a saved run records:** the run as it was started (route, gateway, Dynamic Route, delay), not the controls at the time you press Save.
+  - **Partial and stopped runs:** a subset run is named "(N of 36)", and its fingerprint covers only the attacks that produced a result. A partial run therefore never claims to be the whole corpus.
+  - **How the comparison reads:**
+    - It scores only the attacks present in **both** runs (`diffRuns`).
+    - A different-corpus warning comes first, followed by a different-route note.
+    - Then each change is listed by what it means:
+      - **closed** (reached → stopped), split by the control that stopped it: edge, external guardrail, or AI Gateway Guardrails;
+      - **opened** (now reaches the model);
+      - **unknown** (reached → no verdict), which counts as neither a fix nor a regression.
+    - It never shows a bare "N fewer reached": a run whose verdicts never resolved would read as a win.
+  - **What a saved run does not record:** the guardrail settings in force. The comparison says so.
+  - **Storage:** D1 keeps the 50 most recently saved runs.
 - Corpus caveat, stated in the UI: it is a curated subset, and several prompts are the report's truncated preview text.
 
 ### Bring your own attacks (CSV)
@@ -574,7 +587,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **380 tests across 26 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **392 tests across 27 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -588,12 +601,13 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/metadata.test.ts` (6) | The 5-entry metadata cap and malformed-pair handling |
 | `web/src/lib/attackCsv.test.ts` (22) | Custom-corpus CSV parsing — quoted fields, embedded newlines, doubled quotes, BOM, CRLF, the 200-row cap, and rejecting a file with no `prompt` column instead of guessing |
 | `src/promptlog.test.ts` (18) | The prompt-log query builder — offset clamping past the old 200-row ceiling, LIKE-wildcard escaping, and an ORDER BY whitelist that discards anything not on it (the one place a column name reaches SQL) |
-| `src/redteamruns.test.ts` (19) | Validation of the unauthenticated run-save endpoint: attack cap, state whitelist, clamped totals, redacted + truncated previews, adversarial input |
+| `src/redteamruns.test.ts` (20) | Validation of the unauthenticated run-save endpoint: attack cap, state whitelist, clamped totals (`reached + stopped` never above `scored`, bug #19 — mutation-verified), redacted + truncated previews, adversarial input |
 | `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
 | `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/openapi30.test.ts` (9) | The OAS 3.0.3 down-conversion API Shield needs: type arrays → `nullable`, `const` → `enum`, numeric `exclusiveMinimum` → boolean + `minimum`, `examples` → `example`, no 3.1-only keyword left anywhere, one absolute `servers` URL, every path and the chat request schema preserved, the source document untouched, and a union 3.0 cannot express refused rather than silently narrowed |
+| `web/src/lib/savedRuns.test.ts` (11) | Saving and comparing red-team runs: the save body carries every `scoreRun` total incl. `external`/`skipped`; a subset run fingerprints only the attacks with a result and says "(N of M)"; gateway fields dropped on the direct route; `summarizeDiff` credits each closed gap to the control that closed it, and **a verdict that never resolved is not a fix** although `reachedDelta` drops. **Mutation-verified** (fingerprint over the whole corpus) |
 | `web/src/lib/edgeBlock.test.ts` (6) | The edge 403 body (bug #4): the real prod PII body maps to `pii` with the rule's message + detail; an unseen `reason_code` keeps its message and code but claims no detection, even when spelled like one; inherited keys (`toString`, `__proto__`) never resolve; the legacy shape still works; HTML / empty / partial bodies are unstructured. **Mutation-verified** (no own-key check; a guessed code mapping) |
 | `web/src/lib/cardLayout.test.ts` (5) | The per-viewer card layout preference: only the exact word `compact` selects compact; missing, unknown or throwing storage reads as the default (columns); a refused write reports failure instead of throwing |
 | `src/prismaAirs.test.ts` (15) | The Prisma AIRS client against PANW's real shapes: request carries `x-pan-token`, `ai_profile`, `contents`, never `app_user`/`user_ip`; **a 200 without a usable `action` is an error, never an allow**; the live endpoint's real error bodies; timeout and network failure become error results instead of throwing |

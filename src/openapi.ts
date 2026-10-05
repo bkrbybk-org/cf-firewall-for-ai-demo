@@ -436,7 +436,7 @@ export const openapi = {
         operationId: "getRedTeamRuns",
         summary: "List saved runs, or fetch one with its results",
         description:
-          "Without `id`: the newest 50 runs, **metadata only** (a run can carry 500 result rows, so the list never pulls them). With `id`: that run plus its results.",
+          "Without `id`: the 50 most recently saved runs (ordered by server-assigned `id`, never the client-supplied `ts`), **metadata only** (a run can carry 500 result rows, so the list never pulls them). With `id`: that run plus its results.",
         parameters: [{ name: "id", in: "query", required: false, description: "A run id. Omit for the list.", schema: { type: "integer", minimum: 1 } }],
         responses: {
           "200": json("The list, one run, or `configured: false`.", ref("RedTeamRunsResponse")),
@@ -450,7 +450,7 @@ export const openapi = {
         operationId: "saveRedTeamRun",
         summary: "Save a finished, client-scored run",
         description: [
-          "Scoring happens in the browser, so the client POSTs a finished run. **This endpoint treats its input as hostile**: at most 500 results, every `state` checked against a whitelist, strings length-capped, score totals clamped, only the newest 50 runs kept, and each prompt passed through the same PII redaction as the prompt log and truncated to a 200-character preview. A result with an invalid shape is dropped; the request fails only when none survive.",
+          "Scoring happens in the browser, so the client POSTs a finished run. **This endpoint treats its input as hostile**: at most 500 results, every `state` checked against a whitelist, strings length-capped, score totals clamped (`reached + stopped` never above `scored`), only the 50 most recently saved runs kept (by `id`, not the client's `ts`), and each prompt passed through the same PII redaction as the prompt log and truncated to a 200-character preview. A result with an invalid shape is dropped; the request fails only when none survive.",
           "",
           "Send the **full prompt text**: the server redacts it. Never send a pre-redacted preview.",
         ].join("\n"),
