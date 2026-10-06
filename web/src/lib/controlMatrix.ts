@@ -114,7 +114,8 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
   }
   if (r.outcome === "allow") {
     if (r.detectOnly) {
-      return cell(key, "external", name, "flagged", `${name} detected ${r.detected?.join(", ") || "something"} but only alerts (Detect mode).`, false, "alerts only");
+      // Lakera's Detect mode, or Cato's null required_action — named generically here.
+      return cell(key, "external", name, "flagged", `${name} detected ${r.detected?.join(", ") || "something"} but only alerted — it did not block.`, false, "alerts only");
     }
     if (r.incomplete || r.transformed) {
       return cell(key, "external", name, "passed", `${name} allowed it, but ${r.incomplete ? "not every detection service ran" : "its redaction was not applied"}.`, false, "passed · partial");

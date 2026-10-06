@@ -348,6 +348,19 @@ describe("rule 6: honesty notes", () => {
     expect(a.notes).toContain("Detect mode — Lakera Guard logged 2 detections but its project only alerts, so it did not block");
   });
 
+  // Cato's real allow can carry detections with required_action null: the same "allow
+  // with alerts", but said in Cato's terms — it has no project and no Detect mode.
+  it("Cato alerts-only is allow with alerts, in Cato's own words", () => {
+    const v = pipelineView(
+      pipe({ results: [result({ provider: "cato-ai-security", outcome: "allow", detectOnly: true, detected: ["PII Policy", "SSN"] })] }),
+      "guardrailOnly",
+    );
+    const a = v.vendors[0]!;
+    expect(a.partial).toBe(true);
+    expect(a.notes).toContain("Alerts only — Cato AI Security reported 2 detections but its policy required no action, so it did not block");
+    expect(a.notes.join(" ")).not.toMatch(/project|Detect mode/);
+  });
+
   it("detectOnly on an error is ignored — an error is still not a verdict", () => {
     const v = pipelineView(
       pipe({ results: [result({ provider: "lakera-guard", outcome: "error", detectOnly: true, error: "x" })], stoppedBy: "lakera-guard" }),

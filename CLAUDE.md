@@ -153,8 +153,10 @@ alters what a customer sees in a demo. State it and let them choose.
   booleans — never text, `src/responseShape.ts`) as that evidence. Unlike PANW and CrowdStrike, local workerd
   CAN reach Cisco and Lakera, and both answer a bad key differently from a missing one, so a dummy-key test
   there proves the key arrived. Cato AI Security also answers a made-up path with 404 and a bad key differently
-  from a missing one (`{detail}` bodies), but local workerd cannot reach it — test it on prod. Cato's verdict is a
-  **string** (`required_action.action_type`) whose allow value is undocumented; a provider's `revealPaths` lets
+  from a missing one (`{detail}` bodies), but local workerd cannot reach it — test it on prod. Cato's console
+  sample was wrong too: the real allow is `required_action: null` (undocumented), sections are keyed by policy
+  UUID with a `policy_name`, and there is an `invocation_id`. Cato's verdict is a
+  **string** (`required_action.action_type`) whose values are undocumented; a provider's `revealPaths` lets
   *Test connection* show such a field's value, only as a bare lowercase token — the one exception to "never text".
   Some vendors echo the matched data in their response (Cato's `detection_message` quotes the SSN): a parser
   copies out only an allowlist of names, never a vendor's message or content field.

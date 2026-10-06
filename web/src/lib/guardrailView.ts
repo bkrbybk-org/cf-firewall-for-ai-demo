@@ -172,12 +172,17 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
   if (r.outcome === "allow" && r.transformed) {
     notes.push(`Redaction requested by ${name} was not applied — the model would receive the original prompt`);
   }
-  // Lakera Guard in Detect mode: detectors fired, the project only logs. Decided with
-  // the user: "allow with alerts" — the verdict stays allow, but it is never a clean pass.
+  // Lakera Guard in Detect mode: detectors fired, the project only logs. Cato: a policy
+  // reported detections but `required_action` came back null. Decided with the user:
+  // "allow with alerts" — the verdict stays allow, but it is never a clean pass. Each
+  // vendor's note names its own mechanism, never another vendor's console terms.
   if (r.outcome === "allow" && r.detectOnly) {
     const n = (r.detected ?? []).length;
+    const count = n === 1 ? "1 detection" : `${n} detections`;
     notes.push(
-      `Detect mode — ${name} logged ${n === 1 ? "1 detection" : `${n} detections`} but its project only alerts, so it did not block`,
+      r.provider === "cato-ai-security"
+        ? `Alerts only — ${name} reported ${count} but its policy required no action, so it did not block`
+        : `Detect mode — ${name} logged ${count} but its project only alerts, so it did not block`,
     );
   }
   if (state === "failedOpen") {

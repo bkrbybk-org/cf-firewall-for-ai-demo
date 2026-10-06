@@ -399,10 +399,11 @@ export function ExternalGuardrailBadge({ result }: { result: ExternalGuardrailRe
       const n = result.detected?.length ?? 0;
       return (
         <span
-          title={`${name} is in Detect mode: it logged ${n === 1 ? "a detection" : `${n} detections`} (${(result.detected ?? []).join(", ")}) but does not block.`}
+          title={`${name} ${result.provider === "cato-ai-security" ? "required no action" : "is in Detect mode"}: it logged ${n === 1 ? "a detection" : `${n} detections`} (${(result.detected ?? []).join(", ")}) but did not block.`}
           className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
         >
-          {name} · allow · {n} alert{n === 1 ? "" : "s"} (Detect mode) · {result.latencyMs} ms
+          {name} · allow · {n} alert{n === 1 ? "" : "s"}
+          {result.provider === "cato-ai-security" ? "" : " (Detect mode)"} · {result.latencyMs} ms
         </span>
       );
     }

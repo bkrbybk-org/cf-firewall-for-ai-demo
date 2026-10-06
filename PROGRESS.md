@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **599 across 38 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **606 across 38 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,41 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Cato: the parser rebuilt from the real allow
+
+**What happened.** The user saved their Guard's key on prod (disabled) and pressed *Test connection*. The
+result was "Test failed · HTTP 200 · verdict not recognised: no required_action object". That is the designed
+outcome for an undocumented allow (decision 1). The user then asked to "use real response from Cato". Reading
+it through Chrome was not possible: the MCP Chrome window was not signed in to Access, and signing in is not
+something to do for the user. The user pasted the **attack** test's full shape; the benign one was in their
+screenshot. Deploy `e8f8f464-b2fe-4914-9cea-be63a5fde1db`.
+
+**Real vs the console sample** (measured from the shapes):
+- **Allow is `required_action: null`**: the key is present and null.
+- **`policy_drill_down` is keyed by policy UUID**, each `{policy_name, detections[]}`. The sample's `PII` key
+  never appeared. Three policies; all `detections` empty on both prompts.
+- **`invocation_id`** (string) exists. It is now the scan id.
+- **`session_entities`** exists; `additional_contents` is `null`, not `[]`. Neither is read.
+- **The fixed injection prompt was allowed**: none of the three policies flagged it. That is Cato's verdict
+  for that Guard's policies, recorded as found.
+
+**Parser** (`src/catoGuard.ts`, 41 tests; fixtures now come from the real shape, the sample kept only for the
+block):
+- `null` together with an `analysis_result` object is an allow; `null` alone is an error.
+- A null action with detections is allow with alerts (`detectOnly`).
+- Fired sections are named by `policy_name` (≤ 80 chars, no control characters), never by UUID.
+- `invocation_id` is shape-checked.
+- Mutations: null alone as allow (1 red), UUID shown (3), alerts as a clean pass (2), no dedupe (4).
+
+**Wording.** Cato's alerts-only note says "its policy required no action". The control strip and the reply
+chip no longer say "Detect mode" (Lakera's term) for every vendor.
+
+**Status.** Still `verified: false`, because the block is unseen (plan step 7b).
+
+**Gates:** 606 tests across 38 files; check and web typecheck clean.
+
+**Prod:** smoke all pass. The bundle contains the new wording. Cato: key saved, disabled. Pipeline unchanged.
 
 ### 2026-10-06 — Cato Networks AI Security: guardrail #5, configurable, unverified
 
@@ -2165,11 +2200,12 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 **Plan: Cato Networks AI Security as guardrail 5** (written and tasks 1–6 done 2026-10-06; see Implemented).
 - [x] 1–6. Registry, client + tests, wire-up, the response-shape value reveal, five-vendor UI check, deploy.
   Local workerd cannot reach Cato, so there was no local dummy-key test through the Worker.
-- [ ] 7. **User:** on `/guardrails`, save the Cato Guard's API key with the guardrail **disabled**. Run *Test
-  connection* and *Test with an attack prompt*. Paste both Response shapes; `required_action.action_type`
-  shows its value. **Self:** add the real allow value (and any other value seen) to the parser, with a test built
-  from that shape; check `detected`, `policy` and the redaction flag against the real block; set
-  `verified: true`; deploy. Then the user may enable it in the parallel run.
+- [x] 7a. **The real allow** (2026-10-06). The user saved the key (disabled) and ran both tests: both
+  **allowed**. The allow is `required_action: null`. The parser was rebuilt from that shape (see Implemented).
+- [ ] 7b. **A real block.** The fixed injection prompt was not flagged by any of the Guard's three policies,
+  so no block payload has been seen. Needs a prompt those policies act on (ask the user what they cover, e.g.
+  PII). Then check `action_type`, the fired section's shape, `required_action.policy_name` and redaction, and
+  set `verified: true`. Until then the badge stays, but Cato can be enabled: its allows are proven.
 - [ ] 8. Docs after 7. Also check whether a response header carries a request id (none is documented in the
   body).
 

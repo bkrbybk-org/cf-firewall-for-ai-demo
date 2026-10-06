@@ -21,6 +21,19 @@
 // Decided with the user (2026-10-06): only `block_action` is a block; every other
 // answer is an error and the operator's fail mode decides — "an unknown answer is
 // never an allow", the rule for every vendor here.
+//
+// REAL payloads, 2026-10-06 (the user's own Guard, Test connection benign + attack,
+// read as shapes — src/responseShape.ts). Where they differ from the console sample,
+// the real one wins:
+//   - The ALLOW is `required_action: null` — present and null, not absent — next to a
+//     full `analysis_result`. Only that exact pair is read as allow.
+//   - `policy_drill_down` is keyed by policy UUID, each `{policy_name, detections[]}`;
+//     the sample's readable "PII" key does not happen. Names come from `policy_name`.
+//   - `invocation_id` (string) is present, so it is the scan id; the sample has none.
+//   - `analysis_result.session_entities` exists (unread), `additional_contents` is null.
+//   - The fixed injection prompt was ALLOWED: all three of that Guard's policies came
+//     back with empty `detections`. A real block has not been seen yet; its shape is
+//     still the sample's `required_action.action_type: "block_action"`.
 
 import type { ExternalGuardrailResult } from "./types";
 
@@ -97,11 +110,26 @@ function label(v: unknown): string | undefined {
   return typeof v === "string" && SAFE_LABEL.test(v) && !DIGIT_RUN.test(v) ? v : undefined;
 }
 
+// An operator-named policy (`policy_drill_down.<uuid>.policy_name`). It is console
+// configuration, not prompt data, so it may hold digits and punctuation — but it is
+// still capped, and control characters refuse it.
+function policyName(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim();
+  return t && t.length <= 80 && !/[\u0000-\u001f\u007f]/.test(t) ? t : undefined;
+}
+
+// Cato's id for this analysis, for its console. Shape-checked like any id we show.
+function invocationId(v: unknown): string | null {
+  return typeof v === "string" && /^[A-Za-z0-9_.:-]{1,100}$/.test(v) ? v : null;
+}
+
 // Why the verdict is unusable, in words an operator can act on. The unknown value is
 // named only when it is a short lowercase token; otherwise it is not echoed at all.
 function unrecognisedVerdict(actionType: unknown, requiredActionPresent: boolean): string {
-  const lead = "Cato AI Security's verdict value was not recognised (unverified integration; only block_action is documented)";
-  if (!requiredActionPresent) return `${lead}: the response had no required_action object`;
+  const lead =
+    "Cato AI Security's verdict was not recognised (seen live: required_action null = allow; documented: action_type block_action)";
+  if (!requiredActionPresent) return `${lead}: required_action was missing or not an object`;
   if (typeof actionType !== "string") return `${lead}: required_action.action_type was missing or not a string`;
   if (SAFE_ACTION.test(actionType)) return `${lead}: action_type was "${actionType}"`;
   return `${lead}: action_type was not a recognised token`;
@@ -112,13 +140,43 @@ function unrecognisedVerdict(actionType: unknown, requiredActionPresent: boolean
 // `name`, offsets, scores. This parser is an ALLOWLIST: it copies none of those
 // into the result, so nothing downstream (the prompt log, the UI, the Controls
 // strip) can end up holding the very value the guardrail was meant to catch.
-// What it does read: names of what fired (policy_drill_down keys, entity `type`s,
-// each shape-checked), the operator-named policy, and whether the newest message
-// was redacted (never the redacted text itself).
+// What it does read: names of what fired (each fired policy's operator-set
+// `policy_name`, entity `type`s — each shape-checked), the policy that required the
+// action, Cato's `invocation_id`, and whether the newest message was redacted (never
+// the redacted text itself).
 //
-// The verdict is `required_action.action_type === "block_action"` alone. Every other
-// shape is an error, never an allow: the allow value has not been seen in a real
-// payload, so guessing one would turn an unfamiliar answer into a pass.
+// The verdict, from the real payloads above:
+//   - `required_action: null` with an `analysis_result` object → allow. If a policy
+//     still reported detections, it is allow WITH ALERTS (`detectOnly`): Cato saw
+//     something and its policy asked for no action — never a clean pass (the rule
+//     Lakera's Detect mode follows, decided with the user).
+//   - `required_action.action_type === "block_action"` → block (documented; no real
+//     block seen yet).
+//   - Anything else — required_action missing, another action_type, null without an
+//     analysis — is an error, never an allow: an unfamiliar answer is not a pass.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function firedNames(analysis: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  const add = (n: string | undefined) => {
+    if (n !== undefined && !names.includes(n)) names.push(n);
+  };
+  // Policy sections that actually fired — by their name, never their UUID key — then
+  // entity types from each detection and from the newest message's entities.
+  const drill = isObject(analysis.policy_drill_down) ? analysis.policy_drill_down : {};
+  for (const [section, v] of Object.entries(drill)) {
+    if (!isObject(v) || !Array.isArray(v.detections) || v.detections.length === 0) continue;
+    add(policyName(v.policy_name) ?? (UUID.test(section) ? undefined : label(section)));
+    for (const d of v.detections) {
+      if (isObject(d) && isObject(d.entity)) add(label(d.entity.type));
+    }
+  }
+  if (Array.isArray(analysis.last_message_entities)) {
+    for (const e of analysis.last_message_entities) if (isObject(e)) add(label(e.type));
+  }
+  return names;
+}
+
 export function parseCatoResponse(status: number, body: unknown, latencyMs: number): ExternalGuardrailResult {
   const base = { provider: "cato-ai-security" as const, latencyMs, httpStatus: status };
   if (status < 200 || status >= 300) return { ...base, outcome: "error", error: errorMessage(body, status) };
@@ -127,6 +185,30 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
     return { ...base, outcome: "error", error: "Cato AI Security returned no usable verdict (body was not a JSON object)" };
   }
   const required = body.required_action;
+  const analysis = isObject(body.analysis_result) ? body.analysis_result : null;
+  const ids = { scanId: invocationId(body.invocation_id), reportId: null, profileName: null };
+
+  // Cato redacted something in the newest message. This app does NOT apply it (the UI
+  // says "redaction available, not applied"), and the redacted text is never read.
+  const chat = isObject(body.redacted_chat) ? body.redacted_chat : {};
+  const newest = isObject(chat.redacted_new_message) ? chat.redacted_new_message : {};
+  const transformed = Array.isArray(newest.entities) && newest.entities.length > 0;
+
+  if (required === null && analysis) {
+    const detected = firedNames(analysis);
+    return {
+      ...base,
+      outcome: "allow",
+      action: "allow",
+      detected,
+      ...ids,
+      ...(detected.length > 0 ? { detectOnly: true } : {}),
+      ...(transformed ? { transformed: true } : {}),
+    };
+  }
+  if (required === null) {
+    return { ...base, outcome: "error", error: "Cato AI Security returned no action and no analysis_result — not a verdict" };
+  }
   if (!isObject(required) || required.action_type !== "block_action") {
     return {
       ...base,
@@ -135,41 +217,13 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
     };
   }
 
-  const analysis = isObject(body.analysis_result) ? body.analysis_result : {};
-  const names: unknown[] = [];
-
-  // Policy sections that actually fired, then entity types from each detection and
-  // from the newest message's entities.
-  const drill = isObject(analysis.policy_drill_down) ? analysis.policy_drill_down : {};
-  for (const [section, v] of Object.entries(drill)) {
-    if (!isObject(v) || !Array.isArray(v.detections) || v.detections.length === 0) continue;
-    names.push(section);
-    for (const d of v.detections) {
-      if (isObject(d) && isObject(d.entity)) names.push(d.entity.type);
-    }
-  }
-  if (Array.isArray(analysis.last_message_entities)) {
-    for (const e of analysis.last_message_entities) if (isObject(e)) names.push(e.type);
-  }
-  const detected = [...new Set(names.map(label).filter((n): n is string => n !== undefined))];
-
   const policy = typeof required.policy_name === "string" ? required.policy_name.trim().slice(0, ERROR_CAP) : "";
-
-  // Cato redacted something in the newest message. This app does NOT apply it (the UI
-  // says "redaction available, not applied"), and the redacted text is never read.
-  const chat = isObject(body.redacted_chat) ? body.redacted_chat : {};
-  const newest = isObject(chat.redacted_new_message) ? chat.redacted_new_message : {};
-  const transformed = Array.isArray(newest.entities) && newest.entities.length > 0;
-
   return {
     ...base,
     outcome: "block",
     action: "block",
-    detected,
-    // Cato documents no request id; none is invented and no content field stands in.
-    scanId: null,
-    reportId: null,
-    profileName: null,
+    detected: analysis ? firedNames(analysis) : [],
+    ...ids,
     ...(policy ? { policy } : {}),
     ...(transformed ? { transformed: true } : {}),
   };

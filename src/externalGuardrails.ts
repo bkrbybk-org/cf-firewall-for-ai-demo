@@ -118,9 +118,10 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     keyLabel: "API key",
     vendor: "Lakera (Check Point)",
   },
-  // Built from Cato's console text and two live 401 probes; unverified until a real
-  // verdict is seen. Its verdict is a STRING (`required_action.action_type`) whose allow
-  // value is undocumented, so Test connection may show that one field's value.
+  // The ALLOW is checked against real payloads (2026-10-06: `required_action: null`); the
+  // BLOCK is still only Cato's console sample, so it stays unverified until a prompt the
+  // Guard's policies act on has been seen. That verdict is a STRING
+  // (`required_action.action_type`), so Test connection may show that one field's value.
   "cato-ai-security": {
     label: "Cato Networks AI Security",
     supported: true,
