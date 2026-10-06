@@ -57,6 +57,15 @@
   --amber: #f0b429;
   --blue: #7ab8ff;
   --purple: #9a6cf5;
+  /* JSON syntax colours for the raw-responses panel, on --bg. Their own tokens, not the
+     status ones: several light status colours sit under 4.5:1 for 11px text. Measured
+     on #0a0e17: key 9.3, string 9.7, number 10.4, boolean 7.5, null 7.9, punct ≥ 4.5. */
+  --code-key: #7ab8ff;
+  --code-string: #3fcf8e;
+  --code-number: #f0b429;
+  --code-boolean: #b28dff;
+  --code-null: #9aa7bd;
+  --code-punct: #8590a4;
 }
 
 [data-theme='light'] {
@@ -87,7 +96,23 @@
      deuteranopia on the prompt-log chart. Now ≥ 13.2 for every pair under all
      three simulations, and 6.7:1 on white (was 4.35). */
   --purple: #5b3fd6;
+  /* On #f5f7fb: key 6.3, string 5.1, number 4.7, boolean 6.6, null 7.1, punct ≥ 4.5. */
+  --code-key: #1d4ed8;
+  --code-string: #047857;
+  --code-number: #b45309;
+  --code-boolean: #6d28d9;
+  --code-null: #475569;
+  --code-punct: #576174;
 }
+
+/* Raw JSON tokens (lib/jsonTokens.ts). Hue plus weight: keys are semibold, so key vs
+   value still separates without colour. */
+.tok-key { color: var(--code-key); font-weight: 600; }
+.tok-string { color: var(--code-string); }
+.tok-number { color: var(--code-number); }
+.tok-boolean { color: var(--code-boolean); }
+.tok-null { color: var(--code-null); font-style: italic; }
+.tok-punct { color: var(--code-punct); }
 
 html,
 body,

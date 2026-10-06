@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **617 across 39 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **622 across 40 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,44 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — raw responses: JSON colours, keyboard access, a resetting Copy label
+
+**Asked for:** "check ui bugs on raw responses panel, and can i have color to separate key/values on raw json
+output?". Deploy `aa7525cd-19e3-4705-bf26-1d0333e731cf`.
+
+- **Colours** (`lib/jsonTokens.ts`, pure, +5 tests): pretty JSON split into key / string / number / boolean /
+  null / punctuation tokens, rendered as React **text** spans. Vendor bodies are untrusted, so no markup is ever
+  parsed. A stress body with an `<img onerror>` and a `<script>` inside values left `__xss` at 0 and created no
+  element. Tests pin that a string is never split (colons, numbers, escaped quotes inside it), that tokens join
+  back to the exact input, and that strings in arrays are values, not keys.
+- **Code colour tokens** (`--code-*`): separate from the status colours, several of which are under 4.5:1 for
+  11 px text in light mode. Measured in the browser on the panel's background:
+
+  | Token | Dark | Light |
+  |---|---|---|
+  | key | 9.31 | 6.25 |
+  | string | 9.67 | 5.11 |
+  | number | 10.35 | 4.68 |
+  | boolean | 7.49 | 6.62 |
+  | null | 7.94 | 7.07 |
+  | punct | 5.99 | 5.81 |
+
+  Keys are also semibold and null italic, so the distinction survives without colour.
+- **Bugs found and fixed:**
+  - The scrollable `<pre>` was not keyboard-reachable (same class as the table): now `tabIndex 0` and named
+    per vendor.
+  - The Copy label never reset, so a stale "Copied" or "Selected — press ⌘C" stayed: now it resets after 2.5 s
+    (verified), is `aria-live`, and the button is named per vendor.
+  - Bodies are tokenised once per body (`useMemo`), not on every render, for up to 32,000 characters.
+- **No bug:**
+  - A 400-character unbroken token wraps (scroll width equals client width).
+  - Twelve levels of nesting stay inside the box.
+  - HTML 502 and cut 32,000-character text bodies show as plain text with their labels; the cut one scrolls
+    inside 286 px.
+  - At 375 px light: no page or box overflow; header rows wrap to two lines.
+- **Gates:** 622 across 40 files. **Prod:** smoke all pass; the bundle contains `tok-key` and the per-vendor
+  labels; the CSS carries both themes' `--code-key`.
 
 ### 2026-10-06 — raw vendor responses (opt-in); columns layout checked
 
