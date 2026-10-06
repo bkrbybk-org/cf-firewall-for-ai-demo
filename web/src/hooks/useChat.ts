@@ -94,6 +94,7 @@ export type Msg =
       detail?: string;
       guarded?: boolean;
       gateway?: GatewayMeta; // which gateway blocked (for the flow trace)
+      pipeline?: GuardrailPipelineResult; // the external guardrails that ran first, if any
     }
   | {
       id: number;
@@ -350,6 +351,9 @@ export function useChat(cfg: {
             detail: data.detail,
             guarded: data.gateway?.guarded ?? false,
             gateway: data.gateway ?? undefined,
+            // The external guardrails let it through before the model call (it rode in
+            // the x-external-guardrails header); kept for the turn's control strip.
+            pipeline: data.externalGuardrails ?? undefined,
           });
           outcome = { kind: "blocked", ray };
         } else if (status >= 200 && status < 300 && data?.guardrailOnly) {

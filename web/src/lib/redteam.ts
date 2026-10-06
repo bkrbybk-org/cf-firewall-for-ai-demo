@@ -453,6 +453,19 @@ export interface RtRunResult {
   // verdict (allow/log) — scoring is about what the edge did — but no model
   // answered, so the UI must never present it as an answered prompt.
   modelSkipped?: boolean;
+  // What each external guardrail said about this attack (vendorScorecard.ts).
+  // Absent when the request never reached the Worker (the edge refused it) or the
+  // response carried no pipeline. In-session only — not stored with saved runs.
+  vendors?: RtVendorOutcome[];
+  pipelineMode?: "sequential" | "parallel";
+}
+
+// One external guardrail's answer for one attack. "alerts" is a Detect-mode
+// allow with detections (Lakera) — neither a catch nor a clean miss. "error" is
+// not a verdict. "notRun" means an earlier guardrail stopped it (sequential).
+export interface RtVendorOutcome {
+  provider: string;
+  verdict: "block" | "allow" | "alerts" | "error" | "notRun";
 }
 
 // Map a settled edge Outcome to the run state. `guardrails` is decided upstream

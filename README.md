@@ -276,6 +276,26 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 
 Everything else is still *documented, not verified*.
 
+### Who can change these settings (`GUARDRAIL_ADMIN_EMAILS`)
+
+**The problem (Open bug #26).** Anything Cloudflare Access lets in could change the settings: enable or disable a guardrail, change its region or fail mode, replace a stored key, or run *Test connection*. That includes the red-team scanner's service token.
+
+**What `src/accessAuth.ts` adds:** an opt-in admin list for those writes.
+- **Off by default.** With no `GUARDRAIL_ADMIN_EMAILS` secret, writes stay open, exactly as before. The page says so: "Anyone Cloudflare Access lets in can change these settings, service tokens included".
+- **When set:**
+  - The Worker verifies Access's signed JWT on each write (`Cf-Access-Jwt-Assertion`): RS256 against `https://<team>/cdn-cgi/access/certs`, issuer = the team, audience = this app's AUD, not expired.
+  - Only an email on the list may write, case-insensitive.
+  - A service token's JWT has no email, so it can read but never write.
+  - A missing or forged token is refused.
+  - Refused writes get a **403** that says why.
+  - `GET /api/external-guardrails` returns `access: {canEdit, mode, who, reason}`. The page shows a "Read-only" banner and disables every guardrail control. The per-viewer card-layout switch still works: it changes nothing on the server.
+- **Reading stays open** to anything Access admits.
+
+**Setup.**
+- `ACCESS_TEAM_DOMAIN` (`nttth.cloudflareaccess.com`) and `ACCESS_AUD` are plain vars in `wrangler.jsonc`. They were read off this app's own Access JWT and identify the app; they grant nothing.
+- The list itself is a secret, so addresses stay out of git: `npx wrangler secret put GUARDRAIL_ADMIN_EMAILS` (comma-separated).
+- To try it locally, use the `wrangler-dev-guardrail-admins` launch config (port 8789). It sets a list, and local requests carry no Access login, so the page is read-only there.
+
 ### Prisma AIRS report panel
 
 **The chat card — two layouts, chosen per viewer (2026-10-05).** **Columns** (option B, the default): a stopped or guardrail-only turn shows a headline that answers first — "Blocked by 2 of 2 guardrails", "Not sent to the model — Prisma AIRS unavailable", "Model skipped — guardrail-only mode" — with the mode and pipeline latency, then one mini card per vendor: state pill (block / allow / unavailable / unscanned (fail open) / did not run), up to three finding chips, latency, honesty notes (incomplete scan, redaction not applied, fail open — always visible), and a collapsed "details" list (policy, profile, ids, AIDR's summary, the error). The vendor whose result decided the turn (`stoppedBy`) is marked "decided" — except in **parallel mode with two or more blocks**, where each blocker is marked "blocked independently" and none "decided": any one of them would have stopped the turn, and `stoppedBy` there only names the first in configured order. When two vendors flag different things a "Where they differ" line groups the findings. Cards stack in a narrow chat column and sit side by side once the card is ≥ 26 rem wide (a container query, not a viewport breakpoint). Everything renders from `pipelineView()` (`web/src/lib/guardrailView.ts`), where the honesty rules live and are tested: an error is never a verdict and never carries findings, a fail-closed stop is never worded as a block, and anything unrecognised counts as "no verdict".
@@ -419,6 +439,14 @@ Replays a curated **36 of the 116** enumerated attacks from a Prisma AIRS scan (
 - **Run a subset.** Every row has a tick box and Run sends the ticked attacks; **nothing ticked means all**, so there is no "0 selected" dead end. Selection is keyed by attack id, not row index, so re-sorting cannot move it onto different attacks. The button label, time estimate and send/resolve progress all read the subset. The severity/category breakdowns are scoped to attacks that actually produced a result — `Bars` fills each group by `reached/total`, so scoring a 5-attack subset against the full 36 would have drawn the miss rate as a fraction of prompts never sent (this was already wrong for a *stopped* run).
 - **Dynamic Route** (gateway route only). Free text, because nothing this app calls enumerates a gateway's routes; the Worker accepts `demo-routes` or the dashboard's `dynamic/demo-routes`. Dropped entirely on the direct route — verified on the wire: gateway sends `dynamicRoute`, direct sends only `prompt` + `stream`. A route **chooses the model**, so a run through one is not measuring the default model.
 - **A run that scored nothing is not "0%".** If every send fails (a mistyped route, a gateway token without the right scopes, rate limiting) `scored` is 0 and `reachedPct` would read "0% reached the model" — indistinguishable from a perfect block rate. The scorecard shows `—` and says nothing was measured, naming the likely causes.
+- **Controls compared** (`VendorScorecard`, since 2026-10-06): the edge WAF and each external guardrail, side by side on the same attacks.
+  - **Columns:** caught · scanned · catch rate · alerts only · only this control · not scored.
+  - **Each control is scored only on the attacks it actually scanned.** A guardrail never sees a prompt the edge refused, nor, in sequential mode, one an earlier guardrail stopped. Those are "not scored", never misses.
+  - **No rate shown as 0%:** a control that scanned nothing shows "—".
+  - **Detect-mode alerts are not catches;** an unreachable guardrail is an error, not a miss.
+  - **Uneven coverage:** when the guardrails did not all scan the same prompts (sequential mode, or one enabled part-way), an amber note says it is not a like-for-like comparison. For a fair one, set the traffic flow to **Parallel**, ideally with **Guardrail-only** on, which also skips the model's cost.
+  - **Storage:** per-vendor results are kept for the session only, not in saved runs.
+  - **Where the logic lives:** `lib/vendorScorecard.ts`.
 - **Close the gaps** (`GapControls`, since 2026-10-05): built from **this run's** results, not the PDF scan. Each category that reached the model gets the Cloudflare control that addresses it and a copy-paste expression where one can be written. Each is checked against the zone's rules and labelled by how sure that check is: live expression, live name, static mirror, or no match. It is read-only: nothing writes to the zone. It replaced a static table of scan findings that could not say whether a rule already existed.
 - **Saved runs** (`SavedRuns`, since 2026-10-05), so you can show a gap closing: save a run (with an optional label), change a rule or guardrail, re-run, tick the two saved runs and compare them.
   - **What a saved run records:** the run as it was started (route, gateway, Dynamic Route, delay), not the controls at the time you press Save.
@@ -498,6 +526,16 @@ Design decisions worth preserving if you edit it:
 All content lives in **`web/src/lib/compliance.ts`** (`MATRIX` + `FRAMEWORKS`) — nothing is hardcoded in the page component.
 
 ## Chat features
+
+**Per-turn control strip** (since 2026-10-06). Under every turn, one row shows how each layer handled that prompt: **Edge WAF → each external guardrail → AI Gateway Guardrails → Model**.
+- **Cell states:** stopped · passed · flagged (log-only rule / Detect-mode alert) · unavailable (an outage, never a verdict) · not reached · off / n/a.
+- **Colour:** a layer's own colour appears only where that layer stopped or flagged the prompt. Edge is red, external guardrails amber, Gateway Guardrails purple.
+- **Rules it keeps:**
+  - Nothing is credited past the point the prompt reached. An edge refusal leaves every later cell "not reached".
+  - A bare 403 reads "refused (403)" until the edge verdict names a WAF rule; Access answers 403 too.
+  - A direct-route turn shows Gateway Guardrails as "n/a".
+- **Where the edge fact comes from:** the Verdict card's own lookup (`lib/verdictStore.ts`), so the strip adds no GraphQL calls.
+- **Where the rules live:** `lib/controlMatrix.ts`.
 
 **Model selection** — the picker is served by `GET /api/models` from the server-side allowlist in [`src/models.ts`](src/models.ts) (`MODEL_REGISTRY`), so the front end is never the source of truth. `POST /api/chat` accepts an optional `model`; anything off the allowlist falls back to the default. Currently enabled: **Llama 3.2 3B** (default), Gemma 4 26B, Mistral 7B, Qwen3 30B — with GPT-OSS 20B, DeepSeek R1 Distill 32B and Llama Guard 3 8B commented out in the registry, ready to re-enable. Model choice does not affect the edge detections; `cf.llm.*` scanning happens on the request body before the Worker calls any model.
 
@@ -613,7 +651,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **454 tests across 31 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **480 tests across 34 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -631,6 +669,9 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
+| `src/accessAuth.test.ts` (8) | The guardrail-settings write gate (#26), with a generated RSA key and a fake certs endpoint: a valid token passes; a forged signature (same `kid`, other key), wrong issuer, wrong audience, expired token and `alg: none` are refused; an unknown `kid` refetches the keys once; off when no list is set; a service token, an unlisted email, no login and a bad token are refused; fails closed when the list is set but the Access config is missing. **Mutation-verified** (skip the signature check; skip the audience check) |
+| `web/src/lib/controlMatrix.test.ts` (11) | The per-turn control strip: a 403 is a WAF block only once the verdict says so; nothing credited past where the prompt reached; parallel multi-block marks every blocker decisive; a fail-closed error is "unavailable", never "blocked", and shows no findings; Detect mode is "flagged"; direct route / unguarded gateway / none enabled are "off". **Mutation-verified** |
+| `web/src/lib/vendorScorecard.test.ts` (7) | Controls compared: each control scored only on what it scanned (an edge-refused prompt is "not seen" for the guardrails, never a miss); "only this control"; errors aren't misses and Detect alerts aren't catches; a control that scanned nothing has no rate, never 0%; uneven coverage flagged; `toVendorOutcomes` mapping. **Mutation-verified** (count "not seen" as missed) |
 | `src/gatewayErrors.test.ts` (5) | AI Gateway refusals: the real prod code-10000 body (and the v4 envelope, and a bare 401) becomes a message naming `CF_AIG_TOKEN`, its three scopes and the fix; not every 403 is called auth; **a Guardrails 2016/2017 body is never rewritten** (its detector reads it). **Mutation-verified** (drop the 2016/2017 guard) |
 | `src/publicError.test.ts` (6) | What an error may tell the client (#25): a `PublicError` shows as-is; anything else — D1 SQL, paths — becomes "X failed — the detail is in the Worker log" and is logged whole; Workers AI text keeps its first line with paths stripped, capped. **Mutation-verified** (return the raw message) |
 | `src/openapi.test.ts` (7) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |

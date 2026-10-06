@@ -245,7 +245,14 @@ export interface ExternalGuardrailsState {
   pipeline: GuardrailPipelineConfig;
   setupHint?: string;
   error?: string;
+  // Who may change these settings (src/accessAuth.ts). mode "open" = no admin list
+  // is set, so anything Access lets in can write. Absent from an older Worker.
+  access?: GuardrailAccess;
 }
+
+export type GuardrailAccess =
+  | { canEdit: true; mode: "open" | "admin"; who: string | null }
+  | { canEdit: false; mode: "admin"; who: string | null; reason: string };
 
 // PUT body. Omitted fields are left unchanged. `apiKey` replaces the stored key
 // (never echoed back); `clearApiKey: true` deletes it (and disables the provider).

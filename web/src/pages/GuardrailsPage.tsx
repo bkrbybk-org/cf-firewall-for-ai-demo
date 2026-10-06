@@ -12,7 +12,7 @@
 //    save succeeds, then wiped; what the server reports back is just whether a
 //    key exists and its last four characters.
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, Loader2, Lock, LockOpen, ShieldAlert } from "lucide-react";
 import { CardLayoutPicker } from "../components/CardLayoutPicker";
 import { Header } from "../components/Header";
 import { PipelineDiagram } from "../components/PipelineDiagram";
@@ -31,6 +31,7 @@ import type {
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
+  GuardrailAccess,
   GuardrailPipelineUpdate,
 } from "../lib/types";
 
@@ -61,6 +62,34 @@ const POLICY_HINT: Partial<Record<ExternalGuardrailProvider, string>> = {
   "cisco-ai-defense":
     "Set in AI Defense on the application connection this key belongs to — the app does not choose it.",
 };
+
+function AccessNote({ access }: { access: GuardrailAccess }) {
+  if (!access.canEdit) {
+    return (
+      <div role="status" className="flex items-start gap-3 rounded-2xl border border-cf-amber/60 bg-cf-amber/10 px-4 py-3">
+        <Lock size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+        <p className="text-[12.5px] leading-relaxed text-text">
+          <b>Read-only.</b> Only guardrail admins can change these settings — {access.reason}.
+          {access.who ? <span className="text-muted"> Signed in as {access.who}.</span> : null}
+        </p>
+      </div>
+    );
+  }
+  if (access.mode === "admin") {
+    return (
+      <div className="flex items-center gap-2 px-1 text-[12px] text-muted">
+        <Lock size={13} className="shrink-0 text-cf-green" /> Signed in as {access.who}, a guardrail admin — changes are
+        restricted to the admin list.
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 px-1 text-[12px] text-muted">
+      <LockOpen size={13} className="shrink-0 text-subtle" /> Anyone Cloudflare Access lets in can change these settings,
+      service tokens included. Set the <code className="font-mono">GUARDRAIL_ADMIN_EMAILS</code> secret to restrict them.
+    </div>
+  );
+}
 
 function Hint({ children }: { children: React.ReactNode }) {
   return <div className="mt-1 text-[11px] leading-relaxed text-subtle">{children}</div>;
@@ -167,8 +196,10 @@ function aKey(c: ExternalGuardrailConfig): string {
 function ProviderCard({
   config,
   onState,
+  locked = false,
 }: {
   config: ExternalGuardrailConfig;
+  locked?: boolean; // not a guardrail admin — read-only
   // Every successful response is handed up so the page re-renders ALL providers
   // and the traffic-flow diagram from the server's view, not from this card's.
   onState: (s: ExternalGuardrailsState) => void;
@@ -296,6 +327,9 @@ function ProviderCard({
 
   return (
     <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
+      {/* Not a guardrail admin: a disabled fieldset turns off every control in the
+          card together (the page banner says why). */}
+      <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-[13px] font-bold text-text">{config.label}</h2>
@@ -482,6 +516,7 @@ function ProviderCard({
           </div>
         )}
       </div>
+      </fieldset>
     </section>
   );
 }
@@ -574,6 +609,10 @@ export function GuardrailsPage() {
             </div>
           )}
 
+          {/* Who may change these settings (#26). Said up front rather than discovered
+              through a failed save; "open" is said too, so no restriction is implied. */}
+          {state?.access && <AccessNote access={state.access} />}
+
           {/* `pipeline` guard: a Worker older than this bundle sends providers
               without it, and the diagram would throw on the missing config. */}
           {state?.configured && state.pipeline && (
@@ -591,6 +630,7 @@ export function GuardrailsPage() {
                   key={c.provider}
                   config={c}
                   onState={setState}
+                  locked={state.access?.canEdit === false}
                 />
               ))}
             </div>

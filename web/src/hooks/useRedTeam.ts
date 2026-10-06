@@ -19,6 +19,8 @@ import { useCallback, useRef, useState } from "react";
 import { postChat } from "../lib/api";
 import { fetchVerdictOnce, verdictOutcome } from "../lib/verdict";
 import type { RedTeamAttack, RtResultState, RtRunResult } from "../lib/redteam";
+import type { GuardrailPipelineResult } from "../lib/types";
+import { toVendorOutcomes } from "../lib/vendorScorecard";
 
 export type RtPhase = "idle" | "sending" | "settling" | "resolving" | "done" | "stopped";
 
@@ -59,7 +61,7 @@ type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "e
 async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
-): Promise<{ ray?: string; kind: SendKind }> {
+): Promise<{ ray?: string; kind: SendKind; pipeline?: GuardrailPipelineResult }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
@@ -79,8 +81,12 @@ async function sendOne(
     }
     const { status, data } = res;
     const ray = data?.ray?.split("-")[0] || undefined;
-    if (status === 403) return { ray, kind: "blocked" };
-    if (data?.guardrailsBlocked) return { ray, kind: "guardrails" };
+    // Every response that reached the Worker carries the pipeline (body, or the
+    // x-external-guardrails header for a Guardrails block) — the per-vendor answers
+    // the "Controls compared" card scores (lib/vendorScorecard.ts).
+    const pipeline = data?.externalGuardrails ?? undefined;
+    if (status === 403) return { ray, pipeline, kind: "blocked" };
+    if (data?.guardrailsBlocked) return { ray, pipeline, kind: "guardrails" };
     // Checked before the generic "no reply → error" fall-through: a 200 with no
     // reply is what an external-guardrail block looks like, and scoring it as a
     // failed request would hide every prompt Prisma AIRS stopped. A fail-closed
@@ -90,12 +96,12 @@ async function sendOne(
     if (data?.externalGuardrailBlocked) {
       const p = data.externalGuardrails;
       const stopper = p?.results.find((r) => r.provider === p.stoppedBy);
-      return { ray, kind: stopper?.outcome === "block" ? "external" : "error" };
+      return { ray, pipeline, kind: stopper?.outcome === "block" ? "external" : "error" };
     }
     // Guardrail-only: also a 200 with no reply, and also not a failure.
-    if (status >= 200 && status < 300 && data?.guardrailOnly) return { ray, kind: "skipped" };
-    if (status >= 200 && status < 300 && data?.reply) return { ray, kind: "reply" };
-    return { ray, kind: "error" };
+    if (status >= 200 && status < 300 && data?.guardrailOnly) return { ray, pipeline, kind: "skipped" };
+    if (status >= 200 && status < 300 && data?.reply) return { ray, pipeline, kind: "reply" };
+    return { ray, pipeline, kind: "error" };
   } catch {
     return { kind: "error" };
   }
@@ -215,16 +221,16 @@ export function useRedTeam(): RedTeamRun {
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
-    const sent: { id: string; ray?: string; ts: number; kind: SendKind }[] = [];
+    const sent: { id: string; ray?: string; ts: number; kind: SendKind; pipeline?: GuardrailPipelineResult }[] = [];
     const delayMs = Math.max(0, cfg.delayMs ?? 0);
     for (let i = 0; i < corpus.length; i++) {
       const a = corpus[i];
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
-      const { ray, kind } = await sendOne(a.prompt, cfg);
+      const { ray, kind, pipeline } = await sendOne(a.prompt, cfg);
       if (stopRef.current) return;
-      sent.push({ id: a.id, ray, ts, kind });
+      sent.push({ id: a.id, ray, ts, kind, pipeline });
       setOne(a.id, "sent");
       // Pace the next send. Skipped after the last one — trailing dead time
       // before the settle phase would be pure waiting for nothing.
@@ -264,6 +270,11 @@ export function useRedTeam(): RedTeamRun {
       if (stopRef.current) return;
       const result: RtRunResult = { id: s.id, ray: s.ray, ts: s.ts, state };
       if (s.kind === "skipped") result.modelSkipped = true;
+      const vendors = toVendorOutcomes(s.pipeline);
+      if (vendors) {
+        result.vendors = vendors;
+        result.pipelineMode = s.pipeline!.mode;
+      }
       out.set(s.id, result);
       setResults(new Map(out));
       setOne(s.id, state);

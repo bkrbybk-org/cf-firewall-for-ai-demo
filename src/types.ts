@@ -40,6 +40,14 @@ export interface Env {
   // GUARDRAIL_SECRET_KEY`. Without it the external-guardrail config refuses to
   // store a key rather than storing it in plaintext.
   GUARDRAIL_SECRET_KEY?: string; // set as a secret
+  // Who may CHANGE the guardrail settings (src/accessAuth.ts, Open bug #26). A
+  // comma-separated email list, set as a secret so the addresses stay out of git.
+  // Unset = the gate is off and writes stay open to anything Access lets in.
+  GUARDRAIL_ADMIN_EMAILS?: string;
+  // This app's Cloudflare Access team domain and AUD tag — not secrets; used to
+  // verify the Cf-Access-Jwt-Assertion header. Plain vars in wrangler.jsonc.
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.

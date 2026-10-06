@@ -25,15 +25,18 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { GapControls } from "../components/redteam/GapControls";
 import { SavedRuns } from "../components/redteam/SavedRuns";
 import { Scorecard } from "../components/redteam/Scorecard";
+import { VendorScorecard } from "../components/redteam/VendorScorecard";
 import { STATE_PILL } from "../components/redteam/StatePill";
 import { useRedTeam, type RtAttackState } from "../hooks/useRedTeam";
 import { getModels } from "../lib/api";
 import { CSV_TEMPLATE, parseAttackCsv } from "../lib/attackCsv";
 import { customCorpusStore } from "../lib/customCorpus";
 import { downloadFile } from "../lib/export";
+import { PROVIDER_LABELS } from "../lib/guardrailView";
 import { buildRunSaveRequest, type RunContext } from "../lib/savedRuns";
 import { useStore } from "../lib/sessionStore";
 import type { GatewayOption } from "../lib/types";
+import { vendorScorecard } from "../lib/vendorScorecard";
 import {
   RT_CORPUS,
   SEVERITY_RANK,
@@ -323,6 +326,7 @@ export function RedTeamPage() {
   const someTicked = selected.size > 0 && !allTicked;
 
   const score = useMemo(() => scoreRun(resultList), [resultList]);
+  const vendorCard = useMemo(() => vendorScorecard(resultList, PROVIDER_LABELS), [resultList]);
   // Empty for a custom corpus — bySeverity drops unrated attacks rather than
   // inventing a bucket, and the card is hidden below when it comes back empty.
   // Scoped to attacks that actually produced a result, NOT the whole corpus.
@@ -622,6 +626,9 @@ export function RedTeamPage() {
           )}
 
           {hasResults && <Scorecard score={score} bySeverityRows={sevRows} byCategoryRows={catRows} />}
+          {/* Edge vs each external guardrail on the same attacks. Renders nothing when no
+              guardrail ran (the scorecard above already covers the edge alone). */}
+          {hasResults && <VendorScorecard card={vendorCard} />}
 
           {/* Results table */}
           <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">

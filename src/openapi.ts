@@ -354,6 +354,7 @@ export const openapi = {
         responses: {
           "200": json("The new state.", ref("ExternalGuardrailsState")),
           "400": json("Rejected — invalid field, unsupported provider, enabling without a key/profile, or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
+          "403": json("Not a guardrail admin (`access.mode` is `admin`) — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "405": error("Not GET or PUT."),
           "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
         },
@@ -377,6 +378,7 @@ export const openapi = {
         responses: {
           "200": json("The new state.", ref("ExternalGuardrailsState")),
           "400": json("Rejected — invalid field or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
+          "403": json("Not a guardrail admin — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "405": error("Not a PUT."),
           "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
         },
@@ -425,6 +427,7 @@ export const openapi = {
         responses: {
           "200": json("The provider's answer.", obj({ ok: bool(), result: ref("ExternalGuardrailResult") }, ["ok", "result"])),
           "400": error("Not set up, no key (or required profile) saved, or an unknown provider."),
+          "403": json("Not a guardrail admin — a test sends the stored key to the vendor, so it is a write-level action.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "405": error("Not a POST."),
           "502": error("D1 read failed."),
         },
@@ -740,8 +743,23 @@ export const openapi = {
           pipeline: ref("GuardrailPipelineConfig"),
           setupHint: str(),
           error: str(),
+          access: ref("GuardrailAccess"),
         },
         ["configured", "providers", "pipeline"],
+      ),
+      GuardrailAccess: obj(
+        {
+          canEdit: bool("Whether THIS caller may change the settings (PUT, pipeline PUT, test POST)."),
+          mode: {
+            type: "string",
+            enum: ["open", "admin"],
+            description:
+              "`open`: no `GUARDRAIL_ADMIN_EMAILS` secret is set, so anything Access lets in may write. `admin`: only the listed emails, verified from Access's signed JWT; service tokens can read, never write.",
+          },
+          who: { type: ["string", "null"], description: "The verified email, or `service token <client id>`; null when unknown." },
+          reason: str("Why `canEdit` is false."),
+        },
+        ["canEdit", "mode", "who"],
       ),
       ExternalGuardrailUpdate: obj(
         {

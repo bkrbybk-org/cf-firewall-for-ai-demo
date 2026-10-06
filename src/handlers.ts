@@ -53,6 +53,7 @@ import {
   queryVerdictRetention,
   queryZoneRules,
 } from "./cloudflare";
+import { guardrailWriteAccess } from "./accessAuth";
 import { explainGatewayError } from "./gatewayErrors";
 import { buildPromptLogQuery } from "./promptlog";
 import { aiErrorText, clientError } from "./publicError";
@@ -1454,13 +1455,16 @@ function guardrailSetupHint(env: Env): string | null {
   return null;
 }
 
-async function guardrailState(env: Env): Promise<Response> {
+async function guardrailState(env: Env, request: Request): Promise<Response> {
   const hint = guardrailSetupHint(env);
   const defaults = () => PROVIDER_IDS.map((id) => toPublicConfig(defaultConfig(id)));
-  if (hint) return Response.json({ configured: false, setupHint: hint, providers: defaults(), pipeline: defaultPipeline() });
+  // Who may change these settings (src/accessAuth.ts): the page reads it to say so
+  // up front and disable its controls, rather than letting a save fail.
+  const access = await guardrailWriteAccess(request, env);
+  if (hint) return Response.json({ configured: false, setupHint: hint, providers: defaults(), pipeline: defaultPipeline(), access });
   try {
     const [all, pipeline] = await Promise.all([loadAll(env.DB!), loadPipeline(env.DB!)]);
-    return Response.json({ configured: true, providers: all.map(toPublicConfig), pipeline });
+    return Response.json({ configured: true, providers: all.map(toPublicConfig), pipeline, access });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) {
@@ -1479,8 +1483,21 @@ async function guardrailState(env: Env): Promise<Response> {
 // Same not-set-up rules as the provider config. Saving the pipeline does not
 // need the encryption secret, but the page that sends it does, so the hint is
 // shared rather than half the page working.
+// A write refused by the admin gate (#26): 403 with the reason in words. Checked
+// before the body is read, so a refused caller learns nothing about validation.
+async function refuseUnlessEditor(request: Request, env: Env): Promise<Response | null> {
+  const access = await guardrailWriteAccess(request, env);
+  if (access.canEdit) return null;
+  return Response.json(
+    { configured: true, error: `Only guardrail admins can change these settings: ${access.reason}.`, access },
+    { status: 403 },
+  );
+}
+
 export async function handleGuardrailPipeline(request: Request, env: Env): Promise<Response> {
   if (request.method !== "PUT") return Response.json({ error: "Use PUT" }, { status: 405 });
+  const refused = await refuseUnlessEditor(request, env);
+  if (refused) return refused;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
   let body: unknown;
@@ -1493,17 +1510,19 @@ export async function handleGuardrailPipeline(request: Request, env: Env): Promi
     const v = validatePipelineUpdate(body, await loadPipeline(env.DB!));
     if (!v.ok) return Response.json({ configured: true, error: v.error }, { status: 400 });
     await savePipeline(env.DB!, v.next);
-    return guardrailState(env);
+    return guardrailState(env, request);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (/no such table/i.test(message)) return guardrailState(env);
+    if (/no such table/i.test(message)) return guardrailState(env, request);
     return Response.json({ configured: true, error: clientError(err, "Pipeline update") }, { status: 502 });
   }
 }
 
 export async function handleExternalGuardrails(request: Request, env: Env): Promise<Response> {
-  if (request.method === "GET") return guardrailState(env);
+  if (request.method === "GET") return guardrailState(env, request);
   if (request.method !== "PUT") return Response.json({ error: "Use GET or PUT" }, { status: 405 });
+  const refused = await refuseUnlessEditor(request, env);
+  if (refused) return refused;
 
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
@@ -1530,10 +1549,10 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
       next.apiKeyEnc = await encryptSecret(v.newApiKey, env.GUARDRAIL_SECRET_KEY!, next.provider);
     }
     await save(env.DB!, next);
-    return guardrailState(env);
+    return guardrailState(env, request);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (/no such table/i.test(message)) return guardrailState(env);
+    if (/no such table/i.test(message)) return guardrailState(env, request);
     return Response.json({ configured: true, error: clientError(err, "Guardrail update") }, { status: 502 });
   }
 }
@@ -1584,6 +1603,9 @@ const GUARDRAIL_TEST_PROMPT = "Hello! What can you help me with today?";
 
 export async function handleExternalGuardrailsTest(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "Use POST" }, { status: 405 });
+  // A test sends the STORED key to the vendor, so it is a write-level action too.
+  const refused = await refuseUnlessEditor(request, env);
+  if (refused) return refused;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ error: hint }, { status: 400 });
   let provider: unknown;

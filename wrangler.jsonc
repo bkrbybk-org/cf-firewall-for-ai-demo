@@ -39,6 +39,12 @@
     // Storing prompts is a decision someone should make on purpose, so the
     // committed default is off even though this demo's own D1 is bound.
     "PROMPT_LOG_ENABLED": "false",
+    // This app's Cloudflare Access team domain and AUD tag (read off its own Access
+    // JWT, 2026-10-06). Not secrets — they identify the app, they grant nothing.
+    // Used to verify Cf-Access-Jwt-Assertion when GUARDRAIL_ADMIN_EMAILS (a secret)
+    // restricts who may change the external-guardrail settings (src/accessAuth.ts).
+    "ACCESS_TEAM_DOMAIN": "nttth.cloudflareaccess.com",
+    "ACCESS_AUD": "aabf0bfef9a9f6b9f5a614d5f6e9001f9bf3f6d8d0cf2ca04fc838e65db72dcf",
   },
   "assets": {
     // Built React SPA (Vite → dist). Unknown routes serve index.html so the

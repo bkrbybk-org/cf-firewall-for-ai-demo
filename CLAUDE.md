@@ -184,6 +184,10 @@ alters what a customer sees in a demo. State it and let them choose.
 - The prompt log is off in `wrangler.jsonc` (and in prod), so `/api/prompt-log` and `/api/prompt-analytics`
   answer `disabled` on a plain `wrangler dev`. To exercise them, start the **`wrangler-dev-promptlog`** launch
   config (port 8788, `--var PROMPT_LOG_ENABLED:true`) — never flip the flag in `wrangler.jsonc` to test.
+- The guardrail admin gate (`src/accessAuth.ts`) is off unless the `GUARDRAIL_ADMIN_EMAILS` secret is set (prod:
+  unset as of 2026-10-06 — the user decides who). To see it enforcing, start **`wrangler-dev-guardrail-admins`**
+  (port 8789): local requests carry no Access JWT, so every guardrail write is a 403 and the page is read-only.
+  Setting that secret on prod changes who can edit a live demo's guardrails — ask first.
 
 ## House style
 

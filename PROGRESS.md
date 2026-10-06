@@ -417,7 +417,8 @@ Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typechec
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
 dev:worker` / `npm run dev:web` · `npm run smoke:prod` (5 authenticated checks against prod through
 Access). `.claude/launch.json` has `wrangler-dev` (8787), `wrangler-dev-promptlog` (8788, prompt log
-on via `--var`) and `vite-dev` configs.
+on via `--var`), `wrangler-dev-guardrail-admins` (8789, an admin list set, so `/guardrails` is read-only
+locally) and `vite-dev` configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
@@ -457,7 +458,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **454 across 31 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **480 across 34 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +623,91 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — per-turn control strip, "Controls compared", guardrail admin gate (#26)
+
+**Asked for:** ideas 1, 2 and 8 from the improvement table.
+
+**1 — Per-turn control strip.**
+- **What it shows:** `lib/controlMatrix.ts` turns each chat turn into cells: edge WAF → each external guardrail →
+  AI Gateway Guardrails → model. States are stopped / passed / flagged / unavailable / not reached / off /
+  pending / answered, each with a sentence of detail.
+- **Rules (self):**
+  - Nothing is credited past the point the prompt reached.
+  - A bare 403 is "refused (403)" until the verdict names a WAF rule. Access also answers 403.
+  - A 200 is ground truth that the edge passed it, whatever the verdict says.
+  - An error is "unavailable", never "blocked", and shows no findings.
+  - Detect mode is "flagged".
+  - Parallel multi-block marks every blocker decisive, the same rule as the card.
+  - A direct route or an unguarded gateway is "off".
+- **Rendering:** `ControlMatrix.tsx` was built by Sonnet from that contract and reviewed. Layer colours appear only
+  where that layer stopped or flagged; outages are dashed amber.
+- **Edge data:** `Verdict` now publishes its resolved status to `lib/verdictStore.ts`, so the strip reads the same
+  edge fact with **no second GraphQL poll**.
+- **Fix found while wiring:** the `guardrails` chat message now keeps its external pipeline. It rides in the
+  `x-external-guardrails` header. Without it the strip would have said "no guardrail enabled".
+
+**2 — Controls compared (Red Team).**
+- **Data:** the runner now keeps each response's pipeline as per-vendor outcomes (`RtRunResult.vendors`, via
+  `toVendorOutcomes`: block / allow / alerts / error / notRun).
+- **Scoring:** `lib/vendorScorecard.ts` (self) scores each control **only on the attacks it scanned**.
+  - The edge scores every verdict.
+  - A guardrail never sees a prompt the edge refused, or one an earlier guardrail stopped in sequential mode:
+    those are "not seen" / "not run", never misses.
+  - Errors are excluded. Detect alerts are counted on their own.
+  - Columns: catch % (null → "—", never 0%), "only this control" (caught where every other control that
+    scanned it missed), and "caught by none".
+  - `unevenCoverage` flags sequential mode or a guardrail enabled part-way.
+- **UI:** `VendorScorecard.tsx` (Sonnet, reviewed) sits under the Scorecard. When coverage is uneven, an amber
+  note recommends Parallel + Guardrail-only.
+- **Not stored:** the vendor outcomes are not kept with saved runs. That would need a D1 column.
+
+**8 — Guardrail admin gate (#26).** `src/accessAuth.ts` (self).
+- **JWT check:** `verifyAccessJwt` checks RS256 against `https://<team>/cdn-cgi/access/certs` (cached for
+  10 minutes; an unknown `kid` refetches once), plus issuer, audience, `exp`/`nbf` with 60 s of skew, and
+  `alg` — `none` is refused.
+- **Write gate:** `guardrailWriteAccess` is off when `GUARDRAIL_ADMIN_EMAILS` is unset. When the list is set:
+  - it fails closed if the Access config is missing;
+  - a service token (no `email`, only `common_name`) can read but never write;
+  - only a listed email may write, case-insensitive.
+- **Where it applies:** the 403 covers PUT `/api/external-guardrails`, PUT `/pipeline` and POST `/test`. A test
+  sends the stored key out, so it counts as a write. GET returns `access`. `/guardrails` shows a banner
+  (read-only / admin / open) and disables controls through a disabled `<fieldset>` and the diagram's `busy`.
+- **Facts read live:** `ACCESS_TEAM_DOMAIN` / `ACCESS_AUD` come off this app's real Access JWT (a service-token
+  one). That JWT has alg RS256 with a `kid`, iss `https://nttth.cloudflareaccess.com`, one aud, `common_name`
+  and no `email`. The certs endpoint served 2 RS256 keys.
+
+**Who.** Sonnet built `ControlMatrix.tsx` and `VendorScorecard.tsx`, in parallel on disjoint files. I did the two
+view models, all wiring, the JWT gate, hot files, the review and the docs.
+
+**Verified.**
+- **Gates:** 480 tests across 34 files. New: 11 in `controlMatrix`, 7 in `vendorScorecard`, 8 in `accessAuth`.
+- **Mutation testing**, all caught: a pending 403 labelled as a plain stop; a refused prompt crediting the
+  guardrails; "not seen" counted as missed; skipping the JWT signature check; skipping the audience check.
+- **Browser** (`wrangler dev`, stubbed responses):
+  - **Strips:** four turns rendered correctly.
+    - A 403 with no ray read "refused (403) … not confirmed", with every later cell "not reached".
+    - A parallel AIDR+AIRS block read "passed · checking → blocked → blocked → n/a · direct → not reached".
+    - A reply with a Lakera alert read "passed → alerts only → answered".
+    - Guardrail-only with a fail-open outage read "unavailable · fail open → skipped".
+    - "checking…" switched to "passed" once the Verdict polls for the fake rays gave up, with no extra lookups.
+  - **Red Team:** a 3-attack run (a 403 / AIDR block / guardrail-only all-allow) gave Edge 1/3 = 33%, AIDR 1/2 =
+    50% with 1 only-this and 1 not scored, AIRS 0/2, and "1 of 3 caught by no control". All matched a hand
+    count.
+  - **Admin gate,** on the new `wrangler-dev-guardrail-admins` config (port 8789):
+    - GET → `canEdit:false`, "this request carries no Cloudflare Access login".
+    - PUT, pipeline PUT and test POST → 403.
+    - A forged `cf-access-jwt-assertion` → 403 "could not be verified".
+    - The page showed the Read-only banner, with every guardrail control disabled except the per-viewer
+      layout switch.
+- **Prod** (`98904961-4511-42a9-95c0-c4a61b08d9dd`, then `a14d7614-d811-42a8-914c-d4b2b15e06a3` to serve the updated
+  openapi with `GuardrailAccess` and the 403s — confirmed in the served spec; smoke 5/5 again):
+  - Smoke 5/5.
+  - `access` = `{canEdit:true, mode:"open"}`, so the gate is off as intended.
+  - The user's parallel AIDR → AIRS pipeline is unchanged, both enabled.
+  - The bundle `index-CCP2jh5G.js` contains the strip, "Controls compared", and the read-only / open texts.
+- **Not seen on prod:** the gate enforcing (no list is set), the strip with a real edge verdict, and the
+  scorecard on a real run.
 
 ### 2026-10-06 — actionable AI Gateway auth error; #25 (prompt cap, error text to the client)
 
@@ -1792,7 +1878,10 @@ exercised):
 
 **External-guardrail caveats** (2026-10-01):
 
-26. **Anything that passes Access can reconfigure the guardrail** — enable or disable it, change region, fail
+26. **FIX BUILT 2026-10-06, NOT YET SWITCHED ON** (deploy `a14d7614`). `src/accessAuth.ts` verifies the Access JWT
+    and limits writes to `GUARDRAIL_ADMIN_EMAILS`. Prod has no list yet, so writes stay open and
+    `access.mode` is `"open"`. **Open until the user sets the secret.** Original entry:
+    **Anything that passes Access can reconfigure the guardrail** — enable or disable it, change region, fail
     mode or profile, or replace the key — because `/api/external-guardrails` cannot tell a human from the
     red-team scanner's service token. It **cannot read or redirect the key** (write-only; allowlisted hosts),
     so the worst case is a guardrail switched off or set to fail open. If that matters, restrict the path in

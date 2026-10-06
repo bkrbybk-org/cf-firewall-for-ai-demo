@@ -193,7 +193,10 @@ function ProviderNode({
 
 export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagramProps) {
   const { pipeline, providers } = state;
-  const [busy, setBusy] = useState(false);
+  const [saving, setBusy] = useState(false);
+  // Not a guardrail admin (src/accessAuth.ts): every control reads as disabled, the
+  // same way it does mid-save — the page's banner says why.
+  const busy = saving || state.access?.canEdit === false;
   const [err, setErr] = useState<string | null>(null);
 
   // One in-flight write at a time: each reply replaces the whole state, so two

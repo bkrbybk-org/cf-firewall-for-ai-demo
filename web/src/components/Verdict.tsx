@@ -4,6 +4,7 @@ import { fetchVerdictOnce, pollVerdict, verdictOutcome, type Outcome, type PollR
 import { FlowTrace, type GuardrailsBlock, type StoppedInWorker } from "./FlowTrace";
 import type { GatewayMeta, Verdict as VerdictData } from "../lib/types";
 import type { RequestConfig } from "../hooks/useChat";
+import { publishEdge } from "../lib/verdictStore";
 
 type Status = { phase: "pending"; tries: number } | PollResult;
 
@@ -165,6 +166,13 @@ export function Verdict({
     poll.promise.then(setStatus);
     return poll.cancel;
   }, [ray, ts]);
+
+  // Share the result with the turn's control strip (lib/verdictStore.ts), so it
+  // shows the same edge fact without polling the same ray a second time.
+  useEffect(() => {
+    if (!ray || status.phase === "pending") return;
+    publishEdge(ray, status.phase === "done" ? verdictOutcome(status.data) : "unavailable");
+  }, [ray, status]);
 
   if (status.phase === "done")
     return (

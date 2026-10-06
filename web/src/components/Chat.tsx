@@ -3,6 +3,9 @@ import { CircleAlert, Eraser, SendHorizontal, ShieldBan, ShieldX } from "lucide-
 import { fmtCost } from "../lib/format";
 import type { GatewayOption, Model } from "../lib/types";
 import type { Msg, Route, RequestConfig } from "../hooks/useChat";
+import { controlMatrix, type ControlMatrixInput } from "../lib/controlMatrix";
+import { useEdgeKnowledge } from "../lib/verdictStore";
+import { ControlMatrix } from "./ControlMatrix";
 import { ExportButton } from "./ExportButton";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard } from "./ExternalGuardrailCard";
 import { GuardrailReports } from "./GuardrailReportPanel";
@@ -16,6 +19,19 @@ function CacheBadge({ cached }: { cached?: boolean | null }) {
   if (cached === false)
     return <span className="rounded-full border border-cf-amber bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber">CACHE MISS</span>;
   return <span className="rounded-full border border-line px-2 py-0.5 text-[10.5px] font-bold text-muted">cache: ?</span>;
+}
+
+// The per-turn control strip: edge → each external guardrail → AI Gateway
+// Guardrails → model. The edge fact comes from the Verdict card's own lookup
+// (lib/verdictStore.ts), so this adds no GraphQL call; every attribution rule lives
+// in lib/controlMatrix.ts.
+function TurnControls({ ray, ...input }: Omit<ControlMatrixInput, "edge"> & { ray?: string | null }) {
+  const edge = useEdgeKnowledge(ray);
+  return (
+    <div className="max-w-[min(92%,720px)] self-start pl-1">
+      <ControlMatrix cells={controlMatrix({ ...input, edge })} />
+    </div>
+  );
 }
 
 function GuardrailsCard({ m }: { m: Extract<Msg, { kind: "guardrails" }> }) {
@@ -359,6 +375,13 @@ export function Chat({
                     {/* An allowed prompt still has a Prisma AIRS report: which
                         detectors looked, and any that flagged it but only alert. */}
                     {m.meta.externalGuardrails && <GuardrailReports pipeline={m.meta.externalGuardrails} />}
+                    <TurnControls
+                      kind="assistant"
+                      ray={m.ray ?? m.meta.ray}
+                      route={m.meta.gateway ? "gateway" : (cfgBefore(idx)?.route ?? "direct")}
+                      guarded={m.meta.gateway?.guarded}
+                      pipeline={m.meta.externalGuardrails}
+                    />
                     {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
                   </>
                 )}
@@ -369,6 +392,7 @@ export function Chat({
               <div key={m.id} className="contents">
                 <BlockedCard m={m} />
                 <Stamp side="assistant" ts={m.ts} />
+                <TurnControls kind="blocked" ray={m.ray} route={cfgBefore(idx)?.route ?? "direct"} />
                 {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
               </div>
             );
@@ -377,6 +401,7 @@ export function Chat({
               <div key={m.id} className="contents">
                 <ExternalGuardrailBlockedCard pipeline={m.pipeline} layout={cardLayout} />
                 <Stamp side="assistant" ts={m.ts} />
+                <TurnControls kind="external" ray={m.ray} route={cfgBefore(idx)?.route ?? "direct"} pipeline={m.pipeline} />
                 {/* The edge scan ran before the Worker, so its verdict exists
                     for this request too — both layers stay visible. */}
                 {m.ray && (
@@ -389,6 +414,7 @@ export function Chat({
               <div key={m.id} className="contents">
                 <GuardrailOnlyCard pipeline={m.pipeline} layout={cardLayout} />
                 <Stamp side="assistant" ts={m.ts} />
+                <TurnControls kind="guardrailOnly" ray={m.ray} route={cfgBefore(idx)?.route ?? "direct"} pipeline={m.pipeline} />
                 {/* stoppedInWorker, or the edge verdict would headline "Reached
                     the model" for a turn the model never saw. */}
                 {m.ray && (
@@ -401,6 +427,14 @@ export function Chat({
               <div key={m.id} className="contents">
                 <GuardrailsCard m={m} />
                 <Stamp side="assistant" ts={m.ts} />
+                <TurnControls
+                  kind="guardrails"
+                  ray={m.ray}
+                  route="gateway"
+                  guarded={m.guarded}
+                  guardrailsDirection={m.direction}
+                  pipeline={m.pipeline}
+                />
                 {m.ray && (
                   <Verdict
                     ray={m.ray}
