@@ -45,10 +45,18 @@
   --accent: #f6821f;
   --accent-hover: #ff9838;
   --green: #3fcf8e;
+  /* Red and amber sit above an OKLCH lightness band (.48–.67) on purpose: on dark,
+     deuteranopes tell them apart mostly by lightness, and pulling both into the
+     band cut their ΔE00 from 13.0 to 8–10. Blue and purple share the prompt-log
+     chart ("model skipped" / "guardrails-blocked"), where they were ΔE00 2.4 apart
+     under deuteranopia and protanopia — one colour. Separated by lightness
+     (blue up, purple down): ≥ 11.1 for every pair under deutan/protan, ≥ 8.9
+     tritan, purple text still 4.6:1 on --surface-2. Re-run a CVD validator
+     before changing any of the five. */
   --red: #ff5c5c;
   --amber: #f0b429;
-  --blue: #5aa2ff;
-  --purple: #b28dff;
+  --blue: #7ab8ff;
+  --purple: #9a6cf5;
 }
 
 [data-theme='light'] {
@@ -75,7 +83,10 @@
   --red: #b91c1c;
   --amber: #d97706;
   --blue: #2b7fff;
-  --purple: #7c5cff;
+  /* Darkened so it no longer reads as --blue: the two were ΔE00 2.3 apart under
+     deuteranopia on the prompt-log chart. Now ≥ 13.2 for every pair under all
+     three simulations, and 6.7:1 on white (was 4.35). */
+  --purple: #5b3fd6;
 }
 
 html,

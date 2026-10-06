@@ -395,7 +395,9 @@ web/src/
 New since the layout above was written: `src/promptlog.ts` (prompt-log query builder), `src/sse.ts`
 (Worker-side SSE reader), `web/src/hooks/useZoneRules.ts` (live zone rules + fallback),
 `web/src/lib/attackCsv.ts` + `customCorpus.ts` (custom CSV corpus), `scripts/thaisafety-csv.mjs`
-(ThaiSafetyBench → CSV; dev tooling, `hyparquet` devDependency, never bundled).
+(ThaiSafetyBench → CSV; dev tooling, `hyparquet` devDependency, never bundled), `src/chatText.ts`
+(`sanitizeHistory` / `stripThink` / `extractReply`, out of `handlers.ts`) and `web/src/lib/chatHistory.ts`
+(`buildHistory` / `estimateUsage` / `estimateCost`, out of `useChat.ts`) — moved so they are unit-tested.
 
 New in 2026-09: `src/redteamruns.ts` (validation + caps for the run-save endpoint),
 `migrations/0002_latency.sql` · `0003_redteam_runs.sql` · `0004_redteam_dynamic_route.sql`,
@@ -458,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **483 across 35 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **559 across 37 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -623,6 +625,27 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — chat-helper tests, a CVD palette fix (#10), the Malicious Code mapping (#20)
+
+**Asked for:** backlog items N, O, P — tests for the remaining pure functions, the dark palette band, the
+Malicious Code card's framework refs. Deploy `1e3160a5-2d4b-4f64-9d36-50abaceed188`.
+
+- **Tests (N).** `sanitizeHistory`, `stripThink`, `extractReply` moved verbatim from `handlers.ts` to
+  `src/chatText.ts`; `buildHistory`, `estimateUsage`, `estimateCost` from `useChat.ts` to
+  `web/src/lib/chatHistory.ts`. Tests written by Sonnet from a brief (46 + 30), reviewed here: five of six
+  planted mutations caught; the sixth (`break` → `continue` in the character cap) is an equivalent mutant,
+  because the running total already exceeds the cap for every older turn. **Two bugs the tests exposed,
+  fixed:** a think-only reply (`<think>x</think>` with nothing after) showed `x</think>` — the closer leaked
+  into the bubble; and an empty `response.output_text` was returned as the reply instead of falling through
+  like the other branches. `</think>` now also matches case-insensitively, like the opener always did.
+- **Palette (O)** and **mapping (P):** see Open bugs #10 and #20 for the measurements and sources.
+- **Gates:** 559 tests across 37 files; `npm run check` and the web typecheck clean; `npm run build`.
+  Browser (`wrangler-dev-promptlog`): computed `--blue`/`--purple` in both themes, the prompt-log legend,
+  the Malicious Code card showing only the ATLAS chip; no console errors.
+- **Prod:** `npm run smoke:prod` 5/5. The deployed CSS carries `--blue:#7ab8ff`, `--purple:#9a6cf5`,
+  `--purple:#5b3fd6`; the deployed JS contains `AML.T0016.002 Obtain Capabilities: Generative AI` and no
+  `LLM05:2025 Improper`. A direct-route chat returned a normal reply through the moved `extractReply`.
 
 ### 2026-10-06 — Cisco AI Defense + Lakera Guard: configurable, unverified, with a verification path
 
@@ -1819,10 +1842,22 @@ uncommitted.
    Paging, sorting and search are SQL now (`OFFSET` + whitelisted `ORDER BY` + `LIKE`), and the
    response reports `filtered` so the page count is real. Verified against 260 seeded rows: the last
    page reads "251–260 of 260" and a search reaches row 259 — 59 rows past the old ceiling.
-10. **Dark-mode chart palette still fails the house lightness band** (`--red` L .691, `--amber`
-    L .804 vs a .48–.67 band). Left alone deliberately: CVD separation — the check that actually
-    governs distinguishability — already passes at 12.5, so this is a style-band mismatch, not a
-    legibility defect, and churning dark tokens carries regression risk for no user-visible gain.
+10. ~~**Dark-mode chart palette still fails the house lightness band**~~ **CLOSED 2026-10-06** (deploy
+    `1e3160a5`) — red/amber deliberately **not** moved, measured; and a real defect the original check
+    missed was fixed instead. Measured with a validator (OKLCH L, WCAG contrast, CIEDE2000 after Machado 2009
+    deutan/protan/tritan simulation; it reproduces the earlier figures to within 0.5): pulling dark `--red`/
+    `--amber` into the .48–.67 band **cuts** their deutan ΔE00 from 13.0 to 8.1–9.7, because on dark they
+    differ for deuteranopes mostly by lightness. The band's source could not be found in the repo or any
+    installed skill, so it does not outrank the measurement. **Found instead:** `--blue` and `--purple` were
+    ΔE00 **2.4** apart under deutan and protan on dark and 2.3 under deutan on light — the prompt-log chart
+    draws both ("model skipped" / "guardrails-blocked", the series added with guardrail-only after the
+    original check). Fixed by lightness: dark `--blue #7ab8ff`, `--purple #9a6cf5`; light `--purple
+    #5b3fd6`. Now every pair of the five is ≥ 11.1 deutan, ≥ 14.3 protan, ≥ 8.9 tritan (dark) and ≥ 13.2
+    under all three (light); dark purple text is 4.58:1 on `--surface-2`, light purple 6.72:1 on white (was
+    4.35). Verified in the browser (computed colours in both themes, prompt-log legend) and in the deployed
+    CSS. **Still open, pre-existing:** light `--amber` and `--green` are 2.84–2.97:1 on `--bg`/`--surface-2`,
+    under the 3:1 non-text floor for chart marks — unchanged here, and moving amber reopens the red/amber
+    CVD pair, so it needs its own pass.
 
 **Known limits (by design)**
 
@@ -1874,10 +1909,15 @@ exercised):
     independently, so `reached + stopped > scored` is storable. `diffRuns` reads results, not stored
     totals, so a diff is unaffected; only the list view's totals could mislead for a lying client.
     Low. *Found by reading.*
-20. **The Malicious Code card's framework refs are a loose fit.** It cites OWASP `LLM05:2025 Improper
-    Output Handling` (about unsafe *downstream handling* of model output, not the model generating
-    malware) and ATLAS `AML.T0048 External Harms`. Verify or drop before regulated-customer use — the
-    compliance page's own rule is not to overstate a mapping. The README table flags it ⚠️.
+20. ~~**The Malicious Code card's framework refs are a loose fit.**~~ **FIXED 2026-10-06** (deploy
+    `1e3160a5`). Checked against each framework's own text: OWASP's LLM05:2025 page scopes it to output
+    "passed downstream to other components and systems" — not a model writing malware — and no other 2025
+    entry covers it, so the card now cites **no** OWASP entry rather than a wrong one. ATLAS (data release
+    2026.09, `mitre-atlas/atlas-data` `dist/v6`) has an exact match: **`AML.T0016.002` Obtain Capabilities:
+    Generative AI**, whose description names generating malware and phishing — the card's three presets.
+    It replaces `AML.T0048 External Harms`. The compliance page's LLM05 cells are about response screening
+    (with the "safe handling in your own code is still on you" caveat), which LLM05 does cover; unchanged.
+    Original: cited OWASP `LLM05:2025 Improper Output Handling` and ATLAS `AML.T0048 External Harms`.
 21. ~~**Built, deployed and unreachable:**~~ **FIXED 2026-10-05** (deploy `373315d8`): wired into the page; see Implemented. **Found while wiring it:** every save failed with `SQLITE_CONSTRAINT_FOREIGNKEY` once 50 runs existed, because the prune deleted runs before their results and D1 enforces the `REFERENCES` in migration 0003. Prod had 0 saved runs, so it never hit there. Fixed by deleting the results first. Original entry: `GapControls`, the saved-run API and `diffRuns` have no
     consumer in any page (confirmed by grep for each symbol outside its own file and tests). Prod
     carries dead code, and the feature they exist for still cannot be done in the app.
@@ -2134,8 +2174,8 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
       2026-10-06 (`src/gatewayErrors.ts`). Original note:
       instead of dumping the raw Cloudflare error JSON into the chat bubble — every gateway send goes
       through REST now, so a rejected token (as in bug #1, fixed 2026-09-30) surfaces on any of them.
-- [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
-      buildHistory, cost calc). The SSE line parser is now covered (`src/sse.test.ts`).
+- [x] ~~Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
+      buildHistory, cost calc)~~ — done 2026-10-06, 76 tests; found two small bugs (see Implemented).
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
       (53 successful attacks) has no rule covering it at all.
 - [ ] **Run the ThaiSafetyBench corpus on prod** (`npm run corpus:thai`) — the point is which Thai

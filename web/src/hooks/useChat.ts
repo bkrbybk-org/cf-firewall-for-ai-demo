@@ -7,11 +7,12 @@
 // survives navigating to another tab and back, and is cleared by a refresh.
 import { useCallback, useRef } from "react";
 import { postChat, type GatewayBackoff } from "../lib/api";
+import { buildHistory, estimateCost, estimateUsage } from "../lib/chatHistory";
 import { parseEdgeBlock } from "../lib/edgeBlock";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
-import type { ChatTurn, GatewayMeta, GuardrailPipelineResult, Model, Usage } from "../lib/types";
+import type { GatewayMeta, GuardrailPipelineResult, Model, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
@@ -132,35 +133,6 @@ export interface TurnResult {
   // 403 and would credit the WAF with Prisma AIRS's block.
   kind: "reply" | "skipped" | "external" | "blocked" | "error";
   ray?: string;
-}
-
-// Multi-turn context = completed user→assistant pairs only. A blocked user
-// prompt has no assistant reply and is deliberately dropped — resending an
-// attack prompt inside history would get every later turn blocked too.
-function buildHistory(msgs: Msg[]): ChatTurn[] {
-  const out: ChatTurn[] = [];
-  for (let i = 0; i < msgs.length - 1; i++) {
-    const q = msgs[i];
-    const a = msgs[i + 1];
-    if (q.kind === "user" && a.kind === "assistant") {
-      out.push({ role: "user", content: q.text });
-      out.push({ role: "assistant", content: a.text });
-    }
-  }
-  return out;
-}
-
-function estimateUsage(systemPrompt: string, history: ChatTurn[], prompt: string, reply: string): Usage {
-  const historyChars = history.reduce((n, t) => n + t.content.length, 0);
-  const prompt_tokens = Math.ceil((systemPrompt.length + historyChars + prompt.length) / 4);
-  const completion_tokens = Math.ceil(reply.length / 4);
-  return { prompt_tokens, completion_tokens, total_tokens: prompt_tokens + completion_tokens, estimated: true };
-}
-
-function estimateCost(models: Model[], modelId: string, usage: Usage): number | null {
-  const m = models.find((x) => x.id === modelId);
-  if (!m || m.priceIn == null || m.priceOut == null) return null;
-  return (usage.prompt_tokens / 1e6) * m.priceIn + (usage.completion_tokens / 1e6) * m.priceOut;
 }
 
 // Session state, kept outside the component tree so it survives tab switches.

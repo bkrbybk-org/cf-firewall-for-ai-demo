@@ -15,8 +15,6 @@ import {
   OPENAI_CHAT_PATH,
   ROUTE_ID_RE,
   FREE_DAILY_NEURONS,
-  MAX_HISTORY_CHARS,
-  MAX_HISTORY_TURNS,
   MAX_PROMPT_LEN,
   MAX_REPLY_TOKENS,
   MAX_SYSTEM_PROMPT_LEN,
@@ -54,6 +52,7 @@ import {
   queryZoneRules,
 } from "./cloudflare";
 import { guardrailWriteAccess } from "./accessAuth";
+import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
 import { shapeOf, type Shape } from "./responseShape";
 import { buildPromptLogQuery } from "./promptlog";
@@ -145,32 +144,6 @@ export async function handleModels(env: Env): Promise<Response> {
   });
 }
 
-// Re-validate the client-supplied conversation history: only user/assistant
-// turns, capped by turn count and total characters (newest turns win).
-function sanitizeHistory(raw: unknown): ChatTurn[] {
-  if (!Array.isArray(raw)) return [];
-  const turns: ChatTurn[] = [];
-  for (const t of raw) {
-    const turn = t as { role?: unknown; content?: unknown };
-    if (
-      (turn?.role === "user" || turn?.role === "assistant") &&
-      typeof turn.content === "string" &&
-      turn.content.trim() !== ""
-    ) {
-      turns.push({ role: turn.role, content: turn.content });
-    }
-  }
-  const recent = turns.slice(-MAX_HISTORY_TURNS);
-  const kept: ChatTurn[] = [];
-  let total = 0;
-  for (let i = recent.length - 1; i >= 0; i--) {
-    total += recent[i].content.length;
-    if (total > MAX_HISTORY_CHARS) break;
-    kept.unshift(recent[i]);
-  }
-  return kept;
-}
-
 // GET /api/verdict?ray=... — what the edge did to a given request.
 export async function handleVerdict(url: URL, env: Env): Promise<Response> {
   const ray = (url.searchParams.get("ray") || "").split("-")[0].trim();
@@ -254,38 +227,6 @@ export async function handleNeurons(env: Env): Promise<Response> {
   } catch (err) {
     return Response.json({ configured: true, error: clientError(err, "Neuron usage") }, { status: 502 });
   }
-}
-
-// Reasoning models wrap chain-of-thought in <think>…</think> before the real
-// answer. Show the answer; if the model was cut off mid-think, show the
-// partial reasoning rather than nothing.
-function stripThink(text: string): string {
-  const close = text.indexOf("</think>");
-  if (close !== -1) {
-    const after = text.slice(close + "</think>".length).trim();
-    if (after) return after;
-  }
-  return text.replace(/^\s*<think>\s*/i, "").trim() || text;
-}
-
-// Extract the assistant text across Workers AI response shapes:
-// - most models return { response: "..." }
-// - OpenAI-format models (gpt-oss) return { choices: [{ message: { content } }] }
-// - reasoning models (Gemma 4, DeepSeek R1) can finish with content: null and
-//   the usable text in message.reasoning
-export function extractReply(obj: Record<string, unknown>, result: unknown): string {
-  if (typeof obj.response === "string" && obj.response !== "") return stripThink(obj.response);
-  const choices = obj.choices as
-    | { message?: { content?: unknown; reasoning?: unknown } }[]
-    | undefined;
-  const msg = choices?.[0]?.message;
-  if (typeof msg?.content === "string" && msg.content !== "") return stripThink(msg.content);
-  if (typeof msg?.reasoning === "string" && msg.reasoning !== "") return msg.reasoning.trim();
-  if (obj.response && typeof obj.response === "object") {
-    const out = (obj.response as { output_text?: unknown }).output_text;
-    if (typeof out === "string") return out;
-  }
-  return typeof result === "string" ? result : JSON.stringify(result);
 }
 
 // AI Gateway Guardrails surface as binding errors: 2016 = prompt blocked,

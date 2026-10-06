@@ -77,7 +77,7 @@ export interface SessionExport {
 // Pair up [user, response] messages into export turns. Every user push in
 // useChat is followed by exactly one assistant/blocked/error message before
 // the next user push, so simple adjacent pairing is enough — see
-// buildHistory() in hooks/useChat.ts for the same assumption.
+// buildHistory() in lib/chatHistory.ts for the same assumption.
 function pairTurns(messages: Msg[]): ExportTurn[] {
   const turns: ExportTurn[] = [];
   for (let i = 0; i < messages.length; i++) {
