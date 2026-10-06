@@ -137,7 +137,46 @@ function FailModeOption({
   );
 }
 
+// The vendor response's shape (field names, types, true/false — never text), shown
+// collapsed after a test. For an unverified provider this is the evidence: pasted
+// back, it is compared with what the parser expects before the provider is marked
+// verified (src/responseShape.ts says why it is safe to share).
+function ResponseShape({ t }: { t: ExternalGuardrailTestResult }) {
+  const [copied, setCopied] = useState(false);
+  if (!t.responseShape) return null;
+  const text = JSON.stringify({ provider: t.result.provider, sample: t.sample, ...t.responseShape }, null, 2);
+  return (
+    <details className="mt-1.5 text-[11.5px]" open={t.verified === false}>
+      <summary className="cursor-pointer text-muted hover:text-text">
+        Response shape — field names, types and true/false only, no text
+        {t.verified === false && <b className="text-cf-amber"> · send this back to verify the parser</b>}
+      </summary>
+      <div className="mt-1 flex items-start gap-2">
+        <pre className="max-h-56 flex-1 overflow-auto rounded-lg border border-line bg-surface-2 p-2 font-mono text-[10.5px] whitespace-pre text-muted">
+          {text}
+        </pre>
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard.writeText(text).then(() => setCopied(true))}
+          className={BTN_CLS}
+        >
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+    </details>
+  );
+}
+
 function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
+  return (
+    <div>
+      <TestVerdict t={t} />
+      <ResponseShape t={t} />
+    </div>
+  );
+}
+
+function TestVerdict({ t }: { t: ExternalGuardrailTestResult }) {
   const r = t.result;
   // `ok` means the provider answered with a verdict. A failed test is shown as
   // the provider's own error, verbatim — never reworded into a verdict.
@@ -146,7 +185,15 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
       <div className="flex items-start gap-1.5 text-[12px] text-cf-green">
         <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
         <span>
-          Connection works — verdict <b className="font-mono">{r.action ?? r.outcome}</b>
+          {t.sample === "attack" ? "Attack prompt" : "Connection works"} — verdict{" "}
+          <b className="font-mono">{r.action ?? r.outcome}</b>
+          {r.detectOnly && <b className="text-cf-amber"> · alerts only (Detect mode)</b>}
+          {r.detected && r.detected.length > 0 && (
+            <>
+              {" "}
+              · detected <b className="font-mono">{r.detected.join(", ")}</b>
+            </>
+          )}
           {r.category && (
             <>
               {" "}
@@ -187,9 +234,15 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
   );
 }
 
+// The secret's name mid-sentence: "API key" keeps its acronym, "Collector token"
+// reads lower-case. (Lower-casing everything once printed "api key".)
+function keyWord(c: ExternalGuardrailConfig): string {
+  return /^[A-Z]{2}/.test(c.keyLabel) ? c.keyLabel : c.keyLabel.toLowerCase();
+}
+
 // "an API key" / "a collector token" — each provider names its secret differently.
 function aKey(c: ExternalGuardrailConfig): string {
-  const name = c.keyLabel === "API key" ? c.keyLabel : c.keyLabel.toLowerCase();
+  const name = keyWord(c);
   return `${/^[aeiou]/i.test(name) ? "an" : "a"} ${name}`;
 }
 
@@ -273,7 +326,7 @@ function ProviderCard({
   }
 
   async function removeKey() {
-    if (!window.confirm(`Remove the saved ${config.label} ${config.keyLabel.toLowerCase()}? This also disables the guardrail.`)) return;
+    if (!window.confirm(`Remove the saved ${config.label} ${keyWord(config)}? This also disables the guardrail.`)) return;
     setBusy(true);
     setSaveErr(null);
     try {
@@ -291,12 +344,12 @@ function ProviderCard({
     }
   }
 
-  async function runTest() {
+  async function runTest(sample: "benign" | "attack" = "benign") {
     setTesting(true);
     setTest(null);
     setTestErr(null);
     try {
-      const t = await testExternalGuardrail(p);
+      const t = await testExternalGuardrail(p, sample);
       if (t && typeof t.ok === "boolean" && t.result) setTest(t);
       else setTestErr((t as { error?: string } | null)?.error || "Unexpected response from the test endpoint");
     } catch (e) {
@@ -332,7 +385,17 @@ function ProviderCard({
       <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-[13px] font-bold text-text">{config.label}</h2>
+          <h2 className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
+            {config.label}
+            {config.verified === false && (
+              <span
+                title="Built from the vendor's documentation; its response has not yet been checked against a real one. Run both tests and send back the response shape before relying on its verdicts."
+                className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
+              >
+                unverified
+              </span>
+            )}
+          </h2>
           {config.updatedAt != null && (
             <div className="mt-0.5 text-[11.5px] text-muted">
               Last saved {new Date(config.updatedAt).toLocaleString()}
@@ -380,7 +443,7 @@ function ProviderCard({
             {regionInfo && region !== config.region ? `${regionInfo.url} (after save)` : config.endpoint}
           </div>
           <Hint>
-            No free-text endpoint on purpose: the {config.keyLabel.toLowerCase()} is only ever sent to {config.vendor}'s
+            No free-text endpoint on purpose: the {keyWord(config)} is only ever sent to {config.vendor}'s
             official hosts.
           </Hint>
         </div>
@@ -424,7 +487,7 @@ function ProviderCard({
               disabled={saving}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                config.apiKeySet ? `Enter a new ${config.keyLabel.toLowerCase()} to replace the saved one` : `Paste ${aKey(config)}`
+                config.apiKeySet ? `Enter a new ${keyWord(config)} to replace the saved one` : `Paste ${aKey(config)}`
               }
               className={`${INPUT_CLS} max-w-md`}
             />
@@ -444,7 +507,7 @@ function ProviderCard({
             )}
           </div>
           <Hint>
-            Write-only: the {config.keyLabel.toLowerCase()} is encrypted at rest and never shown again. Leave empty to
+            Write-only: the {keyWord(config)} is encrypted at rest and never shown again. Leave empty to
             keep the saved one.
           </Hint>
         </div>
@@ -488,12 +551,23 @@ function ProviderCard({
         </button>
         <button
           type="button"
-          onClick={runTest}
+          onClick={() => void runTest("benign")}
           title={testDisabledReason}
           disabled={testing || saving || busy || dirty || !config.apiKeySet}
           className={BTN_CLS}
         >
           {testing ? "Testing…" : "Test connection"}
+        </button>
+        {/* A known injection: shows what this vendor's BLOCK response looks like —
+            the case an unverified parser most needs checking against. */}
+        <button
+          type="button"
+          onClick={() => void runTest("attack")}
+          title="Scans a fixed, well-known prompt-injection string with the saved configuration"
+          disabled={testing || saving || busy || dirty || !config.apiKeySet}
+          className={BTN_CLS}
+        >
+          Test with an attack prompt
         </button>
         <span className="text-[11px] text-subtle">Tests the saved configuration, not unsaved edits.</span>
         <div aria-live="polite" className="text-[12px]">

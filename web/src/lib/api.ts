@@ -336,11 +336,14 @@ export async function saveExternalGuardrail(
   return r.json();
 }
 
-export async function testExternalGuardrail(provider: ExternalGuardrailProvider): Promise<ExternalGuardrailTestResult> {
+export async function testExternalGuardrail(
+  provider: ExternalGuardrailProvider,
+  sample: "benign" | "attack" = "benign",
+): Promise<ExternalGuardrailTestResult> {
   const r = await fetch("/api/external-guardrails/test", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ provider }),
+    body: JSON.stringify({ provider, sample }),
   });
   return r.json();
 }

@@ -148,8 +148,11 @@ alters what a customer sees in a demo. State it and let them choose.
   AIDR returns the same 401 with no token as with a bad one, so it cannot confirm a token arrived.
   Lakera's live error body differs from its own API reference too (`error` is a code like `ErrMissingToken`,
   the text is in `message`). Cisco AI Defense and Lakera hosts DO answer a made-up path with 404, so a no-key
-  probe there does prove a path exists. A provider stays `supported: false` until a real verdict payload has
-  been seen.
+  probe there does prove a path exists. A provider stays `verified: false` (an "unverified" badge) until a real
+  verdict payload has been seen; the admin's *Test connection* returns the response's shape (names, types,
+  booleans — never text, `src/responseShape.ts`) as that evidence. Unlike PANW and CrowdStrike, local workerd
+  CAN reach Cisco and Lakera, and both answer a bad key differently from a missing one, so a dummy-key test
+  there proves the key arrived.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

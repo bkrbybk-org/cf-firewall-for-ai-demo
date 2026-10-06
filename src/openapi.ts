@@ -417,15 +417,40 @@ export const openapi = {
       post: {
         tags: ["External guardrails"],
         operationId: "testExternalGuardrail",
-        summary: "Scan a fixed benign prompt with the saved configuration",
+        summary: "Scan a fixed prompt (benign or a known injection) with the saved configuration",
         description:
           "Uses the **saved** key, region and profile — it never accepts a key in the request, so it cannot be used to probe the provider with arbitrary credentials. Works whether or not the provider is enabled. `ok: false` means the provider could not be consulted (e.g. `Invalid API Key or OAuth Token`); it is not a verdict.",
         requestBody: {
           required: true,
-          content: { "application/json": { schema: obj({ provider: ref("ExternalGuardrailProvider") }, ["provider"]) } },
+          content: {
+            "application/json": {
+              schema: obj(
+                {
+                  provider: ref("ExternalGuardrailProvider"),
+                  sample: { type: "string", enum: ["benign", "attack"], description: "Which FIXED prompt to scan; anything else is `benign`. No prompt text is accepted." },
+                },
+                ["provider"],
+              ),
+            },
+          },
         },
         responses: {
-          "200": json("The provider's answer.", obj({ ok: bool(), result: ref("ExternalGuardrailResult") }, ["ok", "result"])),
+          "200": json(
+            "The provider's answer.",
+            obj(
+              {
+                ok: bool(),
+                result: ref("ExternalGuardrailResult"),
+                sample: { type: "string", enum: ["benign", "attack"] },
+                verified: bool("This provider's parser has been checked against a real payload."),
+                responseShape: {
+                  type: ["object", "null"],
+                  description: "The vendor response's field names, types and booleans — never a string's or number's value (src/responseShape.ts). Evidence for verifying an unverified parser.",
+                },
+              },
+              ["ok", "result"],
+            ),
+          ),
           "400": error("Not set up, no key (or required profile) saved, or an unknown provider."),
           "403": json("Not a guardrail admin — a test sends the stored key to the vendor, so it is a write-level action.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "405": error("Not a POST."),
@@ -720,6 +745,7 @@ export const openapi = {
           provider: ref("ExternalGuardrailProvider"),
           label: str(),
           supported: bool("False → listed for context, cannot be configured yet."),
+          verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard until verified)."),
           enabled: bool(),
           region: str(),
           endpoint: str("Full scan URL derived from `region` (read-only)."),

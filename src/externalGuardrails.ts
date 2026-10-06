@@ -46,6 +46,10 @@ interface ProviderSpec {
   // is stored. Kept for the next integration, even though every provider in
   // the registry is supported today.
   supported: boolean;
+  // Parser checked against a REAL payload from this vendor. An unverified provider can be
+  // configured and tested (that is how it gets verified) and the page says it is unverified;
+  // until then its verdict fields are what the vendor documents, not what it was seen to send.
+  verified: boolean;
   regions: readonly { id: string; label: string; url: string }[];
   defaultRegion: string;
   scanPath: string;
@@ -62,6 +66,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
   "prisma-airs": {
     label: "Palo Alto Networks Prisma AIRS",
     supported: true,
+    verified: true,
     regions: PRISMA_AIRS_REGIONS,
     defaultRegion: "us",
     scanPath: PRISMA_AIRS_SCAN_PATH,
@@ -73,6 +78,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
   "crowdstrike-aidr": {
     label: "CrowdStrike Falcon AIDR",
     supported: true,
+    verified: true,
     regions: AIDR_REGIONS,
     defaultRegion: "us-1",
     scanPath: AIDR_GUARD_PATH,
@@ -81,11 +87,12 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     keyLabel: "Collector token",
     vendor: "CrowdStrike",
   },
-  // Not yet verified against a live payload (PROGRESS.md plan, step 6), so listed
-  // but impossible to enable — the same gate CrowdStrike sat behind until it was.
+  // Built from the vendor docs; unverified until the admin runs Test connection with a real key and the
+  // returned response shape matches the parser (PROGRESS.md plan, step 6).
   "cisco-ai-defense": {
     label: "Cisco AI Defense",
-    supported: false,
+    supported: true,
+    verified: false,
     regions: CISCO_AID_REGIONS,
     defaultRegion: "us",
     scanPath: CISCO_AID_INSPECT_PATH,
@@ -96,7 +103,8 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
   },
   "lakera-guard": {
     label: "Check Point Lakera Guard",
-    supported: false,
+    supported: true,
+    verified: false,
     regions: LAKERA_REGIONS,
     defaultRegion: "global",
     scanPath: LAKERA_GUARD_PATH,
@@ -153,6 +161,7 @@ export function toPublicConfig(c: StoredConfig) {
     provider: c.provider,
     label: spec.label,
     supported: spec.supported,
+    verified: spec.verified,
     enabled: c.enabled,
     region: c.region,
     endpoint: endpointFor(c.provider, c.region),
@@ -515,8 +524,8 @@ export async function scanWithKey(
       );
     case "crowdstrike-aidr":
       return scanPromptWithAidr({ baseUrl, token: apiKey, prompt: input.prompt, model: input.model, spanId: ray }, fetchImpl);
-    // Both unreachable while `supported: false` (checked above) — wired, but not
-    // trusted until a real payload has been seen (PROGRESS.md plan, step 6).
+    // Both `verified: false` until a real payload has been seen (PROGRESS.md plan,
+    // step 6) — the page says so; the parsers follow the vendors' docs.
     case "cisco-ai-defense":
       return scanPromptWithCiscoAid({ baseUrl, apiKey, prompt: input.prompt, transactionId: ray }, fetchImpl);
     case "lakera-guard":

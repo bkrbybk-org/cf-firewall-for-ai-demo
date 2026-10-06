@@ -458,7 +458,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **480 across 34 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **483 across 35 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -623,6 +623,55 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Cisco AI Defense + Lakera Guard: configurable, unverified, with a verification path
+
+**Asked for:** "implement guardrails with cisco and lakera". The clients already existed (plan steps 1–5). What
+was missing was a way to turn them on that respects two constraints: the admin gate, which means only the user
+can save keys or run tests on prod, and "never document a vendor field before seeing a real payload".
+
+**What.**
+- **Registry:**
+  - `PROVIDERS` gains `verified`; Prisma AIRS and AIDR are `true`.
+  - Cisco and Lakera flip to `supported: true, verified: false`.
+  - `/guardrails` shows an amber **unverified** badge on their cards.
+  - The enable rules are unchanged, now reachable for these two: a key, plus Lakera's "a project ID is
+    required".
+- **Test endpoint:**
+  - Takes `sample: "benign" | "attack"`, two FIXED prompts; still no prompt text or key in the request.
+  - Returns `responseShape` and `verified`. The fetch is wrapped only to record `shapeOf()` of the vendor's
+    JSON: field names, types, array lengths and **boolean values** (the verdict fields being verified),
+    never a string's or number's value, which can echo the prompt or carry ids.
+- **Card:** a "Test with an attack prompt" button, and a collapsible **Response shape** panel with Copy. It
+  opens automatically for an unverified provider.
+- **Small fixes:** the test result now names its sample and lists `detected` and Detect-mode alerts.
+  "api key" lower-casing is fixed through a shared `keyWord()`. The test endpoint's "No AI security profile
+  name saved" now uses the provider's own `profileLabel`.
+
+**New findings** (local `wrangler dev`, a generated dummy key, run against the vendors' real endpoints):
+- **Local workerd can reach both Cisco and Lakera.** It cannot reach PANW or CrowdStrike.
+- **Both prove a key arrived.** Each answers a bad key differently from a missing one:
+  - **Cisco** 401: "failed to validate request: unauthenticated: rpc error: … invalid api key", vs "missing api
+    key"; shape `{code: number, message: string, details: [string]}`.
+  - **Lakera** 401: `{error: "ErrInvalidToken", …}` vs `ErrMissingToken`; shape `{error, message, details,
+    request_id}`, all strings.
+  - **Parsers:** both rendered these as "Unauthorized: … invalid api key" and "invalid authentication token
+    (ErrInvalidToken)".
+- **Test values:** the dummy keys were removed afterwards (`clearApiKey`). Both providers are back to no key,
+  disabled.
+
+**Verified.**
+- **Gates:** 483 tests across 35 files, including 3 in `responseShape.test.ts`. The registry test was rewritten
+  for "configurable but unverified".
+- **Browser:** the Lakera card showed the "unverified" badge, the "Project ID" label with Lakera's hint, both
+  test buttons, the vendor's error, and the shape panel opened automatically. No horizontal scroll.
+- **Prod** (`ed09e92f-9ac9-4085-b54c-d1d4283eddf8`):
+  - Smoke 5/5.
+  - `access.mode: "admin"`.
+  - The user's parallel pipeline is unchanged, with AIRS and AIDR still enabled.
+  - Cisco and Lakera are `supported: true`, `verified: false`, disabled, with no key.
+  - A test POST with the service token returned 403.
+- **Not verified:** any real Cisco or Lakera verdict. That waits on the user's keys (step 6).
 
 ### 2026-10-06 — per-turn control strip, "Controls compared", guardrail admin gate (#26)
 
@@ -2013,14 +2062,14 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 5. [x] **Unauthenticated probes** (done 2026-10-05) (*self*): POST each documented path with no key and record the error
    shape. CrowdStrike taught us a 401 does not prove a path exists; PANW answers 403 to any path. Record only
    what a probe proves.
-6. [ ] **Live verification on prod** (*self* to unlock and read; **the user** to save keys and press *Test
-   connection*, since the admin gate is on and the service token can no longer write; needs 0). First flip that
-   provider's `supported` to `true` in
-   `PROVIDERS` and deploy: the server refuses to store anything for an unsupported provider, key included. Then
-   save each key with the provider **disabled**, then
-   *Test connection* with a benign prompt and an injection prompt. Capture the real payloads and correct the
-   parsers and docs to match them before enabling. Then enable in a 4-way parallel run, read the card, and
-   switch back to the user's pipeline.
+6. [ ] **Live verification on prod.** Self prepares and checks; **the user** saves keys and presses the tests, since
+   the admin gate is on and the service token can no longer write. Needs step 0.
+   - [x] Unlock both: `supported: true`, `verified: false`, with an "unverified" badge (2026-10-06).
+   - [x] *Test with an attack prompt*, and a **Response shape** readout (names, types, booleans — no text).
+   - [ ] **User:** save the key (and Lakera's Project ID) with the guardrail disabled, run both tests per
+     provider, and paste the two shapes.
+   - [ ] **Self:** compare the shapes with the parsers, fix any difference with a test built from that shape,
+     set `verified: true`, deploy, and then enable in a 4-way parallel run.
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
 

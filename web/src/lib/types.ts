@@ -221,6 +221,7 @@ export interface ExternalGuardrailConfig {
   provider: ExternalGuardrailProvider;
   label: string; // "Palo Alto Networks Prisma AIRS"
   supported: boolean; // false → shown for context, cannot be configured yet
+  verified?: boolean; // false → built from the vendor's docs; not yet checked against a real response
   enabled: boolean;
   region: string; // ExternalGuardrailRegion.id
   endpoint: string; // full scan URL derived from the region (read-only)
@@ -271,6 +272,11 @@ export interface ExternalGuardrailUpdate {
 export interface ExternalGuardrailTestResult {
   ok: boolean; // the provider answered with a verdict
   result: ExternalGuardrailResult;
+  sample?: "benign" | "attack"; // which fixed prompt was scanned
+  verified?: boolean; // this provider's parser has been checked against a real payload
+  // The vendor response's field names, types and booleans — never text (src/responseShape.ts).
+  // What an admin hands back so an unverified parser can be checked.
+  responseShape?: { status: number; shape: unknown } | null;
 }
 
 export interface VerdictRule {

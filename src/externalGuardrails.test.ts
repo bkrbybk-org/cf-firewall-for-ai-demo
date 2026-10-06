@@ -51,13 +51,20 @@ describe("validateUpdate", () => {
     if (v.ok) expect(JSON.stringify(v.next)).not.toContain("evil.example");
   });
 
-  // Listed but not yet verified against a live payload (PROGRESS.md plan, step 6):
-  // nothing about them may be stored, so nothing can be enabled.
-  it("refuses every update to Cisco AI Defense and Lakera Guard until they are verified", () => {
-    for (const provider of ["cisco-ai-defense", "lakera-guard"] as const) {
-      const v = validateUpdate({ provider, enabled: true, apiKey: "k", profileName: "p" }, defaultConfig(provider));
-      expect(v, provider).toMatchObject({ ok: false, error: `${PROVIDERS[provider].label} is not supported yet` });
-    }
+  // Configurable (that is how they get verified) but flagged unverified, and held to
+  // the same enable rules as the others: a key, plus Lakera's project.
+  it("lets Cisco AI Defense and Lakera Guard be configured, flagged unverified, under the same rules", () => {
+    expect([PROVIDERS["cisco-ai-defense"].verified, PROVIDERS["lakera-guard"].verified]).toEqual([false, false]);
+    expect([PROVIDERS["prisma-airs"].verified, PROVIDERS["crowdstrike-aidr"].verified]).toEqual([true, true]);
+    expect(validateUpdate({ provider: "cisco-ai-defense", enabled: true }, defaultConfig("cisco-ai-defense"))).toMatchObject({
+      ok: false,
+      error: "Cannot enable: save an API key first",
+    });
+    expect(validateUpdate({ provider: "lakera-guard", enabled: true, apiKey: "k" }, defaultConfig("lakera-guard"))).toMatchObject({
+      ok: false,
+      error: "Cannot enable: a project ID is required",
+    });
+    expect(validateUpdate({ provider: "cisco-ai-defense", apiKey: "k", enabled: true }, defaultConfig("cisco-ai-defense")).ok).toBe(true);
   });
 
   it("refuses to enable without a key, and without a profile", () => {
