@@ -626,6 +626,29 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-06 — guardrail card: a block and an allow no longer look alike
+
+**Reported:** "blocked and allowed prompts using same color". In the table, the two blocks and Cato's caveated
+allow (`anonymize_action`) all had an amber outline pill and amber detections. Constraint kept: amber is this
+control's identity colour (red is the edge WAF, purple Gateway Guardrails), so an external block cannot turn red.
+Deploy `3b0c3489-ad51-48c8-b045-ef4daa511597`.
+
+**Fix** (`pillClass`, shared by all three layouts): verdicts differ by fill and shape, not only hue.
+
+| Verdict | Pill |
+|---|---|
+| Block | the only **solid** pill: amber fill, dark `#1a1206` text. Measured 9.94:1 dark, 5.82:1 light |
+| Allow, clean | green outline |
+| Allow with a caveat | amber outline |
+| No verdict | **dashed** amber |
+| Not run | dashed grey |
+
+**Findings** are amber only on a block; an allow's findings (what it redacted or alerted on) are neutral text
+and neutral chips. Verified in the browser on the user's exact case (computed colours read back in both themes)
+and in the columns layout with a no-verdict vendor added. The control strip already distinguished them (blocked
+= filled amber, "passed · partial" = green); unchanged. Gates: 612. Prod: smoke all pass; both new class
+strings are in the bundle.
+
 ### 2026-10-06 — Cato `anonymize_action`; a PII test sample; the table's "N more" count
 
 **Asked:** "why cato return no verdict? can you check with real response on what data field can be used?". The

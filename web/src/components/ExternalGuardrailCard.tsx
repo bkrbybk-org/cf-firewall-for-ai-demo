@@ -36,12 +36,34 @@ const EXPLAIN_GUARDRAIL_ONLY = `${WHERE_IT_RUNS} The model was not called, so th
 
 const MAX_CHIPS = 3;
 
+// Verdicts are told apart by FILL AND SHAPE, not only hue. Amber stays this control's
+// colour (red is the edge WAF, purple AI Gateway Guardrails), so a block cannot turn red
+// here — and with every non-green verdict in amber outline, a block and a caveated allow
+// read as the same thing side by side (reported 2026-10-06 on the table layout). Now:
+//   block                      solid amber, dark text — the one filled pill
+//   allow, complete            green outline
+//   allow with a caveat        amber outline (redaction not applied, alerts only, incomplete)
+//   no verdict (error)         DASHED amber outline — something to notice, but not a verdict
+//   did not run                dashed grey
+// Fill vs outline vs dashed survives colour blindness and greyscale; hue alone did not.
 function pillClass(v: VendorView): string {
   if (v.state === "notRun") return "border-dashed border-line text-muted";
-  // An allow that covers less than it reads (incomplete scan, redaction not applied)
-  // is amber, never the green of a complete pass.
+  if (v.state === "block") return "border-cf-amber bg-cf-amber text-[#1a1206]";
   if (v.state === "allow" && !v.partial) return "border-cf-green/50 bg-cf-green/10 text-cf-green";
-  return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
+  if (v.state === "allow") return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
+  return "border-dashed border-cf-amber/70 text-cf-amber";
+}
+
+// Findings in amber only when they caused a block. An allow's findings — what a
+// vendor redacted or only alerted on — are information, not the reason for a stop,
+// and painting them amber made an allow read like a block.
+function findingText(v: VendorView): string {
+  return v.state === "block" ? "font-semibold text-cf-amber" : "font-medium text-text";
+}
+function findingChip(v: VendorView): string {
+  return v.state === "block"
+    ? "border-cf-amber/60 bg-cf-amber/10 font-bold text-cf-amber"
+    : "border-line bg-surface-2 font-semibold text-text";
 }
 
 // "decided": the one result that stopped the turn. "blocked independently": parallel mode,
@@ -95,7 +117,7 @@ function VendorColumn({ v }: { v: VendorView }) {
           {chips.map((f) => (
             <span
               key={f}
-              className="max-w-full rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold break-words text-cf-amber"
+              className={`max-w-full rounded-full border px-2 py-0.5 text-[10.5px] break-words ${findingChip(v)}`}
             >
               {f}
             </span>
@@ -225,7 +247,7 @@ function CompactRow({ v }: { v: VendorView }) {
         </span>
         <Marker v={v} />
         {v.findings.length > 0 && (
-          <span className="min-w-0 text-[11.5px] font-semibold break-words text-cf-amber">{v.findings.join(", ")}</span>
+          <span className={`min-w-0 text-[11.5px] break-words ${findingText(v)}`}>{v.findings.join(", ")}</span>
         )}
         {/* A guardrail that never ran has one thing to say — why — so it stays on the row. */}
         {reason && <span className="min-w-0 text-[11.5px] break-words text-muted">{reason}</span>}
@@ -351,9 +373,9 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
     },
     {
       label: "Detections",
-      render: ({ c }) =>
+      render: ({ v, c }) =>
         Array.isArray(c.detections) ? (
-          <ul className="flex flex-col gap-0.5 font-semibold text-cf-amber">
+          <ul className={`flex flex-col gap-0.5 ${findingText(v)}`}>
             {c.detections.map((d) => (
               <li key={d}>{breakable(d)}</li>
             ))}
