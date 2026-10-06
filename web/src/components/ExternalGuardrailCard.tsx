@@ -13,6 +13,7 @@
 // pipelineView() (lib/guardrailView.ts), so no layout re-decides what a result means.
 import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Shield, ShieldAlert } from "lucide-react";
+import { GuardrailRawResponses } from "./GuardrailRawResponses";
 import { GuardrailReportPanel } from "./GuardrailReportPanel";
 import { DEFAULT_CARD_LAYOUT, type CardLayout } from "../lib/cardLayout";
 import {
@@ -497,7 +498,7 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
   );
 }
 
-function PipelineBody({ view, layout }: { view: PipelineView; layout: CardLayout }) {
+function PipelineBody({ view, layout, pipeline }: { view: PipelineView; layout: CardLayout; pipeline: GuardrailPipelineResult }) {
   const withReport = view.vendors.filter((v) => v.reportId);
   return (
     <>
@@ -535,6 +536,7 @@ function PipelineBody({ view, layout }: { view: PipelineView; layout: CardLayout
       {withReport.map((v) => (
         <GuardrailReportPanel key={v.reportId} reportId={v.reportId!} />
       ))}
+      <GuardrailRawResponses pipeline={pipeline} />
     </>
   );
 }
@@ -549,7 +551,7 @@ export function ExternalGuardrailBlockedCard({
   const view = pipelineView(pipeline, "blocked");
   return (
     <CardShell view={view} explainer={EXPLAIN_BLOCKED}>
-      <PipelineBody view={view} layout={layout} />
+      <PipelineBody view={view} layout={layout} pipeline={pipeline} />
     </CardShell>
   );
 }
@@ -578,7 +580,7 @@ export function GuardrailOnlyCard({
   const view = pipelineView(pipeline, "guardrailOnly");
   return (
     <CardShell view={view} explainer={EXPLAIN_GUARDRAIL_ONLY}>
-      <PipelineBody view={view} layout={layout} />
+      <PipelineBody view={view} layout={layout} pipeline={pipeline} />
     </CardShell>
   );
 }

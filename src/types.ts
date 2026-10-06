@@ -94,6 +94,10 @@ export interface ChatRequestBody {
   // Skip writing this turn to the D1 prompt_log table. App-level, both routes —
   // unrelated to AI Gateway's own request log (collectLog above).
   excludeFromLog?: unknown;
+  // true → each external guardrail result carries the vendor's raw response body
+  // (`raw`), for this response only, in the JSON body only — never in the
+  // x-external-guardrails header and never stored (src/externalGuardrails.ts).
+  includeRaw?: unknown;
 }
 
 export interface VerdictResult {
@@ -329,6 +333,17 @@ export interface ExternalGuardrailResult {
   summary?: string;
   transformed?: boolean;
   detectOnly?: boolean;
+  // Only when the chat request asked for it (`includeRaw`): the vendor's response
+  // as it came back. It can quote the prompt and what the vendor detected, so it is
+  // sent to the requester in the JSON body and nowhere else — see stripRaw().
+  raw?: GuardrailRawResponse;
+}
+
+export interface GuardrailRawResponse {
+  status: number;
+  body: unknown; // parsed JSON, or the text when the body was not JSON
+  json: boolean;
+  truncated: boolean; // the body was longer than RAW_MAX_CHARS and was cut (then never JSON)
 }
 
 export interface GuardrailReportDetection {

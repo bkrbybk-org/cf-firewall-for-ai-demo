@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **612 across 38 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **617 across 39 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,53 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — raw vendor responses (opt-in); columns layout checked
+
+**Asked for:** "check ui bugs on columns layout, and add option to view raw response from external guardrails".
+Deploy `95d28bc5-f77d-4aa0-b98f-e5db0298cee8`.
+
+**Columns layout**, stress-tested with a sequential run (allow with policy, a five-detection detect-only allow, a
+caveated anonymize allow, a fail-closed timeout marked DECIDED, a not-run vendor):
+- No element overflows its box at 1680 px. At 375 px light: one grid column (270 px), nothing escapes the card, no
+  page overflow.
+- Every state renders distinctly with the fill/shape pills from the previous entry.
+- No bug found, so no columns-specific change.
+
+**Raw responses — design** (privacy first; a raw body echoes the prompt and what the vendor detected):
+- **Opt-in, per viewer.** A switch on `/guardrails` (`guardrailRawResponses`, off unless exactly `on`). It makes
+  this viewer's chat send `includeRaw: true`; nobody else's requests change.
+- **Server** (`externalGuardrails.ts`): `runPipeline(…, { captureRaw })` wraps each provider's fetch, records the
+  **response** body (never the request, which carries the key), capped at `RAW_MAX_CHARS` = 32,000 and marked when
+  cut. Best effort: reading the copy cannot alter or fail the verdict.
+- **Transport:** `stripRaw()` builds the `x-external-guardrails` header, so raw rides only in JSON bodies. A
+  streamed reply has none, and the card says so instead of showing nothing.
+- **Never stored:** the prompt log stores no pipeline; saved runs and the export copy named fields; red-team never
+  sends the flag.
+- **UI** (`GuardrailRawResponses.tsx`): a collapsed "Raw responses (N)" under the card and under an allowed reply.
+  Each body shows its status, formatted JSON, and Copy. When the clipboard is refused, the label says
+  "Selected — press ⌘C" and the text is selected (found in the preview pane, where the clipboard is blocked).
+- **API:** `ChatRequest.includeRaw` and `ExternalGuardrailResult.raw` in openapi; the request-field drift test
+  passes.
+
+**Tests:** +2 server (raw only when asked; identical verdict; no key; `stripRaw` copies; text and oversized
+bodies) and +3 web (the switch parses only `on`). Gates: 617 across 39 files.
+
+**Browser:**
+- `includeRaw: true` captured in the outgoing request.
+- The panel lists only vendors that returned a body; long bodies scroll inside a `relative` `pre`; the chat
+  wrapper is still not scrollable.
+- A reply without raw shows the streamed-reply note.
+- The `/guardrails` switch renders with `aria-pressed`.
+
+**Prod, real vendors** (benign prompt, `excludeFromLog`):
+- With the flag, CrowdStrike, Cato and Prisma each returned raw (HTTP 200, JSON, not cut). Top-level keys seen
+  live: AIDR `request_id, request_time, response_time, status, summary, result`; Cato `analysis_result,
+  required_action, redacted_chat, invocation_id`; Prisma `action, category, error, errors, profile_id,
+  profile_name…`.
+- The header had no `raw` (880 bytes).
+- Without the flag, no result carried `raw`.
+- Smoke all pass.
 
 ### 2026-10-06 — guardrail card: a block and an allow no longer look alike
 

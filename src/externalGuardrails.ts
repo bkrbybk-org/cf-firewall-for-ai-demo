@@ -38,6 +38,7 @@ import type {
   GuardrailPipelineConfig,
   GuardrailPipelineMode,
   GuardrailPipelineResult,
+  GuardrailRawResponse,
 } from "./types";
 
 // ── provider registry ────────────────────────────────────────────────────────
@@ -503,8 +504,57 @@ export async function executePipeline(
   return { mode, guardrailOnly, results, notRun, stoppedBy, latencyMs: now() - started };
 }
 
+// ── raw responses (opt-in, per request) ─────────────────────────────────────
+// The chat card can show each vendor's response as it came back, for whoever asked
+// (`includeRaw` on their own /api/chat call). What is recorded is the RESPONSE body
+// only — never the request, which carries the API key — and it can quote the prompt
+// and whatever the vendor detected (Cato's `detection_message` repeats the SSN). So it
+// rides in that one JSON response and nowhere else: stripRaw() keeps it out of the
+// x-external-guardrails header, and nothing that stores or exports a pipeline reads
+// it (the prompt log stores no pipeline; saved runs and exports pick fields).
+export const RAW_MAX_CHARS = 32_000;
+
+async function readRaw(res: Response): Promise<GuardrailRawResponse> {
+  const text = await res.clone().text();
+  if (text.length > RAW_MAX_CHARS) return { status: res.status, body: text.slice(0, RAW_MAX_CHARS), json: false, truncated: true };
+  try {
+    return { status: res.status, body: JSON.parse(text), json: true, truncated: false };
+  } catch {
+    return { status: res.status, body: text, json: false, truncated: false };
+  }
+}
+
+// Wraps one provider's fetch so its last response is kept. Best effort: reading the
+// copy can never change or fail the verdict, which is parsed from the original.
+function recordingFetch(base: typeof fetch, sink: { raw?: GuardrailRawResponse }): typeof fetch {
+  return async (input, init) => {
+    const res = await base(input, init);
+    try {
+      sink.raw = await readRaw(res);
+    } catch {
+      // no raw for this one; the verdict is unaffected
+    }
+    return res;
+  };
+}
+
+export function stripRaw(p: GuardrailPipelineResult): GuardrailPipelineResult {
+  return { ...p, results: p.results.map(({ raw: _raw, ...r }) => r) };
+}
+
 // The real scan for one stored provider config.
-async function scanProvider(env: Env, c: StoredConfig, input: ForwardInput, fetchImpl: typeof fetch): Promise<ExternalGuardrailResult> {
+async function scanProvider(
+  env: Env,
+  c: StoredConfig,
+  input: ForwardInput,
+  fetchImpl: typeof fetch,
+  captureRaw = false,
+): Promise<ExternalGuardrailResult> {
+  if (captureRaw) {
+    const sink: { raw?: GuardrailRawResponse } = {};
+    const r = await scanProvider(env, c, input, recordingFetch(fetchImpl, sink));
+    return sink.raw ? { ...r, raw: sink.raw } : r;
+  }
   const resolve = (r: ExternalGuardrailResult): ExternalGuardrailResult =>
     r.outcome === "error" && c.failMode === "allow" ? { ...r, failedOpen: true } : r;
   if (!c.apiKeyEnc) return resolve({ provider: c.provider, outcome: "error", error: "No API key saved", latencyMs: 0 });
@@ -567,6 +617,7 @@ export async function runPipeline(
   env: Env,
   input: ForwardInput,
   fetchImpl: typeof fetch = fetch,
+  opts: { captureRaw?: boolean } = {},
 ): Promise<GuardrailPipelineResult | null> {
   if (!env.DB) return null;
   let pipeline: GuardrailPipelineConfig;
@@ -587,5 +638,7 @@ export async function runPipeline(
     return null;
   }
   if (enabled.length === 0 && !pipeline.guardrailOnly) return null;
-  return executePipeline(enabled, pipeline.mode, pipeline.guardrailOnly, (c) => scanProvider(env, c, input, fetchImpl));
+  return executePipeline(enabled, pipeline.mode, pipeline.guardrailOnly, (c) =>
+    scanProvider(env, c, input, fetchImpl, opts.captureRaw === true),
+  );
 }

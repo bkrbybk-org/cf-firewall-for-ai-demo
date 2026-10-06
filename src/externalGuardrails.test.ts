@@ -17,8 +17,10 @@ import {
   encryptSecret,
   executePipeline,
   normalizeOrder,
+  RAW_MAX_CHARS,
   runPipeline,
   stopsTurn,
+  stripRaw,
   toPublicConfig,
   validatePipelineUpdate,
   validateUpdate,
@@ -379,6 +381,41 @@ describe("runPipeline", () => {
     expect(seenUrl).toBe("https://service-de.api.aisecurity.paloaltonetworks.com/v1/scan/sync/request");
     expect(seenKey).toBe("the-real-key");
     expect(r?.results[0].outcome).toBe("allow");
+  });
+
+  // The opt-in debug view. The raw body can quote the prompt and what the vendor found,
+  // so it exists only when asked for, never includes the request (it carries the key),
+  // and stripRaw() — what the x-external-guardrails header is built from — removes it.
+  it("records the vendor's raw response only when asked, and stripRaw removes it", async () => {
+    const body = { action: "block", category: "malicious", prompt_detected: { injection: true }, echo: "the prompt text" };
+    const fetchImpl = (async () => Response.json(body)) as typeof fetch;
+    const input = { prompt: "p", model: "m", ray: "abc" };
+    const plain = await runPipeline(await envWith(await storedRow()), input, fetchImpl);
+    expect(plain!.results[0].raw).toBeUndefined();
+
+    const withRaw = await runPipeline(await envWith(await storedRow()), input, fetchImpl, { captureRaw: true });
+    expect(withRaw!.results[0]).toMatchObject({ outcome: "block", raw: { status: 200, body, json: true, truncated: false } });
+    // The verdict is parsed exactly as without capture.
+    expect({ ...withRaw!.results[0], raw: undefined, latencyMs: 0 }).toEqual({ ...plain!.results[0], raw: undefined, latencyMs: 0 });
+    // Never the request: the key is nowhere in what is recorded.
+    expect(JSON.stringify(withRaw)).not.toContain("the-real-key");
+
+    const stripped = stripRaw(withRaw!);
+    expect(stripped.results[0].raw).toBeUndefined();
+    expect(JSON.stringify(stripped)).not.toContain("the prompt text");
+    expect(withRaw!.results[0].raw).toBeDefined(); // stripRaw copies, it does not mutate
+  });
+
+  it("keeps a non-JSON or oversized raw body as capped text, and an unreadable copy never costs the verdict", async () => {
+    const text = (async () => new Response("<html>bad gateway</html>", { status: 502 })) as typeof fetch;
+    const a = await runPipeline(await envWith(await storedRow()), { prompt: "p", model: "m", ray: null }, text, { captureRaw: true });
+    expect(a!.results[0]).toMatchObject({ outcome: "error", raw: { status: 502, body: "<html>bad gateway</html>", json: false } });
+
+    const huge = (async () => new Response(JSON.stringify({ action: "allow", pad: "x".repeat(RAW_MAX_CHARS) }))) as typeof fetch;
+    const b = await runPipeline(await envWith(await storedRow()), { prompt: "p", model: "m", ray: null }, huge, { captureRaw: true });
+    expect(b!.results[0].outcome).toBe("allow");
+    expect(b!.results[0].raw).toMatchObject({ json: false, truncated: true });
+    expect((b!.results[0].raw!.body as string).length).toBe(RAW_MAX_CHARS);
   });
 
   it("marks an error as failed-open only when the fail mode says allow", async () => {

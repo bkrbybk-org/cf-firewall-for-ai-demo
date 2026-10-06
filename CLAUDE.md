@@ -213,6 +213,10 @@ alters what a customer sees in a demo. State it and let them choose.
   `el.scrollTo` on the list itself, **never `scrollIntoView`**: it also scrolls every ancestor, including an
   `overflow-hidden` one nobody can scroll back. This stranded the whole page once (2026-08) and the chat transcript
   once (2026-10-06).
+- **Raw vendor responses** (`ExternalGuardrailResult.raw`, opt-in via `includeRaw`) can quote the prompt and detected
+  PII. They travel only in that one JSON response: never in the `x-external-guardrails` header (`stripRaw()`), never
+  in the prompt log, saved runs or exports. Anything new that stores or forwards a pipeline must pick named fields
+  or call `stripRaw()`, never pass the object through whole.
 - **Errors reaching the client** go through `src/publicError.ts`: throw a `PublicError` for a message written for
   the operator; return `clientError(err, "What")` from a catch (logs it whole, shows only what failed);
   `aiErrorText(err)` for Workers AI. Never `error: err.message` — D1 errors quote SQL, and a local one once

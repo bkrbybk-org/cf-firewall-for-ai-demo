@@ -214,6 +214,17 @@ export interface ExternalGuardrailResult {
   // `flagged` is forced false and the outcome is allow. "Allow with alerts" — never
   // rendered as a clean pass, never as a block.
   detectOnly?: boolean;
+  // Present only when this viewer asked for raw responses (includeRaw) and the turn came
+  // back as JSON: the vendor's response as it arrived. It can quote the prompt and what
+  // the vendor detected — shown, never stored or exported.
+  raw?: GuardrailRawResponse;
+}
+
+export interface GuardrailRawResponse {
+  status: number;
+  body: unknown; // parsed JSON, or the text when the body was not JSON
+  json: boolean;
+  truncated: boolean;
 }
 
 export interface ExternalGuardrailRegion {

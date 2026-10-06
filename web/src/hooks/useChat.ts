@@ -8,6 +8,7 @@
 import { useCallback, useRef } from "react";
 import { postChat, type GatewayBackoff } from "../lib/api";
 import { buildHistory, estimateCost, estimateUsage } from "../lib/chatHistory";
+import { showRawResponses } from "./useShowRawResponses";
 import { parseEdgeBlock } from "../lib/edgeBlock";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
@@ -222,6 +223,7 @@ export function useChat(cfg: {
           routeMetadata: gateway ? parseMetadata(routeMetadata) : undefined,
           ...(gateway ? gatewaySettings : {}),
           excludeFromLog: excludeFromLog || undefined,
+          includeRaw: showRawResponses() || undefined,
         },
         (tok) => {
           if (!streamStarted) {

@@ -35,6 +35,7 @@ import {
   save,
   savePipeline,
   scanWithKey,
+  stripRaw,
   toPublicConfig,
   validatePipelineUpdate,
   validateUpdate,
@@ -544,6 +545,9 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // (the gateway's request log) from a different route (only exists on the
   // gateway path). This one is app-level and applies to both routes.
   let excludeFromLog = false;
+  // The requester asked for each guardrail vendor's raw response (a debug view). It
+  // goes back in this response's JSON body only — see stripRaw() below.
+  let includeRaw = false;
   // Remaining per-request AI Gateway REST settings — all optional, all no-ops
   // unless `gateway` is true. See runGatewayRest for how each becomes a header.
   let cacheTtl: number | undefined;
@@ -569,6 +573,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     history = sanitizeHistory(body.history);
     if (body.stream === true) stream = true;
     if (body.excludeFromLog === true) excludeFromLog = true;
+    if (body.includeRaw === true) includeRaw = true;
     if (body.gateway === true) gateway = true;
     if (typeof body.skipCache === "boolean") skipCache = body.skipCache;
     if (typeof body.gatewayId === "string") requestedGatewayId = body.gatewayId;
@@ -688,12 +693,15 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // edge scan (which happened before this Worker was invoked) and BEFORE the
   // model, on both routes. null when no provider is enabled and guardrail-only
   // is off, in which case nothing below changes.
-  const external = await runPipeline(env, { prompt, model, ray });
+  const external = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw });
   // Carried on every response from here on, so the client can show the verdicts
   // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
-  // because a header value must stay within Latin-1.
+  // because a header value must stay within Latin-1. NEVER with raw responses:
+  // up to 32 KB per vendor would outgrow a header, and a header is the copy most
+  // likely to be logged along the way. Raw rides in the JSON bodies below only, so a
+  // streamed reply has none — the card says so rather than inventing a channel.
   const extHeaders: Record<string, string> = external
-    ? { "x-external-guardrails": encodeURIComponent(JSON.stringify(external)) }
+    ? { "x-external-guardrails": encodeURIComponent(JSON.stringify(stripRaw(external))) }
     : {};
   if (external?.stoppedBy) {
     // A 200, deliberately not a 403: 403 on this route means the edge WAF, and

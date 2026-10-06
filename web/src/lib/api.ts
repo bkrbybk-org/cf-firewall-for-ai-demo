@@ -250,6 +250,9 @@ export interface ChatRequest {
   // Skip writing this turn to the D1 prompt_log table. Both routes — unrelated
   // to AI Gateway's own request log (collectLog above).
   excludeFromLog?: boolean;
+  // Ask for each guardrail vendor's raw response (this viewer's debug switch). It comes
+  // back in a JSON body only — a streamed reply carries none.
+  includeRaw?: boolean;
 }
 
 // Non-stream result: status + raw text + parsed JSON (block pages aren't JSON).

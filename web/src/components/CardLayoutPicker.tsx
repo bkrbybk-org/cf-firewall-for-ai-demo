@@ -4,6 +4,7 @@
 // server and nothing anyone else sees.
 import { useState } from "react";
 import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
+import { useShowRawResponses } from "../hooks/useShowRawResponses";
 import type { CardLayout } from "../lib/cardLayout";
 
 const OPTIONS: { id: CardLayout; label: string; hint: string }[] = [
@@ -47,6 +48,44 @@ export function CardLayoutPicker() {
           ? "This browser would not save the choice — it applies until you reload."
           : "How the chat shows a turn an external guardrail stopped. Saved in this browser only; it changes nothing for anyone else."}
       </p>
+      <RawResponsesSwitch />
     </section>
+  );
+}
+
+// The raw-response debug view: asks this viewer's own chat requests for each vendor's
+// response body. Off by default; the warning is part of the control, not a footnote.
+function RawResponsesSwitch() {
+  const [on, setOn] = useShowRawResponses();
+  const [saved, setSaved] = useState<boolean | null>(null);
+  return (
+    <div className="mt-3 border-t border-line pt-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <h2 id="raw-switch-label" className="text-[13px] font-bold text-text">
+          Raw vendor responses
+        </h2>
+        <div role="group" aria-labelledby="raw-switch-label" className="inline-flex overflow-hidden rounded-full border border-line">
+          {[false, true].map((v) => (
+            <button
+              key={String(v)}
+              type="button"
+              aria-pressed={on === v}
+              onClick={() => setSaved(setOn(v))}
+              className={`px-3 py-1.5 text-[12.5px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                on === v ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
+              }`}
+            >
+              {v ? "On" : "Off"}
+            </button>
+          ))}
+        </div>
+        <span className="text-[12px] text-muted">a "Raw responses" panel under each chat turn the guardrails scanned</span>
+      </div>
+      <p aria-live="polite" className="mt-1.5 text-[11.5px] text-subtle">
+        {saved === false
+          ? "This browser would not save the choice — it applies until you reload."
+          : "Each vendor's response body as it came back — it can include your prompt and anything the vendor detected. Only your own chat asks for it; it is not stored, logged or exported. Not available on streamed replies (no JSON body to carry it)."}
+      </p>
+    </div>
   );
 }
