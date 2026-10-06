@@ -6,7 +6,12 @@ import { Link } from "react-router-dom";
 import { TriangleAlert } from "lucide-react";
 import { Card } from "../analytics/primitives";
 import type { RedTeamAttack, RtRunResult } from "../../lib/redteam";
-import type { ControlScore, VendorScorecard as VendorScorecardData } from "../../lib/vendorScorecard";
+import {
+  balancedAccuracy,
+  type ControlScore,
+  type FalseBlockScore,
+  type VendorScorecard as VendorScorecardData,
+} from "../../lib/vendorScorecard";
 import { VendorBenchmark } from "./VendorBenchmark";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -32,7 +37,33 @@ function CatchRate({ c }: { c: ControlScore }) {
   );
 }
 
-function Row({ c }: { c: ControlScore }) {
+// False blocks on the harmless rows: "—" when this control checked none of them
+// (the edge refused them first, or it errored) — never 0%.
+function FalseBlockCell({ fb }: { fb: FalseBlockScore | undefined }) {
+  if (!fb || fb.falseBlockPct === null) {
+    return (
+      <span className="text-subtle" title="checked none of the harmless prompts">
+        —
+      </span>
+    );
+  }
+  const title =
+    `${fb.blocked} of ${fb.checked} harmless prompts blocked` +
+    (fb.alerts ? ` · ${fb.alerts} alerted but let through` : "") +
+    (fb.notSeen ? ` · ${fb.notSeen} never reached it` : "") +
+    (fb.errors ? ` · ${fb.errors} could not be consulted` : "");
+  return (
+    <span title={title}>
+      <span className={fb.blocked > 0 ? "font-semibold text-text" : "text-text"}>{fb.falseBlockPct}%</span>{" "}
+      <span className="text-[10px] text-muted">
+        {fb.blocked}/{fb.checked}
+      </span>
+    </span>
+  );
+}
+
+function Row({ c, fb, showFb }: { c: ControlScore; fb?: FalseBlockScore; showFb: boolean }) {
+  const balanced = balancedAccuracy(c, fb);
   const notScored = c.errors + c.notSeen + c.notRun;
   // The accent is the control's own colour (edge red, guardrails amber) so a
   // row never borrows another control's identity.
@@ -58,6 +89,23 @@ function Row({ c }: { c: ControlScore }) {
       >
         {notScored}
       </td>
+      {showFb && (
+        <>
+          <td className={`${num} text-muted`}>
+            <FalseBlockCell fb={fb} />
+          </td>
+          <td
+            className={`${num} ${balanced === null ? "text-subtle" : "font-semibold text-text"}`}
+            title={
+              balanced === null
+                ? "needs at least one attack and one harmless prompt scanned by this control"
+                : "mean of catch rate (attacks) and pass rate (harmless prompts)"
+            }
+          >
+            {balanced === null ? "—" : `${balanced}%`}
+          </td>
+        </>
+      )}
     </tr>
   );
 }
@@ -65,22 +113,32 @@ function Row({ c }: { c: ControlScore }) {
 export function VendorScorecard({
   card,
   corpus,
+  benignCorpus,
+  falseBlocks,
+  benignBlocked,
   results,
   labels,
 }: {
-  card: VendorScorecardData;
-  corpus: RedTeamAttack[];
+  card: VendorScorecardData; // attack rows only
+  corpus: RedTeamAttack[]; // attack rows with a result
+  benignCorpus: RedTeamAttack[]; // harmless rows with a result
+  falseBlocks: FalseBlockScore[] | null; // null when the run had no harmless rows
+  benignBlocked: number;
   results: Map<string, RtRunResult>;
   labels: Record<string, string>;
 }) {
-  // Only the edge: no guardrail ran, and the existing scorecard already covers it.
-  if (card.controls.length <= 1) return null;
+  // Only the edge and no harmless rows: no guardrail ran, and the scorecard above
+  // already covers the edge alone. With harmless rows the edge's false blocks are
+  // news the scorecard does not show, so the card stays.
+  if (card.controls.length <= 1 && !falseBlocks) return null;
+  const showFb = !!falseBlocks;
+  const fbOf = (control: string) => falseBlocks?.find((f) => f.control === control);
 
   const sequential = card.modes.includes("sequential");
   const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
 
   return (
-    <Card title="Controls compared" subtitle="Each control scored only on the attacks it actually scanned — overall, then by topic or language">
+    <Card title="Controls compared" subtitle="Each control scored only on the prompts it actually scanned — overall, then by topic or language">
       {card.unevenCoverage && (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-cf-amber/40 bg-cf-amber/[0.08] px-3 py-2 text-[11.5px] leading-relaxed text-text">
           <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber" />
@@ -107,18 +165,22 @@ export function VendorScorecard({
               <th className={th}>Alerts only</th>
               <th className={th}>Only this control</th>
               <th className={th}>Not scored</th>
+              {showFb && <th className={th}>False blocks</th>}
+              {showFb && <th className={th}>Balanced</th>}
             </tr>
           </thead>
           <tbody>
             {card.controls.map((c) => (
-              <Row key={c.control} c={c} />
+              <Row key={c.control} c={c} fb={fbOf(c.control)} showFb={showFb} />
             ))}
           </tbody>
         </table>
       </div>
 
       <p className="mt-3 text-[12px] leading-relaxed text-muted">
-        {card.missedByAll === 0 ? (
+        {card.attacks === 0 ? (
+          "No attack rows in this run — only harmless prompts, so there is no catch rate to report."
+        ) : card.missedByAll === 0 ? (
           "Every attack that a control scanned was caught by at least one of them."
         ) : (
           <>
@@ -130,11 +192,35 @@ export function VendorScorecard({
         )}
       </p>
 
-      <VendorBenchmark corpus={corpus} results={results} controls={card.controls} labels={labels} />
+      {/* Over-blocking: catch rate alone rewards a control that blocks everything. */}
+      {falseBlocks ? (
+        <p className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          <span className="font-mono tabular-nums">{benignBlocked}</span> of{" "}
+          <span className="font-mono tabular-nums">{benignCorpus.length}</span> harmless{" "}
+          {plural(benignCorpus.length, "prompt was", "prompts were")} blocked by at least one control — a user asking that
+          would have been refused. <span className="text-text">Balanced</span> is the mean of catch rate and pass rate, so
+          blocking everything scores 50%, not 100%.
+        </p>
+      ) : (
+        <p className="mt-1.5 text-[11.5px] leading-relaxed text-subtle">
+          Catch rate alone rewards a control that blocks everything. Upload a CSV with an{" "}
+          <code className="font-mono">expected</code> column and some <code className="font-mono">allow</code> rows
+          (harmless prompts) to measure false blocks too.
+        </p>
+      )}
+
+      <VendorBenchmark
+        corpus={corpus}
+        benignCorpus={benignCorpus}
+        results={results}
+        controls={card.controls}
+        labels={labels}
+      />
 
       <p className="mt-2 text-[10.5px] leading-relaxed text-subtle">
         The edge scores every request that got a verdict; a guardrail never sees a prompt the edge refused. Detect-mode alerts
-        are not catches. Not stored with saved runs.
+        are not catches, and an alert on a harmless prompt is not a false block. Harmless rows are kept out of every attack
+        score. Not stored with saved runs.
       </p>
     </Card>
   );

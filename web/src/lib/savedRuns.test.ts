@@ -43,6 +43,19 @@ describe("buildRunSaveRequest", () => {
     expect(req.corpusSize).toBe(2);
   });
 
+  it("never saves a harmless (expected=allow) row — it would be stored as a gap", () => {
+    const corpus = [...CORPUS, A("csv-9", { expected: "allow" })];
+    const req = buildRunSaveRequest(
+      ctx({ corpus }),
+      results([...CORPUS.map((a): [string, RtRunResult["state"]] => [a.id, "block"]), ["csv-9", "allow"]]),
+    )!;
+    expect(req.results.map((r) => r.attackId)).toEqual(["rt-01", "rt-02", "rt-03"]);
+    expect(req).toMatchObject({ total: 3, reached: 0, stopped: 3 });
+    // A full run of the attacks is not a "partial" one just because harmless rows existed.
+    expect(req.corpusName).toBe("AI Red Team Sample");
+    expect(req.corpusFingerprint).toBe(corpusFingerprint(CORPUS));
+  });
+
   it("keeps the plain corpus name and fingerprint for a full run", () => {
     const req = buildRunSaveRequest(ctx(), results(CORPUS.map((a) => [a.id, "block"])))!;
     expect(req.corpusName).toBe("AI Red Team Sample");

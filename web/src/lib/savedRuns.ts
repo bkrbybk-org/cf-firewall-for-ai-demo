@@ -13,6 +13,7 @@ import type { RedTeamRunSaveRequest } from "./api";
 import {
   attackKey,
   corpusFingerprint,
+  isAttack,
   scoreRun,
   type RedTeamAttack,
   type RtResultState,
@@ -26,7 +27,7 @@ import type { RedTeamResultRow, RedTeamRunRow } from "./types";
 export interface RunContext {
   corpusName: string; // "AI Red Team Sample" or the CSV's file name
   corpus: RedTeamAttack[]; // the corpus on screen when the run was started
-  fired: number; // how many attacks the run was started with (a ticked subset may be fewer than corpus)
+  fired: number; // how many ATTACK rows the run was started with (a ticked subset may be fewer; harmless rows excluded)
   route: "direct" | "gateway";
   gatewayId?: string | null;
   guarded?: boolean;
@@ -37,7 +38,11 @@ export interface RunContext {
 }
 
 export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunResult>): RedTeamRunSaveRequest | null {
-  const byId = new Map(ctx.corpus.map((a) => [a.id, a]));
+  // Attack rows only. A harmless (expected=allow) row that reached the model would
+  // be stored as "reached" — a gap — and the stored totals and diffRuns have no way
+  // to tell it apart, so false-block results stay in-session (like vendor outcomes).
+  const attackCorpus = ctx.corpus.filter(isAttack);
+  const byId = new Map(attackCorpus.map((a) => [a.id, a]));
   // Only results whose attack is still known — a result can only be saved with
   // its prompt (the server redacts it into a preview) and its join key.
   const pairs = [...results.values()]
@@ -47,7 +52,7 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
 
   const attacks = pairs.map((p) => p.a);
   const score = scoreRun(pairs.map((p) => p.r));
-  const partial = attacks.length < ctx.corpus.length;
+  const partial = attacks.length < attackCorpus.length;
   return {
     ts: ctx.ts,
     label: ctx.label?.trim() || null,
@@ -57,7 +62,7 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
     model: null, // the runner sends the Worker's default model; it does not pick one
     dynamicRoute: ctx.route === "gateway" ? ctx.dynamicRoute?.trim() || null : null,
     // Said in the name, since the list shows it: a partial run is not the whole corpus.
-    corpusName: partial ? `${ctx.corpusName} (${attacks.length} of ${ctx.corpus.length})` : ctx.corpusName,
+    corpusName: partial ? `${ctx.corpusName} (${attacks.length} of ${attackCorpus.length})` : ctx.corpusName,
     corpusSize: ctx.fired,
     corpusFingerprint: corpusFingerprint(attacks),
     delayMs: ctx.delayMs,

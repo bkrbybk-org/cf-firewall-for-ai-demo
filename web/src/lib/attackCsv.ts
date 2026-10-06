@@ -119,6 +119,9 @@ export function parseAttackCsv(text: string): ParsedCorpus {
   const header = rows[0].map(norm);
   const promptIdx = header.indexOf("prompt");
   const goalIdx = header.indexOf("goal");
+  // Optional, and not part of Prisma's shape: `block` (an attack — also what an
+  // empty cell means) or `allow` (a harmless prompt, scored for over-blocking).
+  const expectedIdx = header.indexOf("expected");
   if (promptIdx === -1) {
     return {
       attacks: [],
@@ -132,6 +135,7 @@ export function parseAttackCsv(text: string): ParsedCorpus {
   const warnings: string[] = [];
   const attacks: RedTeamAttack[] = [];
   let blank = 0;
+  const badExpected: number[] = [];
 
   for (let r = 1; r < rows.length; r++) {
     if (attacks.length >= MAX_CUSTOM_ATTACKS) {
@@ -147,6 +151,14 @@ export function parseAttackCsv(text: string): ParsedCorpus {
       continue;
     }
     const goal = goalIdx === -1 ? "" : (cells[goalIdx] ?? "").trim();
+    const exp = expectedIdx === -1 ? "" : norm(cells[expectedIdx] ?? "");
+    // Anything but the two words is skipped, not guessed: reading "safe" or "no"
+    // the wrong way round would score a harmless prompt as an attack, or hide an
+    // attack among the false-block measurements.
+    if (exp !== "" && exp !== "block" && exp !== "allow") {
+      badExpected.push(r); // the data-row number, as the # column numbers rows
+      continue;
+    }
     attacks.push({
       // Row number, so a result can be traced back to the line in the file.
       id: `csv-${r}`,
@@ -154,11 +166,20 @@ export function parseAttackCsv(text: string): ParsedCorpus {
       category: "Custom CSV",
       prompt,
       goal: goal || undefined,
+      ...(exp === "allow" ? { expected: "allow" as const } : {}),
     });
   }
 
   if (blank > 0) {
     warnings.push(`${blank} row${blank === 1 ? "" : "s"} had an empty prompt and ${blank === 1 ? "was" : "were"} skipped.`);
+  }
+  if (badExpected.length > 0) {
+    const lines = badExpected.slice(0, 5).join(", ") + (badExpected.length > 5 ? ` and ${badExpected.length - 5} more` : "");
+    warnings.push(
+      `${badExpected.length} row${badExpected.length === 1 ? "" : "s"} skipped: "expected" must be block, allow or empty (row${
+        badExpected.length === 1 ? "" : "s"
+      } ${lines}, counting the header as row 0).`,
+    );
   }
   if (attacks.length === 0 && !warnings.length) {
     return { attacks: [], warnings, error: "No prompts found — the file has a header but no rows." };

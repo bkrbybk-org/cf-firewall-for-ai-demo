@@ -36,13 +36,14 @@ import { PROVIDER_LABELS } from "../lib/guardrailView";
 import { buildRunSaveRequest, type RunContext } from "../lib/savedRuns";
 import { useStore } from "../lib/sessionStore";
 import type { GatewayOption } from "../lib/types";
-import { vendorScorecard } from "../lib/vendorScorecard";
+import { countBlockedByAny, falseBlockScores, providersIn, vendorScorecard } from "../lib/vendorScorecard";
 import {
   RT_CORPUS,
   SEVERITY_RANK,
   byCategory,
   estimateRunSeconds,
   formatDuration,
+  isAttack,
   bySeverity,
   scoreRun,
   type RedTeamAttack,
@@ -296,7 +297,7 @@ export function RedTeamPage() {
     setRunCtx((prev) => ({
       key: (prev?.key ?? 0) + 1,
       ts: Date.now(),
-      fired: toRun.length,
+      fired: toRun.filter(isAttack).length,
       route,
       gatewayId: cfg.gatewayId ?? null,
       guarded: route === "gateway" && !!gateways.find((g) => g.id === gatewayId)?.guarded,
@@ -325,8 +326,32 @@ export function RedTeamPage() {
   const allTicked = selected.size === corpus.length && corpus.length > 0;
   const someTicked = selected.size > 0 && !allTicked;
 
-  const score = useMemo(() => scoreRun(resultList), [resultList]);
-  const vendorCard = useMemo(() => vendorScorecard(resultList, PROVIDER_LABELS), [resultList]);
+  // Harmless rows (a CSV's expected=allow) are split off HERE, once, and every attack
+  // metric below reads only the attack half: a harmless prompt that rightly reached
+  // the model must never count as "reached" in the headline, a breakdown, Close the
+  // gaps or a saved run. They are scored only as false blocks.
+  const attackIds = useMemo(() => new Set(corpus.filter(isAttack).map((a) => a.id)), [corpus]);
+  const attackResults = useMemo(
+    () => new Map([...results].filter(([id]) => attackIds.has(id))),
+    [results, attackIds],
+  );
+  const attackResultList = useMemo(() => [...attackResults.values()], [attackResults]);
+  const benignResultList = useMemo(() => resultList.filter((r) => !attackIds.has(r.id)), [resultList, attackIds]);
+  const attackCorpus = useMemo(() => corpus.filter(isAttack), [corpus]);
+  const benignCorpus = useMemo(() => corpus.filter((a) => !isAttack(a) && results.has(a.id)), [corpus, results]);
+  // One column set for both halves, so a guardrail that saw only one kind of row still lines up.
+  const providers = useMemo(() => providersIn(resultList), [resultList]);
+
+  const score = useMemo(() => scoreRun(attackResultList), [attackResultList]);
+  const vendorCard = useMemo(
+    () => vendorScorecard(attackResultList, PROVIDER_LABELS, providers),
+    [attackResultList, providers],
+  );
+  const falseBlocks = useMemo(
+    () => (benignResultList.length > 0 ? falseBlockScores(benignResultList, PROVIDER_LABELS, providers) : null),
+    [benignResultList, providers],
+  );
+  const benignBlocked = useMemo(() => countBlockedByAny(benignResultList, providers), [benignResultList, providers]);
   // Empty for a custom corpus — bySeverity drops unrated attacks rather than
   // inventing a bucket, and the card is hidden below when it comes back empty.
   // Scoped to attacks that actually produced a result, NOT the whole corpus.
@@ -334,7 +359,7 @@ export function RedTeamPage() {
   // a 5-attack subset against a 36-attack denominator would draw the miss rate
   // as a fraction of attacks that were never sent. Also keeps a stopped run
   // honest, where the same mismatch appears without any selection involved.
-  const scoredCorpus = useMemo(() => corpus.filter((a) => results.has(a.id)), [corpus, results]);
+  const scoredCorpus = useMemo(() => attackCorpus.filter((a) => results.has(a.id)), [attackCorpus, results]);
   const sevRows = useMemo(() => bySeverity(scoredCorpus, results), [scoredCorpus, results]);
   const catRows = useMemo(() => byCategory(scoredCorpus, results), [scoredCorpus, results]);
 
@@ -378,6 +403,10 @@ export function RedTeamPage() {
         : `done — ${score.reachedPct}% reached the model (${score.reached}/${score.scored})${
             score.skipped > 0 ? `, ${score.skipped} not sent to it (guardrail-only)` : ""
           }`;
+  // Said apart from the attack figure, never folded into it.
+  if (phase === "done" && benignResultList.length > 0) {
+    phaseText += ` · ${benignResultList.length} harmless: ${benignBlocked} blocked by some control`;
+  }
   else if (phase === "stopped") phaseText = "stopped";
 
   const hasResults = results.size > 0;
@@ -428,7 +457,10 @@ export function RedTeamPage() {
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
               >
                 <Play size={13} /> {hasResults ? "Re-run" : "Run"} {toRun.length}{" "}
-                {selected.size > 0 ? "selected" : `attack${toRun.length === 1 ? "" : "s"}`}
+                {selected.size > 0
+                  ? "selected"
+                  : // Harmless rows are not attacks; say "prompts" rather than miscount them.
+                    `${toRun.every(isAttack) ? "attack" : "prompt"}${toRun.length === 1 ? "" : "s"}`}
               </button>
             )}
             {selected.size > 0 && !running && (
@@ -591,7 +623,9 @@ export function RedTeamPage() {
               </span>
             )}
             <span className="ml-auto text-[11.5px] text-subtle">
-              <code className="font-mono">prompt,goal</code> header · same shape as the Prisma AIRS upload
+              <code className="font-mono">prompt,goal</code> header · same shape as the Prisma AIRS upload · optional{" "}
+              <code className="font-mono">expected</code> column: <code className="font-mono">allow</code> marks a
+              harmless prompt, to measure false blocks
             </span>
           </div>
 
@@ -625,10 +659,20 @@ export function RedTeamPage() {
             </div>
           )}
 
-          {hasResults && <Scorecard score={score} bySeverityRows={sevRows} byCategoryRows={catRows} />}
+          {attackResults.size > 0 && <Scorecard score={score} bySeverityRows={sevRows} byCategoryRows={catRows} />}
           {/* Edge vs each external guardrail on the same attacks. Renders nothing when no
               guardrail ran (the scorecard above already covers the edge alone). */}
-          {hasResults && <VendorScorecard card={vendorCard} corpus={scoredCorpus} results={results} labels={PROVIDER_LABELS} />}
+          {hasResults && (
+            <VendorScorecard
+              card={vendorCard}
+              corpus={scoredCorpus}
+              benignCorpus={benignCorpus}
+              falseBlocks={falseBlocks}
+              benignBlocked={benignBlocked}
+              results={results}
+              labels={PROVIDER_LABELS}
+            />
+          )}
 
           {/* Results table */}
           <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">
@@ -733,8 +777,19 @@ export function RedTeamPage() {
                       {!isCustom && <td className="px-2.5 py-1.5 whitespace-nowrap text-muted">{a.category}</td>}
                       {/* max-w-0 + w-full lets the prompt absorb the slack and truncate. */}
                       <td className="w-full max-w-0 px-2.5 py-1.5">
-                        <div className="truncate text-text" title={a.prompt} lang={isCustom ? undefined : "th"}>
-                          {a.prompt}
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          {/* A harmless row reads the Edge result the other way round — a block is the mistake. */}
+                          {!isAttack(a) && (
+                            <span
+                              className="shrink-0 rounded-full border border-cf-green/60 px-1.5 py-px text-[10px] font-semibold text-cf-green"
+                              title="expected: allow — a harmless prompt. Blocking it is a false block; it is kept out of every attack score."
+                            >
+                              harmless
+                            </span>
+                          )}
+                          <div className="truncate text-text" title={a.prompt} lang={isCustom ? undefined : "th"}>
+                            {a.prompt}
+                          </div>
                         </div>
                       </td>
                       {isCustom && (
@@ -766,11 +821,11 @@ export function RedTeamPage() {
           {/* Recommended controls — the actionable half, derived from THIS run's results
               and checked against the zone's rules (the static scan-finding table it
               replaces could not say whether a rule already existed). */}
-          <GapControls corpus={corpus} results={results} />
+          <GapControls corpus={attackCorpus} results={attackResults} />
 
           <SavedRuns
             runKey={runCtx?.key ?? 0}
-            canSave={!!runCtx && !running && hasResults}
+            canSave={!!runCtx && !running && attackResults.size > 0}
             buildSave={(label) =>
               runCtx ? buildRunSaveRequest({ ...runCtx, corpusName, corpus, label }, results) : null
             }

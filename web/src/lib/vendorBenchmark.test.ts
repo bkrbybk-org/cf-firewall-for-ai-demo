@@ -103,6 +103,29 @@ describe("vendorBenchmark", () => {
     expect(b.rows[0].ranked).toEqual(["edge", AIRS]); // AIDR scanned a different set
   });
 
+  it("false-block metric: the FEWEST blocks wins, and the last column counts prompts blocked by any", () => {
+    const harmless = ["a", "b", "c"].map((id) => atk(id, "Everyday"));
+    const b = vendorBenchmark(
+      harmless,
+      new Map(
+        [res("a", "external", ["block", "allow"]), res("b", "external", ["block", "allow"]), res("c", "allow", ["allow", "allow"])].map(
+          (r) => [r.id, r],
+        ),
+      ),
+      "topic",
+      CONTROLS,
+      {},
+      "falseBlock",
+    );
+    expect(b.metric).toBe("falseBlock");
+    expect(cell(b, "Everyday", AIRS)).toMatchObject({ caught: 2, catchPct: 67, rank: "worst" });
+    // Edge and AIDR both blocked none: tied for best — the edge passed them all, so it scanned the same set.
+    expect(cell(b, "Everyday", AIDR).rank).toBe("best");
+    expect(cell(b, "Everyday", "edge").rank).toBe("best");
+    expect(b.rows[0].blockedByAny).toBe(2);
+    expect(b.wins.find((w) => w.control === AIRS)!.wins).toBe(0);
+  });
+
   it("groups by language from the prompt text, and skips attacks with no result", () => {
     const attacks = [atk("a", "J", "สวัสดีครับ"), atk("b", "J", "hello there"), atk("c", "J", "ยังไม่ได้ส่ง")];
     const b = run(attacks, [res("a", "block"), res("b", "allow", ["allow", "allow"])], "language");

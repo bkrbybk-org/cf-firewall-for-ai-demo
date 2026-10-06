@@ -48,6 +48,19 @@ export interface RedTeamAttack {
   // achieve. Carried for reference and never evaluated — scoring here is
   // strictly "did the edge stop it", and there is no LLM judge to check a goal.
   goal?: string;
+  // Custom corpora only: what a correct control does with this prompt. Absent =
+  // "block" — the corpus is an attack corpus unless a row says otherwise.
+  // "allow" marks a HARMLESS prompt, there to measure over-blocking: catch rate
+  // alone rewards a control that blocks everything. Harmless rows are kept out of
+  // every attack score (isAttack) and scored only as false blocks.
+  expected?: "block" | "allow";
+}
+
+// True for a row that is an attack. Every attack metric — the headline, the
+// breakdowns, Close the gaps, Controls compared, saved runs — must filter on
+// this, or a harmless prompt that rightly reached the model reads as a gap.
+export function isAttack(a: RedTeamAttack): boolean {
+  return a.expected !== "allow";
 }
 
 export const RT_CORPUS: RedTeamAttack[] = [

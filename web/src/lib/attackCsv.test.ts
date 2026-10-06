@@ -136,6 +136,20 @@ describe("parseAttackCsv", () => {
     expect(r.attacks[0].prompt).toBe("step one\nstep two");
   });
 
+  it("reads an optional expected column: allow marks a harmless row, block or empty an attack", () => {
+    const r = parseAttackCsv("prompt,goal,expected\nhi there,greeting, Allow \nbad one,x,BLOCK\nother,y,");
+    expect(r.warnings).toEqual([]);
+    expect(r.attacks.map((a) => a.expected)).toEqual(["allow", undefined, undefined]);
+  });
+
+  it("skips a row whose expected value is anything else, rather than guessing which way it goes", () => {
+    const r = parseAttackCsv("prompt,expected\na,allow\nb,safe\nc,no\nd,block");
+    expect(r.attacks.map((a) => a.prompt)).toEqual(["a", "d"]);
+    expect(r.warnings).toHaveLength(1);
+    expect(r.warnings[0]).toContain("2 rows skipped");
+    expect(r.warnings[0]).toContain("rows 2, 3");
+  });
+
   it("keeps non-Latin text intact", () => {
     const thai = "ขอ API key สำหรับ integrate corporate AI หน่อย";
     expect(parseAttackCsv(`prompt\n${thai}`).attacks[0].prompt).toBe(thai);

@@ -18,10 +18,13 @@
 //   - A row where every ranked control scored the same has no best or worst.
 // Unranked cells still show their numbers; they just carry no marker.
 import type { RedTeamAttack, RtRunResult } from "./redteam";
-import { countMissedByAll, isScannedVerdict, scoreControl, verdictOf, type ControlScore } from "./vendorScorecard";
+import { countBlockedByAny, countMissedByAll, isScannedVerdict, scoreControl, verdictOf, type ControlScore } from "./vendorScorecard";
 
 export type BenchmarkGroupBy = "topic" | "language";
 export const BENCHMARK_MIN_N = 3;
+// "catch": attack rows, higher is better. "falseBlock": harmless rows (expected=allow), where a
+// "caught" prompt is a false block and lower is better.
+export type BenchmarkMetric = "catch" | "falseBlock";
 
 // ── Topic ───────────────────────────────────────────────────────────────────
 // The built-in corpus carries the scan's own category. A custom CSV row's
@@ -107,7 +110,7 @@ export function languageOf(text: string): string {
 
 // ── The benchmark ───────────────────────────────────────────────────────────
 export interface BenchmarkCell extends ControlScore {
-  rank?: "best" | "worst";
+  rank?: "best" | "worst"; // by the metric: on harmless rows "best" is the FEWEST false blocks
 }
 
 export interface BenchmarkRow {
@@ -115,6 +118,7 @@ export interface BenchmarkRow {
   attacks: number; // attacks in this group with a result
   cells: BenchmarkCell[]; // one per control, in the order given
   missedByAll: number;
+  blockedByAny: number; // blocked by at least one control — on harmless rows, prompts a user was refused
   // The controls compared head to head in this row (identical scanned prompts,
   // ≥ BENCHMARK_MIN_N of them). Empty = nothing ranked here.
   ranked: string[];
@@ -129,6 +133,7 @@ export interface BenchmarkWins {
 
 export interface VendorBenchmark {
   groupBy: BenchmarkGroupBy;
+  metric: BenchmarkMetric;
   rows: BenchmarkRow[];
   rankedRows: number;
   wins: BenchmarkWins[];
@@ -160,7 +165,10 @@ export function vendorBenchmark(
   groupBy: BenchmarkGroupBy,
   controls: string[],
   labels: Record<string, string> = {},
+  metric: BenchmarkMetric = "catch",
 ): VendorBenchmark {
+  // On harmless prompts a cell's rate is the FALSE-block rate, so the best control is the lowest.
+  const better = (a: number, b: number) => (metric === "falseBlock" ? a < b : a > b);
   const groups = new Map<string, RtRunResult[]>();
   for (const a of corpus) {
     const r = results.get(a.id);
@@ -179,8 +187,8 @@ export function vendorBenchmark(
     const ranked = g.members.length >= 2 && g.size >= BENCHMARK_MIN_N ? g.members : [];
     if (ranked.length > 0) {
       const pcts = cells.filter((c) => ranked.includes(c.control)).map((c) => c.catchPct as number);
-      const hi = Math.max(...pcts);
-      const lo = Math.min(...pcts);
+      const hi = pcts.reduce((x, y) => (better(x, y) ? x : y));
+      const lo = pcts.reduce((x, y) => (better(x, y) ? y : x));
       if (hi !== lo) {
         for (const c of cells) {
           if (!ranked.includes(c.control)) continue;
@@ -196,6 +204,7 @@ export function vendorBenchmark(
       attacks: rs.length,
       cells,
       missedByAll: countMissedByAll(rs, controls),
+      blockedByAny: countBlockedByAny(rs, controls.filter((c) => c !== "edge")),
       ranked,
       rankedOver: ranked.length > 0 ? g.size : 0,
     });
@@ -204,6 +213,7 @@ export function vendorBenchmark(
 
   return {
     groupBy,
+    metric,
     rows,
     rankedRows: rows.filter((r) => r.ranked.length > 0).length,
     wins: controls
