@@ -9,6 +9,8 @@ import {
   REDTEAM_PROMPT_PREVIEW_LEN,
   REDTEAM_RUN_MAX_ATTACKS,
   parseRunId,
+  parseStoredVendors,
+  toStoredVendorsJson,
   validateRedTeamRunPayload,
 } from "./redteamruns";
 
@@ -217,5 +219,60 @@ describe("parseRunId", () => {
     expect(parseRunId("abc")).toBeNull();
     expect(parseRunId("1; DROP TABLE redteam_runs; --")).toBeNull();
     expect(parseRunId(null)).toBeNull();
+  });
+});
+
+// Benchmark fields (migration 0007). The vendors column must only ever hold known
+// provider ids and verdict words — never vendor text — and a partial value would be
+// a false statement about which guardrails saw the prompt.
+describe("benchmark fields", () => {
+  const P = ["prisma-airs", "crowdstrike-aidr"] as const;
+  const good = { mode: "parallel", verdicts: [{ provider: "prisma-airs", verdict: "block" }, { provider: "crowdstrike-aidr", verdict: "alerts" }] };
+
+  it("stores verdicts as compact JSON and reads them back", () => {
+    const json = toStoredVendorsJson(good, P)!;
+    expect(json).toBe('{"m":"parallel","v":[["prisma-airs","block"],["crowdstrike-aidr","alerts"]]}');
+    expect(parseStoredVendors(json, P)).toEqual(good);
+  });
+
+  it("drops the whole value on any unknown provider, verdict, mode or duplicate — never stores the rest", () => {
+    const bad = [
+      { ...good, mode: "both" },
+      { ...good, verdicts: [...good.verdicts, { provider: "evil-corp", verdict: "block" }] },
+      { ...good, verdicts: [{ provider: "prisma-airs", verdict: "blocked <script>" }] },
+      { ...good, verdicts: [good.verdicts[0], good.verdicts[0]] },
+      { ...good, verdicts: [] },
+      { ...good, verdicts: [{ provider: "prisma-airs", verdict: "block", message: "the SSN 078-05-1120" }] },
+      "parallel",
+      null,
+    ];
+    // The extra `message` key is ignored, not stored: only provider + verdict are copied.
+    expect(toStoredVendorsJson(bad[5], P)).toBe('{"m":"parallel","v":[["prisma-airs","block"]]}');
+    for (const b of bad.filter((_, i) => i !== 5)) expect(toStoredVendorsJson(b, P), JSON.stringify(b)).toBeNull();
+  });
+
+  it("a stored value that no longer validates reads as not recorded", () => {
+    expect(parseStoredVendors('{"m":"parallel","v":[["gone-vendor","block"]]}', P)).toBeNull();
+    expect(parseStoredVendors("not json", P)).toBeNull();
+    expect(parseStoredVendors(null, P)).toBeNull();
+  });
+
+  it("validates expected, redacts and caps topic, and accepts only label-shaped lang", () => {
+    const v = validateRedTeamRunPayload(
+      validBody({
+        results: [
+          validResult({ expected: "allow", topic: "Ask about card 4111 1111 1111 1111 please", lang: "Thai + Latin script" }),
+          validResult({ attackKey: "rt-02", expected: "yes", topic: "x".repeat(500), lang: "<img src=x>" }),
+        ],
+      }),
+    );
+    if (!v.ok) throw new Error(v.error);
+    const [a, b] = v.run.results;
+    expect(a.expected).toBe("allow");
+    expect(a.topic).not.toContain("4111 1111 1111 1111");
+    expect(a.lang).toBe("Thai + Latin script");
+    expect(b.expected).toBeNull();
+    expect(b.topic).toHaveLength(120);
+    expect(b.lang).toBeNull();
   });
 });

@@ -405,6 +405,17 @@ export interface PromptLog {
   limit?: number;
   offset?: number;
   error?: string;
+  retention?: PromptLogRetention;
+}
+
+// What the prompt log keeps (src/promptlog.ts). windowPartial: the asked-for window
+// reaches past it, so every count in it is "at least", never a total.
+export interface PromptLogRetention {
+  maxAgeDays: number;
+  maxRows: number;
+  rows: number;
+  oldestTs: number | null;
+  windowPartial: boolean;
 }
 
 // GET /api/prompt-analytics — rollups computed as SQL GROUP BY inside D1.
@@ -444,6 +455,7 @@ export interface PromptAnalytics {
   // old rows are permanently NULL, so this guards against a rollup over a
   // handful of rows reading as the whole table.
   latencyCoverage?: { withLatency: number; total: number };
+  retention?: PromptLogRetention;
   error?: string;
 }
 
@@ -491,6 +503,11 @@ export interface RedTeamResultRow {
   ray: string | null;
   ts: number | null;
   promptPreview: string | null;
+  // Since migration 0007; null on older rows ("not recorded", never a miss).
+  vendors?: { mode: "parallel" | "sequential"; verdicts: { provider: string; verdict: string }[] } | null;
+  expected?: "allow" | null; // a harmless row — never in the run's totals
+  topic?: string | null;
+  lang?: string | null;
 }
 
 export interface RedTeamRunsList {

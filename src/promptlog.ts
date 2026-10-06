@@ -108,3 +108,55 @@ export function buildPromptLogQuery(p: PromptLogParams): PromptLogQuery {
     offset: clampInt(p.offset, 0, Number.MAX_SAFE_INTEGER, 0),
   };
 }
+
+// ── Retention ──────────────────────────────────────────────────────────────
+// The log keeps the last PROMPT_LOG_MAX_AGE_DAYS days, and at most the newest
+// PROMPT_LOG_MAX_ROWS rows — whichever removes more. Pruned at write time, in the
+// same D1 batch as the insert (logPrompt in handlers.ts): there is no scheduled
+// job to forget, and a log that is not being written to is not growing. The
+// consequence, stated wherever counts are shown: a row older than the limits may
+// survive until the next write, so "kept" is a ceiling, not a promise of deletion
+// at the minute.
+export const PROMPT_LOG_MAX_AGE_DAYS = 90;
+export const PROMPT_LOG_MAX_ROWS = 1000;
+
+// The two prune statements. Rows go by age first, then the count: the newest N by
+// ts, with ray as the tiebreak so two rows in the same millisecond can never both
+// fall on the boundary and leave N + 1.
+export function promptLogPruneStatements(now: number): { sql: string; binds: number[] }[] {
+  return [
+    { sql: "DELETE FROM prompt_log WHERE ts < ?", binds: [now - PROMPT_LOG_MAX_AGE_DAYS * 86_400_000] },
+    {
+      sql: "DELETE FROM prompt_log WHERE ray NOT IN (SELECT ray FROM prompt_log ORDER BY ts DESC, ray DESC LIMIT ?)",
+      binds: [PROMPT_LOG_MAX_ROWS],
+    },
+  ];
+}
+
+export interface PromptLogRetention {
+  maxAgeDays: number;
+  maxRows: number;
+  rows: number; // rows held now, across all time
+  oldestTs: number | null; // oldest row held now
+  // True when the asked-for window reaches back past what the log is guaranteed to
+  // keep: further than the age limit (or all time), or before the oldest row while
+  // the row cap is full. Every count in that window is then a FLOOR ("at least").
+  // A property of the window against the policy, not a guess about whether rows
+  // were actually deleted — this app keeps no record of that, and "at least" is
+  // still true when nothing was.
+  windowPartial: boolean;
+}
+
+// `since` null = all time. Pure, so the honesty rule is unit-tested.
+export function promptLogRetention(
+  since: number | null,
+  rows: number,
+  oldestTs: number | null,
+  now: number,
+): PromptLogRetention {
+  const reachesPastAge = since == null || since < now - PROMPT_LOG_MAX_AGE_DAYS * 86_400_000;
+  const capFull = rows >= PROMPT_LOG_MAX_ROWS;
+  const beforeOldest = oldestTs != null && (since == null || since < oldestTs);
+  const windowPartial = reachesPastAge || (capFull && beforeOldest);
+  return { maxAgeDays: PROMPT_LOG_MAX_AGE_DAYS, maxRows: PROMPT_LOG_MAX_ROWS, rows, oldestTs, windowPartial };
+}

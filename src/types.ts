@@ -1,6 +1,7 @@
 // Shared type definitions for the Worker.
 
 import type { SeriesBucket } from "./config";
+import type { PromptLogRetention } from "./promptlog";
 
 export interface Env {
   AI: Ai;
@@ -226,6 +227,8 @@ export interface PromptAnalytics {
   // so a rollup over a handful of covered rows must never read as covering
   // the whole table.
   latencyCoverage: { withLatency: number; total: number };
+  // What retention has left (src/promptlog.ts); windowPartial = counts are floors.
+  retention?: PromptLogRetention;
   error?: string;
 }
 
@@ -277,6 +280,11 @@ export interface RedTeamResultRow {
   ray: string | null;
   ts: number | null;
   promptPreview: string | null;
+  // Since migration 0007; null on older rows ("not recorded", never a miss).
+  vendors: { mode: "parallel" | "sequential"; verdicts: { provider: string; verdict: string }[] } | null;
+  expected: "allow" | null; // a harmless row — never in the run's totals
+  topic: string | null;
+  lang: string | null;
 }
 
 // Aggregated AI Gateway logs for the dashboard's gateway tab

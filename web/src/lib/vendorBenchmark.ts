@@ -173,7 +173,7 @@ export function vendorBenchmark(
   for (const a of corpus) {
     const r = results.get(a.id);
     if (!r) continue;
-    const key = groupBy === "topic" ? topicOf(a) : languageOf(a.prompt);
+    const key = groupBy === "topic" ? topicOf(a) : (a.lang ?? languageOf(a.prompt));
     const list = groups.get(key) ?? [];
     list.push(r);
     groups.set(key, list);

@@ -220,7 +220,7 @@ export function VendorScorecard({
       <p className="mt-2 text-[10.5px] leading-relaxed text-subtle">
         The edge scores every request that got a verdict; a guardrail never sees a prompt the edge refused. Detect-mode alerts
         are not catches, and an alert on a harmless prompt is not a false block. Harmless rows are kept out of every attack
-        score. Not stored with saved runs.
+        score. Saving the run keeps the verdicts, topics and languages, so it can be redrawn from Saved runs.
       </p>
     </Card>
   );

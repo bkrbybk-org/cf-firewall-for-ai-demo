@@ -23,12 +23,18 @@ import {
   ShieldCheck,
   ShieldX,
   Trash2,
+  TriangleAlert,
   UserSearch,
 } from "lucide-react";
 import { BarList, bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, PLOG_SERIES } from "./EventSeries";
 import { Verdict } from "../Verdict";
-import type { PromptAnalytics, PromptLog, PromptLogRow as PromptLogRowData } from "../../lib/types";
+import type {
+  PromptAnalytics,
+  PromptLog,
+  PromptLogRetention,
+  PromptLogRow as PromptLogRowData,
+} from "../../lib/types";
 
 const OUTCOME_TONE: Record<string, string> = {
   reply: "border-cf-green/50 text-cf-green",
@@ -318,6 +324,21 @@ function LatencyTable({ a }: { a: PromptAnalytics }) {
 
 // Rollups over the whole prompt log (SQL GROUP BY in D1). Sits above the raw
 // rows so the tab answers "what has been sent overall" before "what exactly".
+const fmtDate = (ts: number) => new Date(ts).toLocaleString("en-GB", { hour12: false });
+
+function RetentionFloorNote({ r }: { r: PromptLogRetention }) {
+  return (
+    <div className="mt-3 flex items-start gap-2 rounded-lg border border-cf-amber/40 bg-cf-amber/[0.08] px-3 py-2 text-[11.5px] leading-relaxed text-text">
+      <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber" />
+      <span>
+        <b>These counts are at least, not totals.</b> This window reaches back further than the log keeps — the last{" "}
+        {r.maxAgeDays} days, and the newest {r.maxRows.toLocaleString()} prompts
+        {r.oldestTs != null ? <> (oldest kept: {fmtDate(r.oldestTs)})</> : null}. Older prompts are deleted.
+      </span>
+    </div>
+  );
+}
+
 function PromptStats({ a }: { a: PromptAnalytics }) {
   const total = a.total ?? 0;
   if (total === 0) return null;
@@ -358,6 +379,8 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
           tone="border-cf-green/40 bg-cf-green/10"
         />
       </div>
+      {/* The window asks for more than retention keeps, so every tile is a floor. */}
+      {a.retention?.windowPartial && <RetentionFloorNote r={a.retention} />}
 
       {(a.series ?? []).length > 0 && (
         <Card title="Prompts over time" subtitle={`per ${bucketLabel(a.bucket)} · by outcome${span ? ` · ${span}` : ""}`}>
@@ -486,6 +509,11 @@ export function PromptLogTab({
           to the live edge verdict by <code className="font-mono">cf-ray</code> — expand one to see the detections that
           fired on that exact prompt. Edge-blocked (403) requests never reach the Worker, so they are not here; see the{" "}
           <b className="text-text">AI Security (edge)</b> tab for those.
+          <br />
+          {/* Retention (src/promptlog.ts): pruned when a prompt is written, not on a timer. */}
+          Kept: the last <b className="text-text">{d.retention?.maxAgeDays ?? 90} days</b>, at most the newest{" "}
+          <b className="text-text">{(d.retention?.maxRows ?? 1000).toLocaleString()} prompts</b> — older rows are deleted
+          as new prompts are written, so one may linger until the next write.
           <br />
           <span className="text-subtle">
             Note: redaction protects this store only. AI Gateway still logs the raw prompt + response payload (visible in

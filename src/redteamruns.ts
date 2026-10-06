@@ -14,6 +14,7 @@
 // redteam_runs in migrations/0003_redteam_runs.sql) — this file only decides
 // whether an already-scored run is small enough and well-formed enough to
 // store.
+import { PROVIDER_IDS } from "./externalGuardrails";
 import { redact } from "./redact";
 
 // ── Caps ─────────────────────────────────────────────────────────────────
@@ -59,6 +60,22 @@ export const RT_RESULT_STATES = [
 ] as const;
 export type RtResultStateServer = (typeof RT_RESULT_STATES)[number];
 
+// One external guardrail's verdict (RtVendorOutcome in web/src/lib/redteam.ts),
+// duplicated for the same reason as RT_RESULT_STATES.
+export const RT_VENDOR_VERDICTS = ["block", "allow", "alerts", "error", "notRun"] as const;
+export type RtVendorVerdictServer = (typeof RT_VENDOR_VERDICTS)[number];
+
+export interface StoredVendors {
+  mode: "parallel" | "sequential";
+  verdicts: { provider: string; verdict: RtVendorVerdictServer }[];
+}
+
+// The benchmark topic is operator-typed (a CSV goal), so it is redacted and capped
+// like a prompt preview — it is a label, and nothing longer is a label.
+export const REDTEAM_MAX_TOPIC_LEN = 120;
+// languageOf() labels: "Thai", "Latin script", "Thai + Latin script", "Chinese (Han)".
+const LANG_LABEL = /^[A-Za-z][A-Za-z ()+]{0,59}$/;
+
 export interface ValidatedResult {
   attackKey: string;
   attackId: string;
@@ -68,6 +85,10 @@ export interface ValidatedResult {
   ray: string | null;
   ts: number | null;
   promptPreview: string; // redacted + truncated here, never the raw input
+  vendors: string | null; // compact JSON (see toStoredVendorsJson), or null
+  expected: "allow" | null; // harmless row; never counted in the run's totals
+  topic: string | null;
+  lang: string | null;
 }
 
 export interface ValidatedRun {
@@ -141,6 +162,59 @@ function toPromptPreview(rawPrompt: unknown): string {
   return text.slice(0, REDTEAM_PROMPT_PREVIEW_LEN);
 }
 
+// The per-guardrail verdicts for one prompt → the compact JSON stored in
+// redteam_results.vendors, or null. All or nothing: one unknown provider or
+// verdict drops the whole value rather than storing the rest, because a missing
+// guardrail reads as "never saw this prompt" — a partial row would be a false
+// statement about coverage, not a smaller true one. Only fixed ids and verdict
+// words get through, so no vendor text can be smuggled into storage here.
+export function toStoredVendorsJson(v: unknown, providers: readonly string[] = PROVIDER_IDS): string | null {
+  if (!isPlainObject(v)) return null;
+  if (v.mode !== "parallel" && v.mode !== "sequential") return null;
+  if (!Array.isArray(v.verdicts) || v.verdicts.length === 0 || v.verdicts.length > providers.length) return null;
+  const out: [string, string][] = [];
+  const seen = new Set<string>();
+  for (const e of v.verdicts) {
+    if (!isPlainObject(e)) return null;
+    const { provider, verdict } = e;
+    if (typeof provider !== "string" || !providers.includes(provider) || seen.has(provider)) return null;
+    if (typeof verdict !== "string" || !(RT_VENDOR_VERDICTS as readonly string[]).includes(verdict)) return null;
+    seen.add(provider);
+    out.push([provider, verdict]);
+  }
+  return JSON.stringify({ m: v.mode, v: out });
+}
+
+// The stored JSON back into the API shape — re-validated on the way out, so a
+// row written by anything other than toStoredVendorsJson reads as "not recorded".
+export function parseStoredVendors(raw: unknown, providers: readonly string[] = PROVIDER_IDS): StoredVendors | null {
+  if (typeof raw !== "string" || raw === "") return null;
+  let j: unknown;
+  try {
+    j = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(j) || !Array.isArray(j.v)) return null;
+  const again = toStoredVendorsJson(
+    { mode: j.m, verdicts: j.v.map((p) => (Array.isArray(p) ? { provider: p[0], verdict: p[1] } : null)) },
+    providers,
+  );
+  if (!again) return null;
+  const k = JSON.parse(again) as { m: StoredVendors["mode"]; v: [string, RtVendorVerdictServer][] };
+  return { mode: k.m, verdicts: k.v.map(([provider, verdict]) => ({ provider, verdict })) };
+}
+
+function toTopic(v: unknown): string | null {
+  const capped = str(v, REDTEAM_MAX_PROMPT_INPUT_LEN);
+  if (!capped) return null;
+  return redact(capped).text.slice(0, REDTEAM_MAX_TOPIC_LEN) || null;
+}
+
+function toLang(v: unknown): string | null {
+  return typeof v === "string" && LANG_LABEL.test(v) ? v : null;
+}
+
 // Validate one entry of the `results` array. Returns null (not a thrown
 // error) for a malformed entry — one bad row in an otherwise fine batch
 // should not fail validation for a required top-level field like `state`,
@@ -162,6 +236,10 @@ function validateResult(v: unknown): ValidatedResult | null {
     ray: strOrNull(v.ray, 64),
     ts: v.ts == null ? null : int(v.ts, 0, Number.MAX_SAFE_INTEGER, 0) || null,
     promptPreview: toPromptPreview(v.prompt),
+    vendors: toStoredVendorsJson(v.vendors),
+    expected: v.expected === "allow" ? "allow" : null,
+    topic: toTopic(v.topic),
+    lang: toLang(v.lang),
   };
 }
 

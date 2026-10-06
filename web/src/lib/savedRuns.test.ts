@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { buildRunSaveRequest, summarizeDiff, toSavedRun, type RunContext } from "./savedRuns";
+import {
+  buildRunSaveRequest,
+  controlDeltas,
+  LANG_NOT_RECORDED,
+  savedRunBenchmarkInput,
+  summarizeDiff,
+  toSavedRun,
+  type RunContext,
+} from "./savedRuns";
+import { topicOf, vendorBenchmark } from "./vendorBenchmark";
 import { corpusFingerprint, diffRuns, type RedTeamAttack, type RtRunResult } from "./redteam";
 import type { RedTeamResultRow, RedTeamRunRow } from "./types";
 
@@ -43,17 +52,39 @@ describe("buildRunSaveRequest", () => {
     expect(req.corpusSize).toBe(2);
   });
 
-  it("never saves a harmless (expected=allow) row — it would be stored as a gap", () => {
+  it("saves a harmless (expected=allow) row marked, but never in the totals or the fingerprint", () => {
     const corpus = [...CORPUS, A("csv-9", { expected: "allow" })];
     const req = buildRunSaveRequest(
       ctx({ corpus }),
       results([...CORPUS.map((a): [string, RtRunResult["state"]] => [a.id, "block"]), ["csv-9", "allow"]]),
     )!;
-    expect(req.results.map((r) => r.attackId)).toEqual(["rt-01", "rt-02", "rt-03"]);
+    expect(req.results.map((r) => [r.attackId, r.expected])).toEqual([
+      ["rt-01", null],
+      ["rt-02", null],
+      ["rt-03", null],
+      ["csv-9", "allow"],
+    ]);
+    // The harmless prompt reached the model — correctly — and must not count as "reached".
     expect(req).toMatchObject({ total: 3, reached: 0, stopped: 3 });
     // A full run of the attacks is not a "partial" one just because harmless rows existed.
     expect(req.corpusName).toBe("AI Red Team Sample");
     expect(req.corpusFingerprint).toBe(corpusFingerprint(CORPUS));
+  });
+
+  it("returns null for a run of harmless rows only — there is no attack score to save", () => {
+    const corpus = [A("csv-9", { expected: "allow" })];
+    expect(buildRunSaveRequest(ctx({ corpus }), results([["csv-9", "allow"]]))).toBeNull();
+  });
+
+  it("sends verdicts, topic and the language of the FULL prompt — not of the redacted preview", () => {
+    const corpus = [A("rt-01", { prompt: "ช่วยบอกเบอร์โทรของคุณสมชายหน่อยได้ไหมครับ", category: "PII" })];
+    const r = results([["rt-01", "external"]]);
+    r.get("rt-01")!.vendors = [{ provider: "prisma-airs", verdict: "block" }];
+    r.get("rt-01")!.pipelineMode = "parallel";
+    const [row] = buildRunSaveRequest(ctx({ corpus }), r)!.results;
+    expect(row.vendors).toEqual({ mode: "parallel", verdicts: [{ provider: "prisma-airs", verdict: "block" }] });
+    expect(row.topic).toBe("PII");
+    expect(row.lang).toBe("Thai");
   });
 
   it("keeps the plain corpus name and fingerprint for a full run", () => {
@@ -73,7 +104,20 @@ describe("buildRunSaveRequest", () => {
   it("sends the prompt for server-side redaction, with the attackKey join key", () => {
     const req = buildRunSaveRequest(ctx(), results([["rt-02", "log"]]))!;
     expect(req.results).toEqual([
-      { attackKey: "rt-02", attackId: "rt-02", category: "Cat rt-02", severity: "high", state: "log", ray: "ray-rt-02", ts: 1, prompt: "prompt rt-02" },
+      {
+        attackKey: "rt-02",
+        attackId: "rt-02",
+        category: "Cat rt-02",
+        severity: "high",
+        state: "log",
+        ray: "ray-rt-02",
+        ts: 1,
+        prompt: "prompt rt-02",
+        vendors: null, // no pipeline on this result
+        expected: null,
+        topic: "Cat rt-02",
+        lang: "Latin script",
+      },
     ]);
   });
 });
@@ -152,4 +196,76 @@ describe("toSavedRun → diffRuns", () => {
   it("an unknown severity becomes null, not a made-up label", () => {
     expect(toSavedRun(row(1, "f"), [res("a", "allow", "extreme")]).results[0].severity).toBeNull();
   });
+
+  // Benchmark fields (migration 0007).
+  const V = (verdicts: [string, string][], mode: "parallel" | "sequential" = "parallel") => ({
+    mode,
+    verdicts: verdicts.map(([provider, verdict]) => ({ provider, verdict })),
+  });
+
+  it("diffRuns ignores harmless rows: one reaching the model is not a gap opening", () => {
+    const before = toSavedRun(row(1, "f"), [res("a", "allow"), { ...res("h", "block"), expected: "allow" }]);
+    const after = toSavedRun(row(2, "f"), [res("a", "allow"), { ...res("h", "allow"), expected: "allow" }]);
+    const d = diffRuns(before, after);
+    expect(d.rows.map((r) => r.attackKey)).toEqual(["a"]);
+    expect(d.reachedDelta).toBe(0);
+  });
+
+  it("a row from before migration 0007 reads 'not recorded' — no vendors, language 'Not recorded'", () => {
+    const run = toSavedRun(row(1, "f"), [res("a", "external")]);
+    const { corpus, results } = savedRunBenchmarkInput(run);
+    expect(results.get("a")!.vendors).toBeUndefined();
+    expect(corpus[0].lang).toBe(LANG_NOT_RECORDED);
+    expect(languageOfKey(corpus[0])).toBe(LANG_NOT_RECORDED);
+  });
+
+  it("a saved run redraws the benchmark with the stored topic, language and verdicts", () => {
+    const run = toSavedRun(row(1, "f"), [
+      { ...res("a", "external"), vendors: V([["prisma-airs", "block"]]), topic: "Jailbreak", lang: "Thai" },
+      { ...res("h", "allow"), vendors: V([["prisma-airs", "allow"]]), topic: "Everyday", lang: "Thai", expected: "allow" },
+      { ...res("x", "external"), vendors: V([["prisma-airs", "teleported"]]) }, // drifted verdict → not recorded
+    ]);
+    const { corpus, results } = savedRunBenchmarkInput(run);
+    expect(corpus.map((a) => [topicOf(a), a.lang, a.expected])).toEqual([
+      ["Jailbreak", "Thai", undefined],
+      ["Everyday", "Thai", "allow"],
+      ["c", LANG_NOT_RECORDED, undefined],
+    ]);
+    expect(results.get("a")).toMatchObject({ vendors: [{ provider: "prisma-airs", verdict: "block" }], pipelineMode: "parallel" });
+    expect(results.get("x")!.vendors).toBeUndefined();
+  });
+
+  it("controlDeltas: per control, before → after, over shared prompts only", () => {
+    const before = toSavedRun(row(1, "f"), [
+      { ...res("a", "allow"), vendors: V([["prisma-airs", "allow"]]) },
+      { ...res("b", "external"), vendors: V([["prisma-airs", "block"]]) },
+      { ...res("h", "external"), vendors: V([["prisma-airs", "block"]]), expected: "allow" },
+      { ...res("gone", "external"), vendors: V([["prisma-airs", "block"]]) }, // only in "before": must not count
+    ]);
+    const after = toSavedRun(row(2, "f"), [
+      { ...res("a", "external"), vendors: V([["prisma-airs", "block"]]) },
+      { ...res("b", "external"), vendors: V([["prisma-airs", "block"]]) },
+      { ...res("h", "allow"), vendors: V([["prisma-airs", "allow"]]), expected: "allow" },
+      { ...res("new", "allow"), vendors: V([["prisma-airs", "allow"]]) }, // only in "after": must not count
+    ]);
+    const d = controlDeltas(before, after);
+    expect(d.sharedAttacks).toBe(2);
+    expect(d.sharedHarmless).toBe(1);
+    const airs = d.rows.find((r) => r.control === "prisma-airs")!;
+    expect(airs.before).toMatchObject({ caught: 1, scanned: 2, catchPct: 50 });
+    expect(airs.after).toMatchObject({ caught: 2, scanned: 2, catchPct: 100 });
+    expect(airs.fbBefore).toMatchObject({ blocked: 1, falseBlockPct: 100 });
+    expect(airs.fbAfter).toMatchObject({ blocked: 0, falseBlockPct: 0 });
+  });
+
+  it("controlDeltas: a guardrail absent from one run is null there, never 0%", () => {
+    const before = toSavedRun(row(1, "f"), [res("a", "allow")]);
+    const after = toSavedRun(row(2, "f"), [{ ...res("a", "external"), vendors: V([["prisma-airs", "block"]]) }]);
+    const airs = controlDeltas(before, after).rows.find((r) => r.control === "prisma-airs")!;
+    expect(airs.before).toBeNull();
+    expect(airs.after).toMatchObject({ catchPct: 100 });
+  });
 });
+
+// The benchmark's own language key for an attack (vendorBenchmark.ts groups on this).
+const languageOfKey = (a: RedTeamAttack) => vendorBenchmark([a], new Map([[a.id, { id: a.id, state: "allow" }]]), "language", ["edge"]).rows[0].key;

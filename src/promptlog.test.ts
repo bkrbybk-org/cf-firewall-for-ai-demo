@@ -3,7 +3,14 @@
 // fixes made everything past the newest 200 unreachable), and it is the only
 // place in the app that interpolates a column name into SQL.
 import { describe, expect, it } from "vitest";
-import { buildPromptLogQuery, PROMPT_LOG_MAX_LIMIT } from "./promptlog";
+import {
+  buildPromptLogQuery,
+  PROMPT_LOG_MAX_AGE_DAYS,
+  PROMPT_LOG_MAX_LIMIT,
+  PROMPT_LOG_MAX_ROWS,
+  promptLogPruneStatements,
+  promptLogRetention,
+} from "./promptlog";
 
 describe("buildPromptLogQuery — filters", () => {
   it("builds no WHERE clause when nothing is filtered", () => {
@@ -117,5 +124,39 @@ describe("buildPromptLogQuery — paging", () => {
     expect(buildPromptLogQuery({}).offset).toBe(0);
     expect(buildPromptLogQuery({ limit: Number.NaN }).limit).toBe(25);
     expect(buildPromptLogQuery({ offset: Number.NaN }).offset).toBe(0);
+  });
+});
+
+// Retention: 90 days, newest 1,000 rows. The SQL itself is exercised on a real local
+// D1 (PROGRESS.md); these pin the cutoffs and the "at least" rule.
+describe("prompt-log retention", () => {
+  const DAY = 86_400_000;
+  const NOW = 1_800_000_000_000;
+
+  it("prunes by age at exactly 90 days, then to the newest 1,000 with a tiebreak", () => {
+    const [age, count] = promptLogPruneStatements(NOW);
+    expect(PROMPT_LOG_MAX_AGE_DAYS).toBe(90);
+    expect(PROMPT_LOG_MAX_ROWS).toBe(1000);
+    expect(age).toEqual({ sql: "DELETE FROM prompt_log WHERE ts < ?", binds: [NOW - 90 * DAY] });
+    expect(count.binds).toEqual([1000]);
+    expect(count.sql).toContain("ORDER BY ts DESC, ray DESC LIMIT ?");
+  });
+
+  it("a window inside both limits is whole; past 90 days or all-time is a floor", () => {
+    expect(promptLogRetention(NOW - 7 * DAY, 10, NOW - 8 * DAY, NOW).windowPartial).toBe(false);
+    expect(promptLogRetention(NOW - 91 * DAY, 10, NOW - 8 * DAY, NOW).windowPartial).toBe(true);
+    expect(promptLogRetention(null, 10, NOW - 8 * DAY, NOW).windowPartial).toBe(true);
+  });
+
+  it("with the row cap full, a window starting before the oldest kept row is a floor", () => {
+    expect(promptLogRetention(NOW - DAY, 1000, NOW - 2 * 3_600_000, NOW).windowPartial).toBe(true);
+    // …but not one that starts after it: every row in it is still held.
+    expect(promptLogRetention(NOW - 3_600_000, 1000, NOW - 2 * 3_600_000, NOW).windowPartial).toBe(false);
+    // Below the cap, an old oldest row says nothing was pruned by count.
+    expect(promptLogRetention(NOW - DAY, 999, NOW - 2 * 3_600_000, NOW).windowPartial).toBe(false);
+  });
+
+  it("an empty log is whole inside the age limit", () => {
+    expect(promptLogRetention(NOW - DAY, 0, null, NOW)).toMatchObject({ windowPartial: false, rows: 0, oldestTs: null });
   });
 });

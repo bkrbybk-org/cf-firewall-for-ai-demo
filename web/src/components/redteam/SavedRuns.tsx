@@ -8,10 +8,19 @@
 // shared-attack score, the warning comes first when there is one, and differences a
 // run does not record (route, guardrail settings) are said out loud.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, GitCompare, Loader2, Save, Trash2 } from "lucide-react";
+import { ArrowRight, BarChart3, GitCompare, Loader2, Save, Trash2 } from "lucide-react";
 import { deleteRedTeamRun, getRedTeamRun, listRedTeamRuns, saveRedTeamRun, type RedTeamRunSaveRequest } from "../../lib/api";
-import { diffRuns, type RtRunDiff, type RtSavedRun } from "../../lib/redteam";
-import { summarizeDiff, toSavedRun } from "../../lib/savedRuns";
+import { diffRuns, isAttack, type RtRunDiff, type RtSavedRun } from "../../lib/redteam";
+import { PROVIDER_LABELS } from "../../lib/guardrailView";
+import {
+  countBlockedByAny,
+  falseBlockScores,
+  providersIn,
+  vendorScorecard,
+  type FalseBlockScore,
+} from "../../lib/vendorScorecard";
+import { VendorScorecard } from "./VendorScorecard";
+import { controlDeltas, savedRunBenchmarkInput, summarizeDiff, toSavedRun } from "../../lib/savedRuns";
 import type { RedTeamRunRow } from "../../lib/types";
 import { StatePill } from "./StatePill";
 
@@ -172,7 +181,8 @@ export function SavedRuns({
         ) : (
           <>
             <div className="mb-1.5 text-[11.5px] text-muted">
-              Tick two runs to compare them{picked.length === 1 ? " — one more" : ""}.
+              Tick one run to see its guardrail benchmark, or two to compare them
+              {picked.length === 1 ? " — tick one more to compare" : ""}.
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[860px] text-left text-[12px]">
@@ -261,9 +271,87 @@ export function SavedRuns({
           </>
         )}
 
+        {picked.length === 1 && <SavedBenchmark id={picked[0]} />}
         {picked.length === 2 && <Comparison ids={picked} />}
       </div>
     </section>
+  );
+}
+
+// One saved run's "Controls compared" card, redrawn from its stored rows by the same
+// components and scoring the live run used (savedRunBenchmarkInput).
+function SavedBenchmark({ id }: { id: number }) {
+  const [run, setRun] = useState<RtSavedRun | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setRun(null);
+    setErr(null);
+    getRedTeamRun(id)
+      .then((d) => {
+        if (!live) return;
+        if (!d.run) setErr(d.error ?? "This run no longer exists (deleted, or pruned by the 50-run limit).");
+        else setRun(toSavedRun(d.run, d.results ?? []));
+      })
+      .catch((e) => live && setErr(errText(e)));
+    return () => {
+      live = false;
+    };
+  }, [id]);
+
+  const view = useMemo(() => {
+    if (!run) return null;
+    const { corpus, results } = savedRunBenchmarkInput(run);
+    const all = [...results.values()];
+    const providers = providersIn(all);
+    const attackCorpus = corpus.filter(isAttack);
+    const benignCorpus = corpus.filter((a) => !isAttack(a));
+    const attackList = attackCorpus.map((a) => results.get(a.id)!);
+    const benignList = benignCorpus.map((a) => results.get(a.id)!);
+    return {
+      card: vendorScorecard(attackList, PROVIDER_LABELS, providers),
+      falseBlocks: benignList.length > 0 ? falseBlockScores(benignList, PROVIDER_LABELS, providers) : null,
+      benignBlocked: countBlockedByAny(benignList, providers),
+      attackCorpus,
+      benignCorpus,
+      results,
+      recorded: run.results.some((r) => r.vendors || r.lang),
+    };
+  }, [run]);
+
+  return (
+    <div className="mt-4 rounded-xl border border-line bg-surface-2/50 p-3.5">
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px] font-bold text-text">
+        <BarChart3 size={14} className="text-accent" /> Benchmark {run && <RunTag run={run} />}
+      </div>
+      {err && <div className="text-[12px] text-cf-red">{err}</div>}
+      {!err && !view && (
+        <div className="flex items-center gap-1.5 text-[12px] text-muted">
+          <Loader2 size={13} className="animate-spin" /> Loading the run…
+        </div>
+      )}
+      {view && !view.recorded && (
+        <p className="text-[12px] text-muted">
+          This run was saved before guardrail verdicts were stored with runs, so it has the edge results only — they are
+          in the table above. Re-run and save to benchmark the guardrails.
+        </p>
+      )}
+      {view && view.recorded && view.card.controls.length <= 1 && !view.falseBlocks && (
+        <p className="text-[12px] text-muted">No external guardrail scanned any prompt in this run.</p>
+      )}
+      {view && view.recorded && (
+        <VendorScorecard
+          card={view.card}
+          corpus={view.attackCorpus}
+          benignCorpus={view.benignCorpus}
+          falseBlocks={view.falseBlocks}
+          benignBlocked={view.benignBlocked}
+          results={view.results}
+          labels={PROVIDER_LABELS}
+        />
+      )}
+    </div>
   );
 }
 
@@ -310,6 +398,88 @@ function Comparison({ ids }: { ids: number[] }) {
         </div>
       )}
       {pair && diff && <DiffView before={pair[0]} after={pair[1]} diff={diff} />}
+      {pair && <ControlDeltaTable before={pair[0]} after={pair[1]} />}
+    </div>
+  );
+}
+
+function pctOf(s: { catchPct: number | null } | null): string {
+  return s && s.catchPct !== null ? `${s.catchPct}%` : "—";
+}
+function fbPct(s: FalseBlockScore | null): string {
+  return s && s.falseBlockPct !== null ? `${s.falseBlockPct}%` : "—";
+}
+// "+12 pts" / "−5 pts" / "" — only when both sides have a number. Points, not a
+// percentage change: 40% → 50% is +10 points, and "+25%" would overstate it.
+function delta(b: number | null | undefined, a: number | null | undefined, lowerIsBetter = false) {
+  if (b == null || a == null || a === b) return null;
+  const d = a - b;
+  const good = lowerIsBetter ? d < 0 : d > 0;
+  return (
+    <span className={`ml-1 text-[10px] font-semibold ${good ? "text-cf-green" : "text-cf-red"}`}>
+      {d > 0 ? "+" : "−"}
+      {Math.abs(d)} pts
+    </span>
+  );
+}
+
+// Per control, before → after, over the prompts both runs contain (controlDeltas).
+function ControlDeltaTable({ before, after }: { before: RtSavedRun; after: RtSavedRun }) {
+  const d = useMemo(() => controlDeltas(before, after, PROVIDER_LABELS), [before, after]);
+  const anyGuardrail = d.rows.some((r) => r.control !== "edge" && (r.before || r.after || r.fbBefore || r.fbAfter));
+  if (!anyGuardrail && d.sharedHarmless === 0) return null;
+  const showFb = d.sharedHarmless > 0;
+  const thBase = "px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-subtle";
+  const th = `${thBase} text-right`;
+  const cell = "px-2 py-1.5 text-right font-mono text-[11px] whitespace-nowrap tabular-nums";
+  return (
+    <div className="mt-4">
+      <div className="text-[12px] font-bold text-text">Each control, before → after</div>
+      <div className="mt-0.5 text-[11px] text-muted">
+        Over the {d.sharedAttacks} attack{d.sharedAttacks === 1 ? "" : "s"}
+        {showFb ? ` and ${d.sharedHarmless} harmless prompt${d.sharedHarmless === 1 ? "" : "s"}` : ""} both runs contain;
+        each side scored only on what that control scanned. "—" = not recorded in that run, never 0%.
+      </div>
+      <div className="relative mt-2 overflow-x-auto">
+        <table className="w-full min-w-[520px] border-collapse">
+          <thead>
+            <tr>
+              <th className={`${thBase} text-left`}>Control</th>
+              <th className={th}>Catch before</th>
+              <th className={th}>Catch after</th>
+              {showFb && <th className={th}>False blocks before</th>}
+              {showFb && <th className={th}>False blocks after</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {d.rows.map((r) => (
+              <tr key={r.control} className="border-t border-line">
+                <td
+                  className={`border-l-2 py-1.5 pr-2 pl-2.5 text-[12px] font-semibold whitespace-nowrap text-text ${
+                    r.control === "edge" ? "border-l-cf-red" : "border-l-cf-amber"
+                  }`}
+                >
+                  {r.label}
+                </td>
+                <td className={`${cell} text-muted`} title={r.before ? `${r.before.caught}/${r.before.scanned}` : "not recorded"}>
+                  {pctOf(r.before)}
+                </td>
+                <td className={`${cell} text-text`} title={r.after ? `${r.after.caught}/${r.after.scanned}` : "not recorded"}>
+                  {pctOf(r.after)}
+                  {delta(r.before?.catchPct, r.after?.catchPct)}
+                </td>
+                {showFb && <td className={`${cell} text-muted`}>{fbPct(r.fbBefore)}</td>}
+                {showFb && (
+                  <td className={`${cell} text-text`}>
+                    {fbPct(r.fbAfter)}
+                    {delta(r.fbBefore?.falseBlockPct, r.fbAfter?.falseBlockPct, true)}
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

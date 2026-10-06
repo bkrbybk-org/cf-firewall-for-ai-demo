@@ -18,9 +18,10 @@
 //    (mirrors EdgeTab's treatment in components/analytics/EdgeTab.tsx). The
 //    `floor` flag is set whenever that's true, and headline text is prefixed
 //    "at least" — never presented as an exact number.
-//  - PromptAnalytics has no `truncated` field (it's a D1 SQL rollup, not a
-//    capped GraphQL query), so redaction/log counts are never marked as a
-//    floor.
+//  - PromptAnalytics is a D1 SQL rollup, not a capped query — but the log itself
+//    has retention (90 days, newest 1,000 rows; src/promptlog.ts). When
+//    `retention.windowPartial` says the window reaches past what is kept, the
+//    redaction count is a floor too, and says "at least".
 import type { Analytics, PromptAnalytics } from "./types";
 import type { Evidence } from "./compliance";
 
@@ -104,8 +105,9 @@ export function resolveEvidence(
       const scored = edgeOk ? (analytics!.aiScored ?? 0) : 0;
       const logged = logOk ? (promptAnalytics!.total ?? 0) : 0;
       if (scored === 0 && logged === 0) return noData(win);
-      const floor = edgeOk && analytics!.truncated === true;
-      const at = floor ? "at least " : "";
+      const edgeFloor = edgeOk && analytics!.truncated === true;
+      const logFloor = logOk && promptAnalytics!.retention?.windowPartial === true;
+      const at = edgeFloor ? "at least " : "";
       const parts: string[] = [];
       if (edgeOk && scored > 0) {
         const pii = analytics!.piiRequests ?? 0;
@@ -113,9 +115,14 @@ export function resolveEvidence(
       }
       if (logOk && logged > 0) {
         const red = promptAnalytics!.redactions ?? 0;
-        parts.push(`${plural(red, "redaction")} in the prompt log`);
+        parts.push(`${logFloor ? "at least " : ""}${plural(red, "redaction")} in the prompt log`);
       }
-      return { status: "ok", windowLabel: win, headline: parts.join(" · "), floor };
+      return {
+        status: "ok",
+        windowLabel: win,
+        headline: parts.join(" · "),
+        floor: edgeFloor || (logFloor && logged > 0),
+      };
     }
 
     // MEASURE 2.6 — unsafe-topic category event counts. Same no-data

@@ -979,12 +979,26 @@ export const openapi = {
               total: int("Rows in the whole table, regardless of filters."),
               limit: int(),
               offset: int(),
+              retention: ref("PromptLogRetention"),
             },
-            ["configured", "rows", "filtered", "total", "limit", "offset"],
+            ["configured", "rows", "filtered", "total", "limit", "offset", "retention"],
           ),
           notConfigured({ disabled: bool("The operator turned the feature off (`PROMPT_LOG_ENABLED`) — as opposed to D1 simply not being bound.") }),
         ],
       },
+      PromptLogRetention: obj(
+        {
+          maxAgeDays: int("Rows older than this are deleted (90)."),
+          maxRows: int("At most this many newest rows are kept (1000)."),
+          rows: int("Rows held now, across all time."),
+          oldestTs: nullable("integer", "Epoch ms of the oldest row held, or null when empty."),
+          windowPartial: bool(
+            "The requested window reaches past what the log keeps — older than `maxAgeDays` (or all time), or before `oldestTs` while the row cap is full. Every count in that window is then **at least**, not a total.",
+          ),
+        },
+        ["maxAgeDays", "maxRows", "rows", "oldestTs", "windowPartial"],
+        "Retention is applied when a prompt is written (same D1 batch as the insert), not on a timer, so a row past the limits can survive until the next write.",
+      ),
       PromptAnalyticsResponse: {
         oneOf: [
           obj(
@@ -1018,8 +1032,9 @@ export const openapi = {
                 ),
               ),
               latencyCoverage: obj({ withLatency: int(), total: int() }, ["withLatency", "total"], "How many rows in the window have a latency at all — old rows never will."),
+              retention: ref("PromptLogRetention"),
             },
-            ["configured", "total", "withPii", "redactions", "promptTokens", "completionTokens", "byOutcome", "byRoute", "byModel", "repeated", "series", "bucket", "firstTs", "lastTs", "latency", "latencyCoverage"],
+            ["configured", "total", "withPii", "redactions", "promptTokens", "completionTokens", "byOutcome", "byRoute", "byModel", "repeated", "series", "bucket", "firstTs", "lastTs", "latency", "latencyCoverage", "retention"],
           ),
           notConfigured({ disabled: bool() }),
         ],
@@ -1070,8 +1085,31 @@ export const openapi = {
           ray: nullable("string"),
           ts: nullable("integer"),
           promptPreview: nullable("string", "Redacted and truncated to ~200 characters — never the raw prompt."),
+          vendors: {
+            anyOf: [ref("RedTeamVendorVerdicts"), { type: "null" }],
+            description: "Each external guardrail's verdict on this prompt. Null when the response carried no pipeline (the edge refused it) or the run was saved before migration 0007 — *not recorded*, never a miss.",
+          },
+          expected: { anyOf: [{ type: "string", enum: ["allow"] }, { type: "null" }], description: "`allow` = a harmless row, scored only for false blocks. Never counted in the run's totals or by `diffRuns`." },
+          topic: nullable("string", "The benchmark topic: scan category, or the CSV goal (redacted, ≤120 chars)."),
+          lang: nullable("string", "Writing-system label from the full prompt, e.g. `Thai`, `Latin script`, `Thai + Latin script`."),
         },
-        ["attackKey", "attackId", "category", "severity", "state", "ray", "ts", "promptPreview"],
+        ["attackKey", "attackId", "category", "severity", "state", "ray", "ts", "promptPreview", "vendors", "expected", "topic", "lang"],
+      ),
+      RedTeamVendorVerdicts: obj(
+        {
+          mode: { type: "string", enum: ["parallel", "sequential"] },
+          verdicts: arr(
+            obj(
+              {
+                provider: ref("ExternalGuardrailProvider"),
+                verdict: { type: "string", enum: ["block", "allow", "alerts", "error", "notRun"], description: "`alerts` = Detect mode flagged but let it through; `error` is not a verdict; `notRun` = an earlier guardrail stopped it (sequential)." },
+              },
+              ["provider", "verdict"],
+            ),
+          ),
+        },
+        ["mode", "verdicts"],
+        "Provider ids and verdict words only — never a vendor's text. The server stores it all-or-nothing: one unknown provider or verdict drops the whole value.",
       ),
       RedTeamRunsResponse: {
         oneOf: [
@@ -1118,6 +1156,10 @@ export const openapi = {
                 ray: { type: "string", maxLength: 64 },
                 ts: int(),
                 prompt: { type: "string", description: "The **full** prompt. The server redacts it and stores at most a 200-character preview." },
+                vendors: { anyOf: [ref("RedTeamVendorVerdicts"), { type: "null" }] },
+                expected: { anyOf: [{ type: "string", enum: ["allow"] }, { type: "null" }], description: "Mark a harmless row. Its result is stored but must not be counted in the totals above." },
+                topic: { type: "string", description: "Redacted server-side, stored to 120 characters." },
+                lang: { type: "string", maxLength: 60, pattern: "^[A-Za-z][A-Za-z ()+]*$", description: "A languageOf() label; anything else is stored as null." },
               },
               ["attackKey", "attackId", "category", "state"],
             ),

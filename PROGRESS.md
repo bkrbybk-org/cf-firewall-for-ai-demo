@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **638 across 41 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **654 across 41 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,96 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Saved runs keep the guardrail benchmark (B, migration 0007); prompt-log retention 90 days / 1,000
+
+**Asked for:** "go ahead with B, and on this database — can we have 90 data retention or 1000 records for prompt
+logging?". The request said "or"; both limits were implemented, and whichever removes more wins. Deploy
+`15c6aedb-0524-4295-b28a-4ecc4fc08076`. The migration was applied to prod first; it is **purely additive** (four
+`ALTER TABLE … ADD COLUMN`).
+
+**B — the benchmark survives a reload.**
+- **Storage:** no new database or object storage, just the existing D1. `redteam_results` gains four columns:
+  - `vendors`: compact JSON `{"m","v":[[provider, verdict]]}`;
+  - `expected`;
+  - `topic`;
+  - `lang`.
+- **Server (`src/redteamruns.ts`):**
+  - `toStoredVendorsJson` accepts only `PROVIDER_IDS` and the five verdict words, with no duplicates and a known
+    mode. It is **all or nothing**: a partial value would say a guardrail never saw a prompt it did see. Only
+    provider and verdict are copied, so an extra vendor `message` is dropped.
+  - `parseStoredVendors` re-validates on read.
+  - `topic` is redacted and capped at 120 characters (it is operator text).
+  - `lang` must match the label pattern.
+- **Client:**
+  - `buildRunSaveRequest` now **saves harmless rows, marked**. The totals, fingerprint and "(N of M)" label are
+    still attack-only, and a run with only harmless rows returns null.
+  - The language is computed from the **full** prompt, because the stored preview's redaction tokens (`[email]`,
+    `[card ****1234]`) are Latin text and would turn a Thai prompt into "mixed".
+  - `diffRuns` filters harmless rows.
+  - `savedRunBenchmarkInput` feeds a saved run into the same `VendorScorecard`/`VendorBenchmark` the live run
+    uses.
+  - `controlDeltas` scores each control before and after over the prompts **both** runs contain.
+- **UI (`SavedRuns`):**
+  - Tick one run to get its Benchmark card. A run from before 0007 says it has edge results only.
+  - Tick two runs to get "Each control, before → after", with changes in percentage points, coloured by
+    better/worse (false blocks: down is better).
+- **Verified:**
+  - **Local D1:**
+    - A hostile POST stored known verdicts only; the `message` was dropped, `evil` stored `vendors` null and
+      `<b>` stored `lang` null. A `LIKE '%leak%' OR '%evil%'` count over `vendors` was **0**.
+  - **Browser** (stubbed `/api/chat`, real local D1):
+    - Saved #65 stored attack-only totals (1/2 reached, 4 external).
+    - **After a reload,** ticking #65 reproduced every live number: edge 17% / false blocks 20% / Balanced 48%,
+      AIRS 60/25/68, AIDR 60/0/80. The language view read Thai / Latin script from the stored labels.
+    - A second run (#66, AIDR now blocking the "N" prompts) compared over "6 attacks and 5 harmless prompts both
+      runs contain": AIDR catch 60% → 80% (+20 pts, green) and false blocks 0% → 75% (+75 pts, red). Both match a
+      hand count (4/5, 3/4).
+    - The diff above it counted 6 attacks, so harmless rows were excluded.
+  - **Prod:**
+    - `pragma_table_info` shows all four columns.
+    - `/api/redteam-runs` answers `{configured:true, runs:[]}`. No saved runs exist on prod, so a save round trip
+      there waits for the first real save; it was not created by me, to avoid adding demo data.
+
+**Prompt-log retention (`src/promptlog.ts`).**
+- **Limits:** `PROMPT_LOG_MAX_AGE_DAYS` = 90 and `PROMPT_LOG_MAX_ROWS` = 1000.
+- **How it prunes:** `logPrompt` now runs the insert and two prunes as **one D1 batch**:
+  - by age (`ts < now − 90 d`);
+  - then to the newest 1,000 (`ORDER BY ts DESC, ray DESC`, so same-millisecond rows cannot leave 1,001).
+- **Trade-off:** there is no cron. A row can outlive the limits until the next write.
+- **Honest coverage:**
+  - `/api/prompt-log` and `/api/prompt-analytics` return `retention`.
+  - `windowPartial` = the window reaches back further than 90 days (or "all"), or before the oldest row while the
+    cap is full. It is a property of the window against the policy, not a guess at whether rows were deleted, so
+    "at least" is never false.
+  - The prompt-log tab shows the amber "These counts are at least, not totals" note, and the About card states the
+    policy.
+  - `complianceEvidence` stops claiming prompt-log counts are never floors: PII evidence says "at least N
+    redactions" when the window is partial.
+- **Verified on local D1** (`wrangler-dev-promptlog`):
+  - Seeded one 91-day-old row plus 1,001 recent rows on top of 24 older local test rows (1,026 in total).
+  - One `/api/chat` with a fake `cf-ray`: the model call 502'd locally (known), but the row still logged.
+  - After the write: **1,000 rows exactly**, the 91-day row gone, the new row present.
+  - `windowPartial`: 24h `true` (cap full, before the oldest row), all-time `true`, last 30 min `false`.
+  - The tab showed the note on 24h and not on 1h.
+  - The prune also removed the 24 old local-only test rows; local data only.
+- **Prod:** the prompt log is still **off** (`PROMPT_LOG_ENABLED=false`), so retention is dormant there until it is
+  enabled.
+
+**Gates:** 654 across 41 files (+16).
+- **Mutations,** all caught:
+  - diff keeps harmless rows;
+  - totals include harmless rows;
+  - vendors stored partially;
+  - age not partial;
+  - cap-full always partial;
+  - the old-row language read from the preview;
+  - compliance ignores retention;
+  - `controlDeltas` joining on either side alone.
+- **Test fix:** the "before" mutation first survived, because the earlier run's prompts were a subset of the later
+  run's in the test. A prompt only in "before" was added, and it now goes red.
+- **API docs:** `openapi.ts` gains `RedTeamVendorVerdicts`, `PromptLogRetention`, the new result-row and save-input
+  fields, and `retention` on both prompt-log responses. Both schemas are confirmed in the served spec.
 
 ### 2026-10-06 — Red Team: harmless prompts score false blocks; balanced accuracy
 

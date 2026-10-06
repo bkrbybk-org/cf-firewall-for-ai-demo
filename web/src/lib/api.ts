@@ -152,6 +152,12 @@ export interface RedTeamResultInput {
   ray?: string | null;
   ts?: number | null;
   prompt: string;
+  // Benchmark fields (migration 0007). The server keeps only known provider ids and
+  // verdict words; it redacts and caps `topic`; `lang` must look like a languageOf label.
+  vendors?: { mode: "parallel" | "sequential"; verdicts: { provider: string; verdict: string }[] } | null;
+  expected?: "allow" | null;
+  topic?: string | null;
+  lang?: string | null;
 }
 
 export interface RedTeamRunSaveRequest {

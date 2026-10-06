@@ -145,6 +145,26 @@ describe("resolveEvidence", () => {
   // 4. Truncated — the 500-row dataset cap was hit, so counts are a floor.
   // Every number in the headline must read as "at least", never bare.
   describe("truncated (row cap hit — floor, not a total)", () => {
+    it("pii-detection: a prompt-log window past retention makes the redaction count a floor", () => {
+      const retention = { maxAgeDays: 90, maxRows: 1000, rows: 1000, oldestTs: 1, windowPartial: true };
+      const r = resolveEvidence(
+        { metric: "pii-detection" },
+        analytics({ configured: false }),
+        promptAnalytics({ total: 1000, redactions: 40, retention }),
+        24,
+      );
+      expect(r.floor).toBe(true);
+      expect(r.headline).toBe("at least 40 redactions in the prompt log");
+      const whole = resolveEvidence(
+        { metric: "pii-detection" },
+        analytics({ configured: false }),
+        promptAnalytics({ total: 10, redactions: 4, retention: { ...retention, rows: 10, windowPartial: false } }),
+        24,
+      );
+      expect(whole.floor).toBe(false);
+      expect(whole.headline).toBe("4 redactions in the prompt log");
+    });
+
     it("injection-scoring marks the result as a floor and prefixes counts", () => {
       const r = resolveEvidence(
         { metric: "injection-scoring" },

@@ -56,9 +56,15 @@ import { guardrailWriteAccess } from "./accessAuth";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
 import { shapeOf, type Shape } from "./responseShape";
-import { buildPromptLogQuery } from "./promptlog";
+import { buildPromptLogQuery, promptLogPruneStatements, promptLogRetention } from "./promptlog";
 import { aiErrorText, clientError } from "./publicError";
-import { parseRunId, REDTEAM_RUNS_LIST_LIMIT, REDTEAM_RUNS_MAX_STORED, validateRedTeamRunPayload } from "./redteamruns";
+import {
+  parseRunId,
+  parseStoredVendors,
+  REDTEAM_RUNS_LIST_LIMIT,
+  REDTEAM_RUNS_MAX_STORED,
+  validateRedTeamRunPayload,
+} from "./redteamruns";
 import { redact } from "./redact";
 import { createSseAccumulator } from "./sse";
 import type {
@@ -438,15 +444,16 @@ async function logPrompt(
   if (!env.DB || !promptLogEnabled(env) || !fields.ray) return;
   const p = redact(fields.prompt);
   const r = fields.reply != null ? redact(fields.reply) : { text: null, count: 0 };
+  const now = Date.now();
   try {
-    await env.DB.prepare(
+    const insert = env.DB.prepare(
       `INSERT OR REPLACE INTO prompt_log
        (ray, ts, route, model, gateway_id, guarded, outcome, prompt, reply, redactions, prompt_tokens, completion_tokens, latency_ms, streamed)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     )
       .bind(
         fields.ray,
-        Date.now(),
+        now,
         fields.route,
         fields.model,
         fields.gatewayId,
@@ -459,8 +466,11 @@ async function logPrompt(
         fields.completionTokens ?? null,
         fields.latencyMs ?? null,
         fields.streamed ? 1 : 0,
-      )
-      .run();
+      );
+    // Retention (src/promptlog.ts): the insert and both prunes in one batch — one
+    // transaction — so the table is never left over its limits by a half-run write.
+    const prunes = promptLogPruneStatements(now).map((s) => env.DB!.prepare(s.sql).bind(...s.binds));
+    await env.DB.batch([insert, ...prunes]);
   } catch {
     /* logging must never break chat */
   }
@@ -1016,7 +1026,10 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
     const filtered = await env.DB.prepare(`SELECT COUNT(*) AS n FROM prompt_log ${clause}`)
       .bind(...binds)
       .first<{ n: number }>();
-    const total = await env.DB.prepare("SELECT COUNT(*) AS n FROM prompt_log").first<{ n: number }>();
+    const total = await env.DB.prepare("SELECT COUNT(*) AS n, MIN(ts) AS oldestTs FROM prompt_log").first<{
+      n: number;
+      oldestTs: number | null;
+    }>();
     return Response.json({
       configured: true,
       rows: results ?? [],
@@ -1024,6 +1037,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
       total: total?.n ?? 0,
       limit,
       offset,
+      retention: promptLogRetention(since, total?.n ?? 0, total?.oldestTs ?? null, Date.now()),
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -1064,6 +1078,14 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
     // percentiles toward a number that was never actually measured.
     const whereLatency = `WHERE ${[...whereParts, "latency_ms IS NOT NULL"].join(" AND ")}`;
 
+    // Whole-table count and oldest row, unwindowed: what retention has left, so the
+    // response can say when the asked-for window reaches past it (promptLogRetention).
+    const held = db
+      .prepare("SELECT COUNT(*) AS n, MIN(ts) AS oldestTs FROM prompt_log")
+      .first<{ n: number; oldestTs: number | null }>()
+      // Awaited only after the rollups; without this a failure there would leave
+      // this promise's rejection unhandled.
+      .catch(() => null);
     const [totals, byOutcome, byRoute, byModel, repeated, rows, latency] = await Promise.all([
       db
         .prepare(
@@ -1199,7 +1221,12 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       })),
       latencyCoverage: { withLatency: totals?.withLatency ?? 0, total: totals?.total ?? 0 },
     };
-    return Response.json({ configured: true, ...summary });
+    const h = await held;
+    return Response.json({
+      configured: true,
+      ...summary,
+      retention: promptLogRetention(since, h?.n ?? 0, h?.oldestTs ?? null, Date.now()),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return Response.json({ configured: false });
@@ -1298,11 +1325,26 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       // below rather than leaving a run with zero results (bug #19).
       const resultStmt = env.DB.prepare(
         `INSERT INTO redteam_results
-           (run_id, attack_key, attack_id, category, severity, state, ray, ts, prompt_preview)
-         VALUES (?,?,?,?,?,?,?,?,?)`,
+           (run_id, attack_key, attack_id, category, severity, state, ray, ts, prompt_preview,
+            vendors, expected, topic, lang)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       );
       const statements = run.results.map((r) =>
-        resultStmt.bind(runId, r.attackKey, r.attackId, r.category, r.severity, r.state, r.ray, r.ts, r.promptPreview),
+        resultStmt.bind(
+          runId,
+          r.attackKey,
+          r.attackId,
+          r.category,
+          r.severity,
+          r.state,
+          r.ray,
+          r.ts,
+          r.promptPreview,
+          r.vendors,
+          r.expected,
+          r.topic,
+          r.lang,
+        ),
       );
       // Prune to the newest REDTEAM_RUNS_MAX_STORED runs so this table — sitting
       // behind an unauthenticated write in dev — cannot grow without bound.
@@ -1360,12 +1402,19 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       if (!run) return Response.json({ configured: true, run: null, results: [] }, { status: 404 });
       const { results } = await env.DB.prepare(
         `SELECT attack_key AS attackKey, attack_id AS attackId, category, severity, state,
-                ray, ts, prompt_preview AS promptPreview
+                ray, ts, prompt_preview AS promptPreview, vendors, expected, topic, lang
          FROM redteam_results WHERE run_id = ? ORDER BY id ASC`,
       )
         .bind(id)
-        .all<RedTeamResultRow>();
-      return Response.json({ configured: true, run, results: results ?? [] });
+        .all<Omit<RedTeamResultRow, "vendors"> & { vendors: string | null }>();
+      // vendors is stored as compact JSON and re-validated on the way out
+      // (parseStoredVendors): anything malformed reads as "not recorded".
+      const rows: RedTeamResultRow[] = (results ?? []).map((r) => ({
+        ...r,
+        vendors: parseStoredVendors(r.vendors),
+        expected: r.expected === "allow" ? "allow" : null,
+      }));
+      return Response.json({ configured: true, run, results: rows });
     }
 
     // List: newest SAVED first — by id, since `ts` is client-supplied (bug #18).

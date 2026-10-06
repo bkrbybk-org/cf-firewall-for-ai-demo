@@ -54,6 +54,10 @@ export interface RedTeamAttack {
   // alone rewards a control that blocks everything. Harmless rows are kept out of
   // every attack score (isAttack) and scored only as false blocks.
   expected?: "block" | "allow";
+  // Saved runs only: the language label computed from the FULL prompt when the run
+  // was saved. A saved run keeps only a redacted preview, whose "[email]"-style
+  // tokens would turn a Thai prompt into "mixed" if re-read (vendorBenchmark.ts).
+  lang?: string;
 }
 
 // True for a row that is an attack. Every attack metric — the headline, the
@@ -468,7 +472,7 @@ export interface RtRunResult {
   modelSkipped?: boolean;
   // What each external guardrail said about this attack (vendorScorecard.ts).
   // Absent when the request never reached the Worker (the edge refused it) or the
-  // response carried no pipeline. In-session only — not stored with saved runs.
+  // response carried no pipeline. Saved with a run since migration 0007 (RtStoredResult.vendors).
   vendors?: RtVendorOutcome[];
   pipelineMode?: "sequential" | "parallel";
 }
@@ -697,6 +701,12 @@ export interface RtStoredResult {
   ray?: string | null;
   ts?: number | null;
   promptPreview?: string | null;
+  // Benchmark fields (migration 0007) — absent/null on runs saved before it.
+  vendors?: RtVendorOutcome[] | null;
+  pipelineMode?: "sequential" | "parallel" | null;
+  expected?: "allow" | null; // harmless row: kept for false blocks, never in totals or diffRuns
+  topic?: string | null;
+  lang?: string | null;
 }
 
 // A saved run's metadata — everything GET /api/redteam-runs (list) returns
@@ -763,8 +773,12 @@ export interface RtRunDiff {
 //      reachedDelta — an "after" run with 10 new blocked attacks added must
 //      not look like 10 fixes on the ORIGINAL corpus.
 export function diffRuns(before: RtSavedRun, after: RtSavedRun): RtRunDiff {
-  const beforeByKey = new Map(before.results.map((r) => [r.attackKey, r]));
-  const afterByKey = new Map(after.results.map((r) => [r.attackKey, r]));
+  // Attack rows only. A saved run may carry harmless (expected=allow) rows for its
+  // false-block scores; one that reached the model is correct behaviour, and letting
+  // it into this diff would read as a gap that opened or closed.
+  const attacksOf = (run: RtSavedRun) => run.results.filter((r) => r.expected !== "allow");
+  const beforeByKey = new Map(attacksOf(before).map((r) => [r.attackKey, r]));
+  const afterByKey = new Map(attacksOf(after).map((r) => [r.attackKey, r]));
   const allKeys = new Set<string>([...beforeByKey.keys(), ...afterByKey.keys()]);
 
   const rows: RtDiffRow[] = [];
