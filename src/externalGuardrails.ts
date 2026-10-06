@@ -25,6 +25,7 @@
 //     and says the guardrail was unavailable; "allow" lets it through and marks
 //     it `failedOpen` so the reply shows it was not scanned.
 
+import { CATO_GUARD_PATH, CATO_REGIONS, scanPromptWithCato } from "./catoGuard";
 import { CISCO_AID_INSPECT_PATH, CISCO_AID_REGIONS, scanPromptWithCiscoAid } from "./ciscoAiDefense";
 import { AIDR_GUARD_PATH, AIDR_REGIONS, scanPromptWithAidr } from "./crowdstrikeAidr";
 import { LAKERA_GUARD_PATH, LAKERA_REGIONS, scanPromptWithLakera } from "./lakeraGuard";
@@ -60,6 +61,10 @@ interface ProviderSpec {
   profileLabel: string;
   keyLabel: string;
   vendor: string;
+  // Response fields whose VALUE *Test connection* may show, when it is a bare token
+  // (src/responseShape.ts). Only for a verdict that is a string with an undocumented
+  // allow value; everything else stays names and types.
+  revealPaths?: readonly string[];
 }
 
 export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
@@ -112,6 +117,22 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "Project ID",
     keyLabel: "API key",
     vendor: "Lakera (Check Point)",
+  },
+  // Built from Cato's console text and two live 401 probes; unverified until a real
+  // verdict is seen. Its verdict is a STRING (`required_action.action_type`) whose allow
+  // value is undocumented, so Test connection may show that one field's value.
+  "cato-ai-security": {
+    label: "Cato Networks AI Security",
+    supported: true,
+    verified: false,
+    regions: CATO_REGIONS,
+    defaultRegion: "global",
+    scanPath: CATO_GUARD_PATH,
+    requiresProfile: false,
+    profileLabel: "",
+    keyLabel: "API key",
+    vendor: "Cato Networks",
+    revealPaths: ["required_action.action_type"],
   },
 };
 
@@ -531,6 +552,10 @@ export async function scanWithKey(
     case "lakera-guard":
       // The project is the policy, as Prisma AIRS's profile is: profileName holds it.
       return scanPromptWithLakera({ baseUrl, apiKey, projectId: c.profileName, prompt: input.prompt }, fetchImpl);
+    case "cato-ai-security":
+      // The ray as Cato's session id: one request per session, since the Worker has no
+      // conversation id — but it joins Cato's console to the edge verdict and our log.
+      return scanPromptWithCato({ baseUrl, apiKey, prompt: input.prompt, sessionId: ray }, fetchImpl);
   }
 }
 

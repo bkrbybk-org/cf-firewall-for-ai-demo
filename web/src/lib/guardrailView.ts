@@ -21,6 +21,7 @@ export const PROVIDER_LABELS: Record<ExternalGuardrailProvider, string> = {
   "crowdstrike-aidr": "CrowdStrike AIDR",
   "cisco-ai-defense": "Cisco AI Defense",
   "lakera-guard": "Lakera Guard",
+  "cato-ai-security": "Cato AI Security",
 };
 
 // The long form for running prose; the chips and lists use the short one.
@@ -29,6 +30,7 @@ export const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
   "crowdstrike-aidr": "CrowdStrike Falcon AIDR",
   "cisco-ai-defense": "Cisco AI Defense",
   "lakera-guard": "Check Point Lakera Guard",
+  "cato-ai-security": "Cato Networks AI Security",
 };
 
 // What the provider's own reference id is called, so it can be searched for in
@@ -38,6 +40,9 @@ export const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
   "crowdstrike-aidr": "request_id",
   "cisco-ai-defense": "event_id",
   "lakera-guard": "request_uuid",
+  // Cato documents no request id, so its results carry none and this is never shown;
+  // the Cloudflare ray goes out as `x-cato-session-id` for matching in Cato's console.
+  "cato-ai-security": "x-cato-session-id",
 };
 
 export const DETECTION_LABELS: Record<string, string> = {
@@ -60,6 +65,8 @@ export const DETECTION_LABELS: Record<string, string> = {
   emoji: "Emoji",
   code: "Code",
   mcp_validation: "MCP validation",
+  // Cato AI Security sends readable names already (`policy_drill_down` keys such as
+  // "PII", entity types such as "SSN"), so they are shown as sent — no entries here.
 };
 
 // The provider name is data, not a constant: a server newer than this bundle may

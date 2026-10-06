@@ -55,8 +55,10 @@ src/                    Worker (TypeScript)
   openapi30.ts          its OAS 3.0.3 down-conversion at /api/openapi-3.0.json (Swagger UI + API Shield upload)
   prismaAirs.ts         Prisma AIRS sync-scan client (request, response/error parsing, timeout)
   crowdstrikeAidr.ts    CrowdStrike Falcon AIDR AI Guard client (request, verdict/202/error parsing, timeout)
-  ciscoAiDefense.ts     Cisco AI Defense Inspection API client — built, listed as not yet supported (unverified)
+  ciscoAiDefense.ts     Cisco AI Defense Inspection API client — configurable, unverified
   lakeraGuard.ts        Check Point Lakera Guard v2 client (Detect mode → allow with alerts) — same status
+  catoGuard.ts          Cato Networks AI Security API Guard client (allowlist parser: Cato echoes the raw data) — same status
+  responseShape.ts      Test connection's response shape: names, types, booleans — never text
   prismaAirsReport.ts   Prisma AIRS threat-scan report fetch + allowlist parser (no prompt content leaves it)
   externalGuardrails.ts provider registry + region allowlist, AES-GCM key storage, config validation, pipeline config + executePipeline / runPipeline
   percentile.ts         nearest-rank percentile (JS + SQL forms) behind every latency p50/p95 (bug #24)
@@ -230,7 +232,7 @@ npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote   # or --local for 
 
 ## External guardrails (Prisma AIRS)
 
-`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Two are live: Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) and **CrowdStrike Falcon AIDR** (AI Detection and Response, AI Guard). Two more — **Cisco AI Defense** and **Check Point Lakera Guard** — are configurable but marked **unverified** until a real response has been checked (below).
+`/guardrails` configures third-party guardrails that every `/api/chat` prompt is forwarded to **after** the Cloudflare edge scan and **before** the model, on both routes. Two are live: Palo Alto Networks **Prisma AIRS** (AI Runtime Security, API intercept) and **CrowdStrike Falcon AIDR** (AI Detection and Response, AI Guard). Three more — **Cisco AI Defense**, **Check Point Lakera Guard** and **Cato Networks AI Security** — are configurable but marked **unverified** until a real response has been checked (below).
 
 **What you configure, per provider:** region (the endpoint), the secret, the fail mode, and the enable toggle — plus, for Prisma AIRS only, the AI security profile name. *Test connection* scans a fixed benign prompt with the **saved** settings, through the same code path as a real chat turn.
 
@@ -283,6 +285,30 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 - Both parsers read the live shape first.
 
 Everything else is still *documented, not verified*.
+
+**Configurable, marked "unverified": Cato Networks AI Security** (API Guard; built and deployed 2026-10-06).
+Verified the same way as the two above. Facts are from Cato's console text plus live probes.
+
+| | Cato Networks AI Security (API Guard) |
+|---|---|
+| Endpoint | `POST https://api.aisec.catonetworks.com/fw/v1/analyze` — one host, no regions |
+| Secret | The Guard's API key as `Authorization: Bearer`. A Guard has two keys; either works (for rotation) |
+| Policy | The Guard the key belongs to — nothing to name |
+| Sent besides the prompt | Only the header `x-cato-session-id` = the ray (one request per session: the Worker has no conversation id). The body is exactly `messages: [{role: "user", content}]` — no history, so every vendor scans the same text |
+| Verdict field | `required_action.action_type`. **Only `"block_action"` is documented**, so it is the only block, and **every other answer is an error** (the fail mode decides) until a real *allow* has been seen (decided with the user) |
+| Detections shown | `analysis_result.policy_drill_down` keys that fired (e.g. `PII`), then entity `type`s (e.g. `SSN`), each shape-checked |
+| Redaction | Cato returns a redacted copy. It is **reported, not applied** (decided with the user), as with AIDR |
+| Reference id | None documented; none shown |
+
+Cato specifics, each a deliberate choice:
+- **Cato's response echoes the sensitive data back.** `detection_message` reads `"078-05-1120" detected as SSN`. Each `content`, `entity.content` and `redacted_chat` hold the original text. The parser (`src/catoGuard.ts`) copies **none** of it. It keeps only names that look like identifiers (no free text, no run of 3+ digits) and the operator's policy name. A test feeds the documented sample through and asserts the SSN appears nowhere in the result.
+- **Error text.** A string `detail` is shown only on 401/403 (the key errors seen live). On a 422, only the first `msg` is shown, never `input`, which echoes the prompt. On any other status, only the status is shown.
+- **Test connection can show one value.** The verdict is a string, not a boolean, so the *Response shape* panel shows `required_action.action_type` as `string = <value>`, but only when that value is a bare lowercase token (`src/responseShape.ts`). That is how the undocumented allow value gets seen. Every other field is still names and types only.
+- **Checked live** (unauthenticated probes, 2026-10-06):
+  - **No key:** 401 `{"detail":"Authorization header is required"}`.
+  - **Bad key:** 401 `{"detail":"Invalid API token"}`. Because the two differ, a test proves the key arrived.
+  - **Made-up path:** 404, so the path is real.
+  - **Local workerd cannot reach the host** (`internal error`, retried), like Prisma AIRS and CrowdStrike, so Cato is tested on prod only.
 
 ### Who can change these settings (`GUARDRAIL_ADMIN_EMAILS`)
 
@@ -659,7 +685,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **559 tests across 37 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **599 tests across 38 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -677,7 +703,7 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
-| `src/responseShape.test.ts` (3) | The *Test connection* response shape: keys, types and booleans kept; a string's or number's value never (an explanation echoing the prompt, an event id, a severity, a rule name, a count — none appear); depth, key-count and key-length caps |
+| `src/responseShape.test.ts` (7) | The *Test connection* response shape: keys, types and booleans kept; a string's or number's value never (an explanation echoing the prompt, an event id, a severity, a rule name, a count — none appear); depth, key-count and key-length caps · the one exception, a named string verdict path (Cato's `action_type`): shown only at that exact path and only as a bare lowercase token — an SSN, a sentence, mixed case, a hyphen, digits-only or 41 characters stay "string", and Cato's echoed SSN never appears. **Mutation-verified** (any string revealed; any path revealed) |
 | `src/accessAuth.test.ts` (8) | The guardrail-settings write gate (#26), with a generated RSA key and a fake certs endpoint: a valid token passes; a forged signature (same `kid`, other key), wrong issuer, wrong audience, expired token and `alg: none` are refused; an unknown `kid` refetches the keys once; off when no list is set; a service token, an unlisted email, no login and a bad token are refused; fails closed when the list is set but the Access config is missing. **Mutation-verified** (skip the signature check; skip the audience check) |
 | `web/src/lib/controlMatrix.test.ts` (11) | The per-turn control strip: a 403 is a WAF block only once the verdict says so; nothing credited past where the prompt reached; parallel multi-block marks every blocker decisive; a fail-closed error is "unavailable", never "blocked", and shows no findings; Detect mode is "flagged"; direct route / unguarded gateway / none enabled are "off". **Mutation-verified** |
 | `web/src/lib/vendorScorecard.test.ts` (7) | Controls compared: each control scored only on what it scanned (an edge-refused prompt is "not seen" for the guardrails, never a miss); "only this control"; errors aren't misses and Detect alerts aren't catches; a control that scanned nothing has no rate, never 0%; uneven coverage flagged; `toVendorOutcomes` mapping. **Mutation-verified** (count "not seen" as missed) |
@@ -696,7 +722,8 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `src/ciscoAiDefense.test.ts` (21) | Cisco AI Defense client from its docs: only `messages` + `client_transaction_id` sent; **a 2xx without a boolean `is_safe` is an error**; `severity` never overrides `is_safe` (both directions); rules → `detected`, classifications as fallback; the **live** 401 body (`details`) read. **Mutation-verified** (missing verdict = allow, severity flips it, user metadata sent, classification as verdict) |
 | `src/lakeraGuard.test.ts` (24) | Lakera Guard client from its docs: body is exactly `messages`, `project_id`, `breakdown` — never `payload` or `metadata`; **a 2xx without a boolean `flagged` is an error**; Detect mode with detections is allow + `detectOnly`, never a block or a clean pass; 429 says rate limited; the **live** 401 body (`error` is a code, `message` the text) read. **Mutation-verified** (missing verdict = allow, Detect as block, Detect as clean pass, `payload: true`) |
 | `src/crowdstrikeAidr.test.ts` (15) | The CrowdStrike AIDR client: the `/aidr/aiguard` path (not the spec's 404 one), Bearer collector token, no `user_id`/`source_ip`, the three official hosts; **a 200 without a boolean `blocked`, and a 202, are errors — never an allow**; verdict from `blocked` alone, never the detectors; redaction flagged; the live gateway's error body and the spec's validation errors; timeout and network failure. **Mutation-verified**: five planted regressions (missing `blocked` = allow, 202 as a verdict, verdict from detectors, the spec's path, always-allow) were each caught |
-| `src/externalGuardrails.test.ts` (34) | **Registry**: Cisco AI Defense and Lakera Guard are configurable but `verified: false`, under the same enable rules (a key; Lakera's project ID); a stored order from before they existed normalises to all four. **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
+| `src/catoGuard.test.ts` (35) | Cato AI Security client from its console text: body exactly one user message, `x-cato-session-id` only when a ray exists; **only `block_action` blocks — missing, null, `no_action`, `allow` or any other value is an error**, naming the value only when it is a bare token; the documented sample's echoed SSN, `detection_message` and redacted chat appear nowhere in the result, block or error; detected names shape-checked (no free text, no 3+ digit run); a string `detail` only on 401/403, a 422's `msg` never its `input`; the **live** 401 bodies; 429, non-JSON, timeout, network error. **Mutation-verified** (unknown action as allow, `detection_message` into summary or error, `entity.content` into detected, an invented session id, extra body fields, 422 `input` echoed) |
+| `src/externalGuardrails.test.ts` (35) | **Registry**: Cisco AI Defense, Lakera Guard and Cato AI Security are configurable but `verified: false`, under the same enable rules (a key; Lakera's project ID); Cato has one host and is the only provider with a revealable path; a stored order from before they existed (prod's four-provider order included) normalises to all five. **Pipeline**: sequential order and short-circuit with `notRun` reasons; parallel wall clock = the slowest, with every verdict kept; fail-open vs fail-closed; guardrail-only even with nothing enabled or no secret; stored order honoured over D1 row order; strict `order` validation — mutation-verified with six engine regressions, all caught (the order one only after a test was added for it). Config validation (a URL can never become the endpoint; nothing can be enabled without a key and profile), key secrecy (never in the public config), AES-GCM (round trip, fresh IV, bound to provider, tamper detection), fail-open vs fail-closed, and that the decrypted key is sent only to the configured region's official host. **Mutation-verified**: six planted security regressions (leaking the stored row, allow-on-no-action, dropping the region check, ignoring the fail mode, unbinding the ciphertext, enabling without a key) were each caught |
 | `src/sse.test.ts` (11) | The Worker-side SSE reader that recovers streamed replies, including lines split across chunk boundaries |
 | `src/chatText.test.ts` (46) | `sanitizeHistory` on hostile history: only user/assistant turns with non-blank string content, extra fields stripped, the turn cap and the character cap with the newest turns winning (exactly at the cap kept, one over dropped) · `stripThink`: the answer after `</think>`, the partial reasoning when cut off mid-think, a think-only reply shown without either tag, both tags case-insensitive · `extractReply` across every Workers AI response shape and its fall-through order. **Mutation-verified** (cap `>` → `>=`, admitting a `system` turn, `stripThink` on `reasoning`) |
 | `web/src/lib/chatHistory.test.ts` (30) | `buildHistory` resends only completed user → assistant pairs (a blocked, guardrail-stopped, guardrail-only or failed prompt is never resent) · `estimateUsage` chars ÷ 4 rounded up · `estimateCost`: unknown model or a missing price is `null`, a price of 0 is a real 0. **Mutation-verified** (`ceil` → `floor`; `== null` → falsy) |

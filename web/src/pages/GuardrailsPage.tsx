@@ -61,6 +61,8 @@ const POLICY_HINT: Partial<Record<ExternalGuardrailProvider, string>> = {
     "Set in the Falcon console on the collector this token belongs to — the app does not choose it. The policy that ran is shown on each verdict.",
   "cisco-ai-defense":
     "Set in AI Defense on the application connection this key belongs to — the app does not choose it.",
+  "cato-ai-security":
+    "Set in Cato on the API Guard this key belongs to — the app does not choose it. Either of the Guard's two keys works.",
 };
 
 function AccessNote({ access }: { access: GuardrailAccess }) {
@@ -443,8 +445,9 @@ function ProviderCard({
             {regionInfo && region !== config.region ? `${regionInfo.url} (after save)` : config.endpoint}
           </div>
           <Hint>
-            No free-text endpoint on purpose: the {keyWord(config)} is only ever sent to {config.vendor}'s
-            official hosts.
+            No free-text endpoint on purpose: the {keyWord(config)} is only ever sent to{" "}
+            {config.vendor.endsWith("s") ? `${config.vendor}'` : `${config.vendor}'s`} official{" "}
+            {config.regions.length === 1 ? "host" : "hosts"}.
           </Hint>
         </div>
 

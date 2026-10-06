@@ -109,7 +109,12 @@ export interface ChatResponse {
 // ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
 // Third-party guardrails the Worker forwards each prompt to before calling the
 // model. Any number may be enabled; the pipeline config decides how they run.
-export type ExternalGuardrailProvider = "prisma-airs" | "crowdstrike-aidr" | "cisco-ai-defense" | "lakera-guard";
+export type ExternalGuardrailProvider =
+  | "prisma-airs"
+  | "crowdstrike-aidr"
+  | "cisco-ai-defense"
+  | "lakera-guard"
+  | "cato-ai-security";
 
 // GET /api/external-guardrails/report — Prisma AIRS's own per-detection report
 // for one scan. Allowlisted on the server: names, categories, verdicts, actions

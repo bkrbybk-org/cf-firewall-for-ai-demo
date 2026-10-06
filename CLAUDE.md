@@ -133,8 +133,8 @@ alters what a customer sees in a demo. State it and let them choose.
   `npm run check` — piping it through `tail -1` once hid the error.
 - Local `wrangler dev` Workers AI can 502 (`internal error` from miniflare's AI proxy) while prod is
   fine; take chat samples from prod when that happens.
-- Local workerd cannot fetch Palo Alto Networks' Prisma AIRS hosts **or** `api.crowdstrike.com`
-  (`internal error`, reproduced with a minimal worker; `curl` works). Locally every external guardrail
+- Local workerd cannot fetch Palo Alto Networks' Prisma AIRS hosts, `api.crowdstrike.com` **or**
+  `api.aisec.catonetworks.com` (`internal error`, reproduced with a minimal worker; `curl` works). Locally every external guardrail
   reports unavailable — verify it on prod with *Test connection* while it is **disabled**, so live chat is
   never affected.
 - Facts about a third-party API come from its own OpenAPI spec (PANW's is in the public
@@ -152,7 +152,12 @@ alters what a customer sees in a demo. State it and let them choose.
   verdict payload has been seen; the admin's *Test connection* returns the response's shape (names, types,
   booleans — never text, `src/responseShape.ts`) as that evidence. Unlike PANW and CrowdStrike, local workerd
   CAN reach Cisco and Lakera, and both answer a bad key differently from a missing one, so a dummy-key test
-  there proves the key arrived.
+  there proves the key arrived. Cato AI Security also answers a made-up path with 404 and a bad key differently
+  from a missing one (`{detail}` bodies), but local workerd cannot reach it — test it on prod. Cato's verdict is a
+  **string** (`required_action.action_type`) whose allow value is undocumented; a provider's `revealPaths` lets
+  *Test connection* show such a field's value, only as a bare lowercase token — the one exception to "never text".
+  Some vendors echo the matched data in their response (Cato's `detection_message` quotes the SSN): a parser
+  copies out only an allowlist of names, never a vendor's message or content field.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

@@ -445,7 +445,7 @@ export const openapi = {
                 verified: bool("This provider's parser has been checked against a real payload."),
                 responseShape: {
                   type: ["object", "null"],
-                  description: "The vendor response's field names, types and booleans — never a string's or number's value (src/responseShape.ts). Evidence for verifying an unverified parser.",
+                  description: "The vendor response's field names, types and booleans — never a string's or number's value (src/responseShape.ts), except a string verdict field the provider names (Cato's `required_action.action_type`), shown as `string = <value>` only when the value is a bare lowercase token. Evidence for verifying an unverified parser.",
                 },
               },
               ["ok", "result"],
@@ -632,8 +632,8 @@ export const openapi = {
       // ── external guardrails ─────────────────────────────────────────────
       ExternalGuardrailProvider: {
         type: "string",
-        enum: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"],
-        description: "`cisco-ai-defense` and `lakera-guard` are listed with `supported: false` until verified against a live payload.",
+        enum: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"],
+        description: "`cisco-ai-defense`, `lakera-guard` and `cato-ai-security` are configurable but `verified: false` until their parser has been checked against a real payload.",
       },
       ExternalGuardrailResult: obj(
         {
@@ -745,7 +745,7 @@ export const openapi = {
           provider: ref("ExternalGuardrailProvider"),
           label: str(),
           supported: bool("False → listed for context, cannot be configured yet."),
-          verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard until verified)."),
+          verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard, Cato AI Security until verified)."),
           enabled: bool(),
           region: str(),
           endpoint: str("Full scan URL derived from `region` (read-only)."),

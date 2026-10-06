@@ -1571,7 +1571,9 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
   try {
     const c = (await loadAll(env.DB!)).find((x) => x.provider === provider)!;
     const spec = PROVIDERS[c.provider];
-    if (!c.apiKeyEnc) return Response.json({ error: `No ${spec.keyLabel.toLowerCase()} saved` }, { status: 400 });
+    // "API key" keeps its acronym; "Collector token" reads as "collector token".
+    const keyWord = /^[A-Z]{2}/.test(spec.keyLabel) ? spec.keyLabel : spec.keyLabel.toLowerCase();
+    if (!c.apiKeyEnc) return Response.json({ error: `No ${keyWord} saved` }, { status: 400 });
     if (spec.requiresProfile && !c.profileName) return Response.json({ error: `No ${spec.profileLabel} saved` }, { status: 400 });
     let apiKey: string;
     try {
@@ -1590,7 +1592,7 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
     const recording: typeof fetch = async (input, init) => {
       const res = await fetch(input, init);
       try {
-        responseShape = { status: res.status, shape: shapeOf(await res.clone().json()) };
+        responseShape = { status: res.status, shape: shapeOf(await res.clone().json(), { reveal: spec.revealPaths }) };
       } catch {
         responseShape = { status: res.status, shape: null }; // not JSON
       }

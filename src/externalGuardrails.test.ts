@@ -10,6 +10,7 @@
 import { describe, expect, it } from "vitest";
 import {
   decryptSecret,
+  PROVIDER_IDS,
   PROVIDERS,
   defaultConfig,
   defaultPipeline,
@@ -65,6 +66,21 @@ describe("validateUpdate", () => {
       error: "Cannot enable: a project ID is required",
     });
     expect(validateUpdate({ provider: "cisco-ai-defense", apiKey: "k", enabled: true }, defaultConfig("cisco-ai-defense")).ok).toBe(true);
+  });
+
+  // Cato: the Guard's key is the policy, so a key alone enables it; one official host.
+  // Its string verdict is the only field Test connection may show the value of.
+  it("lets Cato AI Security be configured, unverified, with a key alone and one host", () => {
+    const spec = PROVIDERS["cato-ai-security"];
+    expect([spec.supported, spec.verified, spec.requiresProfile]).toEqual([true, false, false]);
+    expect(spec.regions.map((r) => r.url)).toEqual(["https://api.aisec.catonetworks.com"]);
+    expect(spec.revealPaths).toEqual(["required_action.action_type"]);
+    expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].revealPaths)).toEqual(["cato-ai-security"]);
+    expect(validateUpdate({ provider: "cato-ai-security", enabled: true }, defaultConfig("cato-ai-security"))).toMatchObject({
+      ok: false,
+      error: "Cannot enable: save an API key first",
+    });
+    expect(validateUpdate({ provider: "cato-ai-security", apiKey: "k", enabled: true }, defaultConfig("cato-ai-security")).ok).toBe(true);
   });
 
   it("refuses to enable without a key, and without a profile", () => {
@@ -183,30 +199,34 @@ describe("stopsTurn", () => {
 
 describe("pipeline config", () => {
   it("normalises a stored order into a full permutation", () => {
-    const ALL = ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"];
-    expect(normalizeOrder(["lakera-guard", "crowdstrike-aidr", "cisco-ai-defense", "prisma-airs"])).toEqual([
+    const ALL = ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"];
+    expect(normalizeOrder(["lakera-guard", "crowdstrike-aidr", "cato-ai-security", "cisco-ai-defense", "prisma-airs"])).toEqual([
       "lakera-guard",
       "crowdstrike-aidr",
+      "cato-ai-security",
       "cisco-ai-defense",
       "prisma-airs",
     ]);
     // Unknown ids dropped, duplicates removed, missing providers appended — a
     // hand-edited row can never make a provider vanish from the pipeline.
     // Missing ones are appended in registry order, so an order stored before a
-    // provider existed (2026-10-05: two providers became four) stays valid.
+    // provider existed (2026-10-05: two providers became four; 2026-10-06: five) stays valid.
     expect(normalizeOrder(["bogus", "crowdstrike-aidr", "crowdstrike-aidr"])).toEqual([
       "crowdstrike-aidr",
       "prisma-airs",
       "cisco-ai-defense",
       "lakera-guard",
+      "cato-ai-security",
     ]);
+    // Prod's stored order from before Cato existed: Cato joins at the end.
+    expect(normalizeOrder(["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"])).toEqual(ALL);
     expect(normalizeOrder([])).toEqual(ALL);
   });
 
   it("accepts a valid update and leaves omitted fields alone", () => {
     const v = validatePipelineUpdate({ mode: "parallel" }, defaultPipeline());
-    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"] } });
-    const order = ["crowdstrike-aidr", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
+    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"] } });
+    const order = ["crowdstrike-aidr", "cato-ai-security", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
     const w = validatePipelineUpdate({ guardrailOnly: true, order }, defaultPipeline());
     expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order });
   });

@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **559 across 37 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **599 across 38 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,55 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Cato Networks AI Security: guardrail #5, configurable, unverified
+
+**Asked for:** "Check below information for Cato Networks guardrails and create plan for implement" (the user
+pasted Cato's API Guard console text), then the plan's tasks 1–6. Decided with the user: (1) any `action_type`
+other than `block_action` is an **error** until a real allow is seen; (2) Cato's redaction is **shown, not
+applied**; (3) `x-cato-session-id` = the ray; (4) *Test connection* may show that one verdict value. Deploy
+`0e440c33-a17c-464f-8a8c-fab33c9fbbf6`.
+
+- **Probed before planning** (no key, 2026-10-06): the path answers 401 `{"detail":"Authorization header is
+  required"}`, a bad key 401 `{"detail":"Invalid API token"}`, a made-up path 404. So the path is real and a
+  key test proves the key arrived. The `{detail}` body is not in Cato's text.
+- **Client** `src/catoGuard.ts` (+35 tests): written by Sonnet from a brief that pinned the semantics, then
+  reviewed and changed here. Two privacy holes closed in review:
+  - A string `detail` was shown for **any** status, so a 400 quoting the prompt would have reached the
+    client. It is now shown on 401/403 only.
+  - The `detected` name filter accepted SSN-shaped strings (`078-05-1120` fits its charset). A run of 3+
+    digits is now refused.
+  - Mutations re-run here, not taken from the report: any action blocks (5 red), `detection_message` into
+    `summary` (4 red), digit-run filter dropped (1 red).
+- **Why the parser is an allowlist:** Cato echoes the raw data back. `detection_message`, `content`,
+  `entity.content` and `redacted_chat` all carry the SSN in Cato's own sample.
+- **Registry:** `cato-ai-security`, one host, `requiresProfile: false`, key label "API key". "Guard API key"
+  was tried and read as "save a guard api key first", because the label is lowercased.
+  `revealPaths: ["required_action.action_type"]`.
+- **Response shape** (`src/responseShape.ts`, +4 tests): a provider may name exact dotted paths whose string
+  value is shown as `string = <value>`, only when it matches `^[a-z][a-z0-9_]{0,39}$`. Mutation-verified
+  (any string revealed: 1 red; any path revealed: 2 red).
+- **Small fixes found on the way:**
+  - The test handler said "No api key saved" (the same lowercasing). It now keeps the acronym.
+  - "Cato Networks's official hosts" now reads "Cato Networks' official host".
+  - openapi's provider enum note still said Cisco/Lakera were `supported: false`. Fixed.
+- **Local workerd cannot reach Cato** (`internal error`, three tries; `curl` works), like Prisma AIRS and
+  CrowdStrike. The planned dummy-key test through the Worker is therefore impossible locally. The dummy key
+  saved for it was cleared (`apiKeySet: false` for all five).
+- **Browser** (`wrangler dev`, a stubbed five-vendor parallel pipeline with Cato blocking):
+  - "Blocked by 1 of 5", Cato DECIDED with `PII`/`SSN`, Lakera's Detect note, "Where they differ".
+  - Five-entry control strip; compact layout at 375 px in light mode, no horizontal scroll.
+  - `/guardrails` at 1280 px: the five-step diagram is tight but legible. At 375 px: the Cato card, no
+    horizontal scroll.
+  - The one console 400 was the stub's non-hex ray hitting `/api/verdict`.
+- **Gates:** 599 tests across 38 files; check, web typecheck and build clean.
+- **Prod:**
+  - `npm run smoke:prod` all pass.
+  - `/api/external-guardrails` lists `cato-ai-security`: supported, `verified: false`, disabled, no key,
+    endpoint `https://api.aisec.catonetworks.com/fw/v1/analyze`.
+  - The stored pipeline order (AIRS + AIDR parallel) normalised with Cato appended; mode unchanged.
+  - A service-token test POST returns **403** (admin gate).
+  - The bundle contains the label and the policy hint; `/api/openapi.json` has the enum value.
 
 ### 2026-10-06 — chat-helper tests, a CVD palette fix (#10), the Malicious Code mapping (#20)
 
@@ -2112,6 +2161,17 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
      set `verified: true`, deploy, and then enable in a 4-way parallel run.
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
+
+**Plan: Cato Networks AI Security as guardrail 5** (written and tasks 1–6 done 2026-10-06; see Implemented).
+- [x] 1–6. Registry, client + tests, wire-up, the response-shape value reveal, five-vendor UI check, deploy.
+  Local workerd cannot reach Cato, so there was no local dummy-key test through the Worker.
+- [ ] 7. **User:** on `/guardrails`, save the Cato Guard's API key with the guardrail **disabled**. Run *Test
+  connection* and *Test with an attack prompt*. Paste both Response shapes; `required_action.action_type`
+  shows its value. **Self:** add the real allow value (and any other value seen) to the parser, with a test built
+  from that shape; check `detected`, `policy` and the redaction flag against the real block; set
+  `verified: true`; deploy. Then the user may enable it in the parallel run.
+- [ ] 8. Docs after 7. Also check whether a response header carries a request id (none is documented in the
+  body).
 
 **Decided by the user (2026-10-05):**
 - **(a)** Lakera's Detect mode counts as **allow with alerts**: `outcome: "allow"`, `detectOnly: true`, an amber
