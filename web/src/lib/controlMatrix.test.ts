@@ -85,7 +85,7 @@ describe("controlMatrix — an error is never a verdict", () => {
     const c = byKey(
       m({ kind: "external", pipeline: P({ results: [R({ provider: "prisma-airs", outcome: "error", detected: ["dlp"] })], stoppedBy: "prisma-airs" }) }),
     );
-    expect(c["ext:prisma-airs"]).toMatchObject({ state: "unavailable", stateLabel: "unavailable · fail closed", decisive: true });
+    expect(c["ext:prisma-airs"]).toMatchObject({ state: "unavailable", stateLabel: "no verdict · fail closed", decisive: true });
     expect(c["ext:prisma-airs"].detail).not.toContain("dlp");
   });
 

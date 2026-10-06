@@ -11,7 +11,7 @@
 //     when (fail closed) it is what stopped the turn.
 //   - read "passed" into a layer that was off. A direct-route turn has no AI
 //     Gateway; a gateway without Guardrails did not check anything.
-import { providerLabel } from "./guardrailView";
+import { noVerdictReason, providerLabel } from "./guardrailView";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 import type { Outcome } from "./verdict";
 
@@ -123,15 +123,19 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
     return cell(key, "external", name, "passed", `${name} allowed the prompt.`);
   }
   // An error is never a verdict.
-  if (r.failedOpen) return cell(key, "external", name, "unavailable", `${name} could not be reached; fail open, so the prompt went on unscanned by it.`, false, "unavailable · fail open");
+  if (r.failedOpen) {
+    const why = noVerdictReason(r);
+    return cell(key, "external", name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail open, so the prompt went on without its verdict.`, false, "no verdict · fail open");
+  }
+  const why = noVerdictReason(r);
   return cell(
     key,
     "external",
     name,
     "unavailable",
-    `${name} could not be reached; fail closed${p.stoppedBy === r.provider ? ", so the turn stopped here" : ""}. Not a verdict.`,
+    `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed${p.stoppedBy === r.provider ? ", so the turn stopped here" : ""}. Not a verdict.`,
     p.stoppedBy === r.provider,
-    "unavailable · fail closed",
+    "no verdict · fail closed",
   );
 }
 

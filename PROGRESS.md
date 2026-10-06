@@ -626,6 +626,26 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-06 — "Could not be reached" said only when it is true
+
+**Reported:** a Thai OTP-redirect prompt (two phone numbers) showed Cato as **"unscanned (fail open)" —
+"Could not be reached"**, while the next prompt (a plain injection) was blocked by Cato. The Cato result was an
+error in **299 ms**, too fast for the 5 s timeout. So Cato answered, and the parser refused the answer: anything
+but `required_action: null` or `block_action` is an error (decision 1). The operator's fail-open setting then let
+the prompt on. The card's wording claimed an outage it had no evidence of. The actual reason was only in the
+card's details ("error" row). The verdict value Cato sent for that prompt is **still to be read** from that row.
+
+**Fix:** `noVerdictReason()` (`guardrailView.ts`) says only what the result proves:
+- no HTTP status → "Could not be reached";
+- a 2xx → "Answered, but not with a verdict this app can read";
+- anything else → "Returned HTTP N".
+
+It is used by the card note, the control strip (fail open and fail closed) and the session export (which now
+carries `httpStatus`). The state label "unscanned (fail open)" became **"no verdict (fail open)"**, since a
+provider that answered did scan the prompt. +1 test for the three reasons; two tests re-pinned. Gates: 607.
+Prod `af428e2d-ea86-49f3-80a0-859b6241161b`: smoke all pass; the bundle carries the new strings and not the
+old label.
+
 ### 2026-10-06 — the chat transcript went blank: sr-only + scrollIntoView, again
 
 **Reported** with a screenshot and two screen recordings (prod, 1680×990, stream replies on). The chat area

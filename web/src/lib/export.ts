@@ -2,6 +2,7 @@
 // replies, edge verdicts) into a downloadable JSON or Markdown report.
 import { getVerdict } from "./api";
 import { topicLabel } from "./format";
+import { noVerdictReason } from "./guardrailView";
 import { verdictOutcome } from "./verdict";
 import type { Msg } from "../hooks/useChat";
 import type { GuardrailPipelineResult, Verdict as VerdictData } from "./types";
@@ -24,7 +25,7 @@ type VerdictSummary =
 interface ExportGuardrails {
   mode: string;
   stoppedBy: string | null;
-  results: { provider: string; outcome: string; latencyMs: number; failedOpen?: boolean; category?: string; detected?: string[] }[];
+  results: { provider: string; outcome: string; latencyMs: number; failedOpen?: boolean; httpStatus?: number; category?: string; detected?: string[] }[];
   notRun: { provider: string; reason: string }[];
   latencyMs: number;
 }
@@ -38,6 +39,7 @@ function summarizePipeline(p: GuardrailPipelineResult): ExportGuardrails {
       outcome: r.outcome,
       latencyMs: r.latencyMs,
       failedOpen: r.failedOpen || undefined,
+      httpStatus: r.httpStatus, // only so an error can say whether the provider answered
       category: r.category,
       detected: r.detected,
     })),
@@ -260,8 +262,8 @@ export function toMarkdown(exp: SessionExport): string {
         const what =
           r.outcome === "error"
             ? r.failedOpen
-              ? "unavailable — ran unscanned (fail open)"
-              : "unavailable — not a verdict"
+              ? `no verdict (${noVerdictReason(r).toLowerCase()}) — went on (fail open)`
+              : `no verdict (${noVerdictReason(r).toLowerCase()})`
             : r.outcome;
         lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${r.provider === g.stoppedBy ? " — stopped the turn" : ""}`);
       }

@@ -164,9 +164,21 @@ describe("rule 2: an error is never a verdict", () => {
     );
     const a = v.vendors[0]!;
     expect(a.state).toBe("failedOpen");
-    expect(a.stateLabel).toBe("unscanned (fail open)");
+    expect(a.stateLabel).toBe("no verdict (fail open)");
     expect(a.findings).toEqual([]);
-    expect(a.notes).toContain("Could not be reached; set to fail open, so this prompt was not scanned by it");
+    expect(a.notes).toContain("Could not be reached; set to fail open, so this prompt went on without its verdict");
+  });
+
+  // Cato's first live fail-open (2026-10-06) answered HTTP 200 in 299 ms and was refused by
+  // the parser, yet the card said "Could not be reached". Say only what the result proves.
+  it("says why there is no verdict: unreachable, an unreadable answer, or an HTTP error", () => {
+    const note = (o: Partial<ExternalGuardrailResult>) =>
+      pipelineView(pipe({ results: [result({ provider: AIDR, outcome: "error", failedOpen: true, ...o })] }), "guardrailOnly")
+        .vendors[0]!.notes.join(" | ");
+    expect(note({})).toContain("Could not be reached; set to fail open");
+    expect(note({ httpStatus: 200 })).toContain("Answered, but not with a verdict this app can read; set to fail open");
+    expect(note({ httpStatus: 200 })).not.toContain("reached");
+    expect(note({ httpStatus: 401 })).toContain("Returned HTTP 401; set to fail open");
   });
 
   it("names the decided unavailable vendor when another vendor allowed first", () => {

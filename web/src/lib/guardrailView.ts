@@ -83,6 +83,16 @@ export function scanIdLabel(p: ExternalGuardrailProvider): string {
   return SCAN_ID_LABEL[p] ?? "id";
 }
 
+// Why an errored result is not a verdict, said only as far as the result proves it.
+// "Could not be reached" was the note for every error, but a provider that answered
+// HTTP 200 with a verdict this app does not recognise WAS reached — Cato's first live
+// fail-open (2026-10-06) read as an outage when it was an answer the parser refused.
+export function noVerdictReason(r: Pick<ExternalGuardrailResult, "httpStatus">): string {
+  if (r.httpStatus == null) return "Could not be reached";
+  if (r.httpStatus >= 200 && r.httpStatus < 300) return "Answered, but not with a verdict this app can read";
+  return `Returned HTTP ${r.httpStatus}`;
+}
+
 export function detectionLabel(d: string): string {
   return DETECTION_LABELS[d] ?? d;
 }
@@ -95,7 +105,7 @@ const STATE_LABELS: Record<VendorState, string> = {
   block: "block",
   allow: "allow",
   unavailable: "unavailable",
-  failedOpen: "unscanned (fail open)",
+  failedOpen: "no verdict (fail open)",
   notRun: "did not run",
 };
 
@@ -186,7 +196,7 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     );
   }
   if (state === "failedOpen") {
-    notes.push("Could not be reached; set to fail open, so this prompt was not scanned by it");
+    notes.push(`${noVerdictReason(r)}; set to fail open, so this prompt went on without its verdict`);
   }
   if (state === "unavailable") {
     notes.push("Not a verdict — it could not be consulted, so nothing is known about this prompt from it");
