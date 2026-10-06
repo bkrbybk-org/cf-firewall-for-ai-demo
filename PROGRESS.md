@@ -626,6 +626,43 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-06 — the chat transcript went blank: sr-only + scrollIntoView, again
+
+**Reported** with a screenshot and two screen recordings (prod, 1680×990, stream replies on). The chat area
+stayed blank while "N turns in transcript" counted up, and new prompts landed out of view. Only the bottom
+edge of a card showed at the top of the list.
+
+**Measured from the recordings** (frames pulled with ffmpeg; cropped and read at full size). The second
+recording catches the change. At 24.5 s two normal turns are visible. At 25.2 s, after an injection prompt
+**blocked by all three vendors at once**, only the control strip and the "checking Cloudflare edge log…" box
+show, and the box has no bottom edge. At 26 s the area is blank.
+
+**Reproduced locally** with a stubbed three-vendor block. Measured:
+- The message list's top sat at **−288 px** relative to the viewport.
+- The list's `overflow-hidden` wrapper had `scrollTop 404` and `scrollHeight 893` against a 363 px height.
+  It should not be scrollable at all.
+- The cause: the control strip's `sr-only` spans (`position: absolute`). The list was not positioned, so
+  their containing block was the wrapper. They sat at their in-flow position far below it, giving it scroll
+  height. `endRef.scrollIntoView()` scrolls every ancestor, so it scrolled the wrapper.
+- No wheel or scrollbar moves an `overflow-hidden` box back, so the state stuck until the conversation was
+  cleared.
+- It is the same class as the 2026-08-01 prompt-log bug (sr-only escaping `main`).
+- Shipped with the control strip (`dd82aea`). It surfaced once a turn was tall enough for the list to
+  overflow.
+
+**Fix** (`Chat.tsx`): the list is `relative`, so absolute descendants scroll and clip with it. Both scrolls
+(auto-scroll to newest, the navigator's jump) now move the list itself with `scrollTo`, so no future
+absolutely positioned element can strand the view through an ancestor.
+
+**Verified:**
+- Same repro at 1024×768 and 1680×990, 3–4 blocked turns. The wrapper's `scrollHeight` equals its
+  `clientHeight`, `scrollTop` stays 0, the list is pinned to its max scroll, and the screenshot shows the
+  three-vendor card.
+- The navigator jump puts turn 1 fully in view (6–66 px).
+- Gates: 606 tests.
+- Prod `e0532d97-71f7-424c-8442-be8c9772dedc`: smoke all pass. The bundle contains the `relative` list
+  class and **no** `scrollIntoView` at all.
+
 ### 2026-10-06 — Cato: the parser rebuilt from the real allow
 
 **What happened.** The user saved their Guard's key on prod (disabled) and pressed *Test connection*. The

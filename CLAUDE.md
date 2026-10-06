@@ -208,6 +208,11 @@ alters what a customer sees in a demo. State it and let them choose.
 - No formatter is configured. Double quotes, ~110 columns, closing JSX bracket on its own line.
   **Never run Prettier or Biome** — one accidental run produced a 624-line diff with one line of
   real change in it.
+- **Scroll containers:** every `overflow-*` box that holds content with `sr-only` (or any `absolute` element) must
+  itself be `relative`, or that element escapes the clip and gives an outer box scroll height. Scroll a list with
+  `el.scrollTo` on the list itself, **never `scrollIntoView`**: it also scrolls every ancestor, including an
+  `overflow-hidden` one nobody can scroll back. This stranded the whole page once (2026-08) and the chat transcript
+  once (2026-10-06).
 - **Errors reaching the client** go through `src/publicError.ts`: throw a `PublicError` for a message written for
   the operator; return `clientError(err, "What")` from a catch (logs it whole, shows only what failed);
   `aiErrorText(err)` for Workers AI. Never `error: err.message` — D1 errors quote SQL, and a local one once

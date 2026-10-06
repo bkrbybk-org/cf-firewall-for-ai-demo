@@ -236,19 +236,29 @@ export function Chat({
   const gateway = route === "gateway";
   // Per-viewer choice made on /guardrails; read here so both guardrail cards follow it.
   const [cardLayout] = useGuardrailCardLayout();
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const userMsgRefs = useRef(new Map<number, HTMLDivElement>());
   const modelLabels = useMemo(() => Object.fromEntries(models.map((m) => [m.id, m.label])), [models]);
   const userMessages = useMemo(() => messages.filter((m): m is Extract<Msg, { kind: "user" }> => m.kind === "user"), [messages]);
 
+  // Every scroll here moves the message list itself, never scrollIntoView: that also
+  // scrolls each ancestor, including the overflow-hidden wrapper below, which no
+  // wheel or scrollbar can scroll back. It happened (2026-10-06): the control strip's
+  // sr-only spans gave that wrapper scrollable overflow, and one tall turn later the
+  // whole transcript sat above the visible area, every new message landing out of view.
   function jumpTo(id: number) {
-    userMsgRefs.current.get(id)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const list = listRef.current;
+    const el = userMsgRefs.current.get(id);
+    if (!list || !el) return;
+    const offset = el.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    list.scrollTo({ top: offset - (list.clientHeight - el.offsetHeight) / 2, behavior: "smooth" });
   }
 
   // Keep the view pinned to the bottom, including while tokens stream in.
   const streamingChars = messages.reduce((n, m) => n + (m.kind === "assistant" && m.streaming ? m.text.length : 0), 0);
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
+    const list = listRef.current;
+    list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
   }, [messages.length, busy, streamingChars]);
 
   function submit(e: React.FormEvent) {
@@ -290,7 +300,14 @@ export function Chat({
           scroll-to-bottom), and below lg via an explicit viewport height,
           since there flex-1 would resolve to zero against shrink-0 siblings. */}
       <div className="relative flex h-[55vh] flex-col overflow-hidden lg:h-auto lg:min-h-0 lg:flex-1">
-      <div className="mx-auto flex min-h-0 w-full max-w-3xl min-w-0 flex-1 flex-col gap-2 overflow-y-auto p-1.5">
+      {/* `relative` is load-bearing: Tailwind's sr-only is position:absolute, so without a
+          positioned ancestor inside the list the strip's screen-reader text takes the
+          wrapper as its containing block, escapes this scroller's clip and gives the
+          overflow-hidden wrapper a scroll height (the 2026-08 prompt-log bug, again). */}
+      <div
+        ref={listRef}
+        className="relative mx-auto flex min-h-0 w-full max-w-3xl min-w-0 flex-1 flex-col gap-2 overflow-y-auto p-1.5"
+      >
         {messages.length === 0 && (
           <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-3 text-sm shadow-sm">
             Hi! I'm an LLM behind Cloudflare. Pick an attack from the library on the right — Cloudflare inspects each
@@ -454,7 +471,6 @@ export function Chat({
           );
         })}
         {busy && !messages.some((m) => m.kind === "assistant" && m.streaming) && <TypingDots />}
-        <div ref={endRef} />
       </div>
 
       {userMessages.length > 1 && (
