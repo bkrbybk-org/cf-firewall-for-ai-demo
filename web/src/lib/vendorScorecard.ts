@@ -55,7 +55,7 @@ export interface VendorScorecard {
   unevenCoverage: boolean;
 }
 
-type Verdict = "caught" | "missed" | "alerts" | "error" | "notSeen" | "notRun";
+export type Verdict = "caught" | "missed" | "alerts" | "error" | "notSeen" | "notRun";
 
 function edgeVerdict(r: RtRunResult): Verdict {
   switch (r.state) {
@@ -89,53 +89,75 @@ function vendorVerdict(r: RtRunResult, provider: string): Verdict {
   }
 }
 
+export function verdictOf(r: RtRunResult, control: string): Verdict {
+  return control === "edge" ? edgeVerdict(r) : vendorVerdict(r, control);
+}
+
+// "Scanned" = the control gave a verdict on it: caught, missed, or alerted. The
+// denominator of every catch rate here and in vendorBenchmark.ts.
+export function isScannedVerdict(v: Verdict): boolean {
+  return v === "caught" || v === "missed" || v === "alerts";
+}
+
+// One control over a set of results. `controls` is every control in the comparison,
+// for "only this control". Exported so the per-topic benchmark (vendorBenchmark.ts)
+// scores each cell by exactly this rule rather than a second copy of it.
+export function scoreControl(
+  results: RtRunResult[],
+  c: string,
+  controls: string[],
+  labels: Record<string, string> = {},
+): ControlScore {
+  const s: ControlScore = {
+    control: c,
+    label: c === "edge" ? "Edge WAF" : (labels[c] ?? c),
+    caught: 0,
+    missed: 0,
+    alerts: 0,
+    scanned: 0,
+    catchPct: null,
+    errors: 0,
+    notSeen: 0,
+    notRun: 0,
+    onlyThis: 0,
+  };
+  for (const r of results) {
+    const v = verdictOf(r, c);
+    if (v === "caught") s.caught++;
+    else if (v === "missed") s.missed++;
+    else if (v === "alerts") s.alerts++;
+    else if (v === "error") s.errors++;
+    else if (v === "notSeen") s.notSeen++;
+    else s.notRun++;
+    if (v === "caught") {
+      // Only this control caught it: every OTHER control that scanned it missed
+      // (or only alerted). Controls that never saw it do not count against this.
+      const others = controls.filter((o) => o !== c).map((o) => verdictOf(r, o));
+      const scannedByOthers = others.filter(isScannedVerdict);
+      if (scannedByOthers.length > 0 && !scannedByOthers.includes("caught")) s.onlyThis++;
+    }
+  }
+  s.scanned = s.caught + s.missed + s.alerts;
+  s.catchPct = s.scanned === 0 ? null : Math.round((s.caught / s.scanned) * 100);
+  return s;
+}
+
+// Scanned by at least one control, caught by none.
+export function countMissedByAll(results: RtRunResult[], controls: string[]): number {
+  let n = 0;
+  for (const r of results) {
+    const scanned = controls.map((c) => verdictOf(r, c)).filter(isScannedVerdict);
+    if (scanned.length > 0 && !scanned.includes("caught")) n++;
+  }
+  return n;
+}
+
 export function vendorScorecard(results: RtRunResult[], labels: Record<string, string> = {}): VendorScorecard {
   const providers = [...new Set(results.flatMap((r) => (r.vendors ?? []).map((v) => v.provider)))];
   const controls = ["edge", ...providers];
-  const verdictOf = (r: RtRunResult, c: string): Verdict => (c === "edge" ? edgeVerdict(r) : vendorVerdict(r, c));
 
-  const score = (c: string): ControlScore => {
-    const s: ControlScore = {
-      control: c,
-      label: c === "edge" ? "Edge WAF" : (labels[c] ?? c),
-      caught: 0,
-      missed: 0,
-      alerts: 0,
-      scanned: 0,
-      catchPct: null,
-      errors: 0,
-      notSeen: 0,
-      notRun: 0,
-      onlyThis: 0,
-    };
-    for (const r of results) {
-      const v = verdictOf(r, c);
-      if (v === "caught") s.caught++;
-      else if (v === "missed") s.missed++;
-      else if (v === "alerts") s.alerts++;
-      else if (v === "error") s.errors++;
-      else if (v === "notSeen") s.notSeen++;
-      else s.notRun++;
-      if (v === "caught") {
-        // Only this control caught it: every OTHER control that scanned it missed
-        // (or only alerted). Controls that never saw it do not count against this.
-        const others = controls.filter((o) => o !== c).map((o) => verdictOf(r, o));
-        const scannedByOthers = others.filter((o) => o === "caught" || o === "missed" || o === "alerts");
-        if (scannedByOthers.length > 0 && !scannedByOthers.includes("caught")) s.onlyThis++;
-      }
-    }
-    s.scanned = s.caught + s.missed + s.alerts;
-    s.catchPct = s.scanned === 0 ? null : Math.round((s.caught / s.scanned) * 100);
-    return s;
-  };
-
-  const scored = controls.map(score);
-  let missedByAll = 0;
-  for (const r of results) {
-    const vs = controls.map((c) => verdictOf(r, c));
-    const scanned = vs.filter((v) => v === "caught" || v === "missed" || v === "alerts");
-    if (scanned.length > 0 && !scanned.includes("caught")) missedByAll++;
-  }
+  const scored = controls.map((c) => scoreControl(results, c, controls, labels));
+  const missedByAll = countMissedByAll(results, controls);
 
   const modes = [...new Set(results.map((r) => r.pipelineMode).filter((m): m is "sequential" | "parallel" => !!m))];
   // Uneven when any guardrail skipped prompts it could have seen: a "notRun", or a

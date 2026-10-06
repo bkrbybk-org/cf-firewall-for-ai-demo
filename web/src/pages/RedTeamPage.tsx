@@ -628,7 +628,7 @@ export function RedTeamPage() {
           {hasResults && <Scorecard score={score} bySeverityRows={sevRows} byCategoryRows={catRows} />}
           {/* Edge vs each external guardrail on the same attacks. Renders nothing when no
               guardrail ran (the scorecard above already covers the edge alone). */}
-          {hasResults && <VendorScorecard card={vendorCard} />}
+          {hasResults && <VendorScorecard card={vendorCard} corpus={scoredCorpus} results={results} labels={PROVIDER_LABELS} />}
 
           {/* Results table */}
           <section className="overflow-hidden rounded-2xl border border-line bg-surface shadow-sm">

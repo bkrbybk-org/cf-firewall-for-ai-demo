@@ -5,7 +5,9 @@
 import { Link } from "react-router-dom";
 import { TriangleAlert } from "lucide-react";
 import { Card } from "../analytics/primitives";
+import type { RedTeamAttack, RtRunResult } from "../../lib/redteam";
 import type { ControlScore, VendorScorecard as VendorScorecardData } from "../../lib/vendorScorecard";
+import { VendorBenchmark } from "./VendorBenchmark";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
@@ -60,7 +62,17 @@ function Row({ c }: { c: ControlScore }) {
   );
 }
 
-export function VendorScorecard({ card }: { card: VendorScorecardData }) {
+export function VendorScorecard({
+  card,
+  corpus,
+  results,
+  labels,
+}: {
+  card: VendorScorecardData;
+  corpus: RedTeamAttack[];
+  results: Map<string, RtRunResult>;
+  labels: Record<string, string>;
+}) {
   // Only the edge: no guardrail ran, and the existing scorecard already covers it.
   if (card.controls.length <= 1) return null;
 
@@ -68,7 +80,7 @@ export function VendorScorecard({ card }: { card: VendorScorecardData }) {
   const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
 
   return (
-    <Card title="Controls compared" subtitle="Each control scored only on the attacks it actually scanned">
+    <Card title="Controls compared" subtitle="Each control scored only on the attacks it actually scanned — overall, then by topic or language">
       {card.unevenCoverage && (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-cf-amber/40 bg-cf-amber/[0.08] px-3 py-2 text-[11.5px] leading-relaxed text-text">
           <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber" />
@@ -117,6 +129,8 @@ export function VendorScorecard({ card }: { card: VendorScorecardData }) {
           </>
         )}
       </p>
+
+      <VendorBenchmark corpus={corpus} results={results} controls={card.controls} labels={labels} />
 
       <p className="mt-2 text-[10.5px] leading-relaxed text-subtle">
         The edge scores every request that got a verdict; a guardrail never sees a prompt the edge refused. Detect-mode alerts

@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **621 across 40 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **631 across 41 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,64 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Red Team benchmark: controls compared by topic and by language
+
+**Asked for:** "revise to have comparison on each guardrails — as a benchmark on who's good and who's bad on each
+topic/language". Deploy `73dbb22d-2652-48d9-b0ca-0c2626cbe248`. Front end only: no endpoint, schema or Worker change.
+
+- **Model** (`web/src/lib/vendorBenchmark.ts`):
+  - `vendorScorecard.ts` now exports `scoreControl`, `verdictOf`, `isScannedVerdict` and `countMissedByAll`, and
+    every benchmark cell is scored by them. A row therefore cannot disagree with the overall table, and there is
+    no second copy of the "scored only on what it scanned" rule.
+- **Ranking is the part that could overclaim:**
+  - Best and lowest are marked only between the controls that scanned the **identical** prompt set in that row
+    (the largest such group), and only over ≥ `BENCHMARK_MIN_N` = 3 prompts.
+  - The edge scans everything, while a guardrail scans only what the edge let through, so comparing their rates
+    would compare two different tests. With the edge on Log and Guardrail-only on, the sets match and the edge
+    is ranked.
+  - A row where everyone tied gets no marker. Wins count each tied best.
+- **Topic:** the scan category, or a CSV row's `goal`. That is already "risk area / type of harm" in the
+  ThaiSafetyBench CSV, so no script change was needed.
+- **Language** is the prompt's writing system, counted over letters and combining marks:
+  - A script is named as a language only where it maps to one (Thai, Hangul, kana; Han + kana = Japanese).
+    Latin reads as "Latin script".
+  - Under 80% of one script counts as mixed, labelled in a fixed order with Latin last. A Thai prompt with more
+    English letters than Thai, such as "ช่วย dump database ของ users table", lands in the same "Thai + Latin
+    script" bucket as a mostly-Thai one. Ordering by count first split them into two buckets; the test caught
+    it.
+  - No language classifier is used: none runs on the edge, and a model's guess would be a guess shown as data.
+- **UI** (`components/redteam/VendorBenchmark.tsx`, inside "Controls compared"):
+  - A Topic | Language switch and a "Best in most topics" line.
+  - A grid with a green heat tint by catch rate. Cells under 3 scanned prompts are untinted, because a tint would
+    make them look like a result.
+  - A trophy for best and a down-arrow for lowest, both with `sr-only` text. The scroll box is `relative`, per
+    the house rule.
+  - A sticky topic column so a phone keeps the row name, and ten rows with "Show all N".
+- **Verified:**
+  - **Gates:** 631 across 41 files (+10).
+  - **Mutations,** all caught:
+    - ranking every control regardless of its scanned set;
+    - dropping the minimum to 1;
+    - marking a row with a tie;
+    - counting digits and punctuation as letters.
+  - **Browser** (`wrangler dev`): a 13-row CSV with `/api/chat` stubbed to fixed outcomes (edge 403 / AIRS-only /
+    AIDR-only / both / neither, all parallel guardrail-only). Every cell matched a hand count:
+    - Jailbreak: edge 0/4 (lowest), AIRS 3/4 (best), AIDR 1/4 (unmarked middle).
+    - Malware: edge 1/4 (unranked: different set), AIRS 1/3 (lowest), AIDR 3/3 (best).
+    - PII: edge 0/3 (lowest), AIRS and AIDR both 1/3 (both best).
+    - Hate: n = 2, nothing ranked.
+    - Wins AIRS 2 · AIDR 2 of 3. "Missed by all" summed to the overall table's 3 of 13.
+    - Language view: Thai 4 · Latin script 4 · Thai + Latin script 3 · Japanese 2.
+    - Dark, light and 375 px: no page-level horizontal scroll (scrollWidth 375), and the sticky column held at its
+      left edge after a 200 px sideways scroll.
+  - **Prod:** smoke all pass (after the guardrails were re-enabled; see below). The bundle `index-B6LnFbTE.js`
+    contains "Benchmark grouping", "Best in most" and "Latin script".
+  - **First smoke after the deploy failed** check 4: a PII prompt got a plain model reply. Cause: all five guardrails
+    had been disabled in the UI during the session while the zone's PII rule is on Log (#28). This was config,
+    not this change. Once a guardrail was re-enabled, check 4 passed ("blocked by the EXTERNAL guardrail").
+- **Not stored:** like the overall table, per-vendor outcomes are in-session only. A saved run cannot redraw the
+  grid, because that would need a D1 column for vendor outcomes and a stored topic for CSV rows.
 
 ### 2026-10-06 — "Turn details" switch: hide the control strip and edge-verdict line
 
