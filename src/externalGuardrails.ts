@@ -29,6 +29,7 @@ import { CISCO_AID_INSPECT_PATH, CISCO_AID_REGIONS, scanPromptWithCiscoAid } fro
 import { AIDR_GUARD_PATH, AIDR_REGIONS, scanPromptWithAidr } from "./crowdstrikeAidr";
 import { LAKERA_GUARD_PATH, LAKERA_REGIONS, scanPromptWithLakera } from "./lakeraGuard";
 import { PRISMA_AIRS_REGIONS, PRISMA_AIRS_SCAN_PATH, scanPromptWithPrismaAirs } from "./prismaAirs";
+import { PublicError } from "./publicError";
 import type {
   Env,
   ExternalGuardrailProvider,
@@ -256,9 +257,9 @@ async function importKey(secretB64: string): Promise<CryptoKey> {
   try {
     raw = b64ToBytes(secretB64.trim());
   } catch {
-    throw new Error("GUARDRAIL_SECRET_KEY is not valid base64");
+    throw new PublicError("GUARDRAIL_SECRET_KEY is not valid base64");
   }
-  if (raw.length !== 32) throw new Error(`GUARDRAIL_SECRET_KEY must decode to 32 bytes (got ${raw.length})`);
+  if (raw.length !== 32) throw new PublicError(`GUARDRAIL_SECRET_KEY must decode to 32 bytes (got ${raw.length})`);
   return crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 

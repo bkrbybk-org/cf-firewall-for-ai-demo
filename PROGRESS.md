@@ -457,7 +457,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **442 across 29 files** (measured 2026-10-05; README's Tests table has the
+**Tests** — `npm test`, **454 across 31 files** (measured 2026-10-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -622,6 +622,52 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — actionable AI Gateway auth error; #25 (prompt cap, error text to the client)
+
+**Gateway auth.** `src/gatewayErrors.ts` adds `explainGatewayError(status, body)`, used by `runGatewayRest`.
+- **The fix:** Cloudflare's code 10000, found in either body shape, or an HTTP 401 becomes "AI Gateway
+  rejected the CF_AIG_TOKEN secret (HTTP 401, code 10000). It needs … "AI Gateway - Read", "AI Gateway -
+  Edit" and "Workers AI - Read" — not a gateway-scoped "AI Gateway Run" token … npx wrangler secret put
+  CF_AIG_TOKEN".
+- **Guardrails untouched:** a body carrying 2016/2017 passes through unchanged, because `guardrailsResponse()`
+  detects Guardrails blocks in that same text.
+- **No guessing:** not every 403 is called an auth failure.
+- **Everything else:** other bodies pass through, capped at 500 characters.
+
+**#25.**
+- **(a) Prompt cap.** `prompt` is capped at `MAX_PROMPT_LEN` = 8000. Longer is a 400, never cut short: the
+  edge scanned the full body. The cap runs before the external guardrails, so an oversize prompt reaches no
+  vendor. The openapi `maxLength` is drift-guarded against the constant.
+- **(b) Error text.** `src/publicError.ts` sets what an error may say to the client:
+  - **`PublicError`** marks messages written on purpose for the operator, and those show as-is: the three
+    Cloudflare API throws in `cloudflare.ts` ("Ruleset list failed (HTTP 403)") and the two
+    `GUARDRAIL_SECRET_KEY` config errors.
+  - **Every other caught exception** goes through `clientError()`: it is logged whole, and the client gets
+    "<what> failed (<ErrorClass>) — the detail is in the Worker log". This covers 16 handler sites; D1 errors
+    used to quote SQL and schema to the client.
+  - **Workers AI errors** go through `aiErrorText()`: the platform's own first line (quota, capacity, model),
+    with paths stripped, capped at 300 characters.
+  - **Raw-message checks stay server-side:** the `/no such table/` checks still read the raw message.
+
+**Verified.**
+- **Gates:** 454 tests across 31 files. New: 5 in `gatewayErrors`, 6 in `publicError`, and 1 openapi drift
+  guard.
+- **Mutation-verified:** removing the 2016/2017 guard, and returning the raw message from `clientError`.
+- **Local `wrangler dev`**, whose `.env` `CF_AIG_TOKEN` is genuinely rejected:
+  - A gateway send returned 401 with the new message. The streamed chat showed it in the error bubble
+    (browser).
+  - An 8001-character prompt returned 400 "prompt is 8001 characters; the limit is 8000". 8000 passed the cap.
+  - Local Workers AI's known 502 now reads "Workers AI error (…): Error: internal error; reference = …": one
+    line, no path.
+  - `/api/zone-rules` still says "Ruleset list failed (HTTP 403)".
+- **Prod** (`6311c6da-0ccd-4a7e-9ec7-af38e0913263`):
+  - Smoke 5/5, including the gateway route on prod's valid token.
+  - 8001 characters returns 400.
+  - The served spec's `prompt.maxLength` is 8000.
+  - Zone rules still say "Ruleset list failed (HTTP 403)".
+- **Not seen on prod:** the 10000 message itself, because prod's token is valid. It was seen locally against
+  a real rejected token.
 
 ### 2026-10-05 — Cisco AI Defense + Lakera Guard: built and locked (plan steps 1–5)
 
@@ -1739,7 +1785,7 @@ exercised):
     exactly where this demo lives — small n. Not visible in prod while the prompt log is off. **Fix:**
     integer ceiling `(n*95 + 99)/100` (no reliance on SQLite math functions), a test of the rank rule, and
     a check of the SQL's output against a hand calculation on real rows.
-25. **Minor.** `/api/chat` caps `history` (8,000 chars) and `systemPrompt` (2,000) but not `prompt`
+25. ~~**Minor.**~~ **FIXED 2026-10-06** (deploy `6311c6da`; see Implemented). Original: `/api/chat` caps `history` (8,000 chars) and `systemPrompt` (2,000) but not `prompt`
     itself. And 13 handler sites return raw upstream/exception text to the client — on local dev one
     carried a stack trace with an absolute file path. Prod is behind Access, so low risk; worth a generic
     message plus the detail in logs if this is ever exposed.
@@ -1934,7 +1980,8 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [ ] **Add `Zone → WAF → Read` to `CF_ANALYTICS_TOKEN`** so the live rule list actually engages —
       the code ships and falls back cleanly, but `/api/zone-rules` returns 403 here today, so the
       flow trace still runs on the static mirror (Open bug #12).
-- [ ] Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message
+- [x] ~~Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message~~ — done
+      2026-10-06 (`src/gatewayErrors.ts`). Original note:
       instead of dumping the raw Cloudflare error JSON into the chat bubble — every gateway send goes
       through REST now, so a rejected token (as in bug #1, fixed 2026-09-30) surfaces on any of them.
 - [ ] Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,

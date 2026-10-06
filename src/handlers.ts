@@ -17,6 +17,7 @@ import {
   FREE_DAILY_NEURONS,
   MAX_HISTORY_CHARS,
   MAX_HISTORY_TURNS,
+  MAX_PROMPT_LEN,
   MAX_REPLY_TOKENS,
   MAX_SYSTEM_PROMPT_LEN,
   OVERAGE_USD_PER_1K_NEURONS,
@@ -52,7 +53,9 @@ import {
   queryVerdictRetention,
   queryZoneRules,
 } from "./cloudflare";
+import { explainGatewayError } from "./gatewayErrors";
 import { buildPromptLogQuery } from "./promptlog";
+import { aiErrorText, clientError } from "./publicError";
 import { parseRunId, REDTEAM_RUNS_LIST_LIMIT, REDTEAM_RUNS_MAX_STORED, validateRedTeamRunPayload } from "./redteamruns";
 import { redact } from "./redact";
 import { createSseAccumulator } from "./sse";
@@ -198,8 +201,7 @@ export async function handleVerdict(url: URL, env: Env): Promise<Response> {
     const verdict = await queryVerdict(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, ray, atMs);
     return Response.json({ configured: true, ray, ...verdict });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ configured: true, ray, found: false, error: message }, { status: 502 });
+    return Response.json({ configured: true, ray, found: false, error: clientError(err, "Verdict lookup") }, { status: 502 });
   }
 }
 
@@ -219,8 +221,7 @@ export async function handleZoneRules(env: Env): Promise<Response> {
     const rules = await queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN);
     return Response.json({ configured: true, source: "live", rules });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ configured: true, source: "fallback", rules: [], error: message });
+    return Response.json({ configured: true, source: "fallback", rules: [], error: clientError(err, "Zone rules") });
   }
 }
 
@@ -249,8 +250,7 @@ export async function handleNeurons(env: Env): Promise<Response> {
       resetsAt,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Neuron usage") }, { status: 502 });
   }
 }
 
@@ -435,8 +435,10 @@ async function runGatewayRest(
   if (!res.ok) {
     // Read the body as text so a Guardrails 2016/2017 block can be matched by
     // the same detector the binding path used to use.
+    // explainGatewayError leaves a 2016/2017 body untouched for that detector, and
+    // turns a rejected token (code 10000 / 401) into an actionable message.
     const detail = await res.text();
-    return { kind: "error", status: res.status, message: detail || `AI Gateway returned HTTP ${res.status}` };
+    return { kind: "error", status: res.status, message: explainGatewayError(res.status, detail) };
   }
 
   const logId = res.headers.get("cf-aig-log-id");
@@ -669,6 +671,13 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     );
   }
 
+  if (prompt.length > MAX_PROMPT_LEN) {
+    return Response.json(
+      { error: `prompt is ${prompt.length} characters; the limit is ${MAX_PROMPT_LEN}` },
+      { status: 400 },
+    );
+  }
+
   // A route that can't be used is an error, not a reason to quietly fall back
   // to a different path — a silent downgrade makes the demo look like it
   // worked while running an entirely different path.
@@ -854,8 +863,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       // The stream never started (env.AI.run threw before any bytes), so this
       // is a completed call like any other error — not a TTFB measurement.
       log("error", { reply: null, streamed: false });
-      const message = err instanceof Error ? err.message : String(err);
-      return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502, headers: extHeaders });
+      return Response.json({ error: `Workers AI error (${model}): ${aiErrorText(err)}`, model }, { status: 502, headers: extHeaders });
     }
   }
 
@@ -903,8 +911,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     }, { headers: extHeaders });
   } catch (err) {
     log("error", { reply: null, streamed: false });
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: `Workers AI error (${model}): ${message}`, model }, { status: 502, headers: extHeaders });
+    return Response.json({ error: `Workers AI error (${model}): ${aiErrorText(err)}`, model }, { status: 502, headers: extHeaders });
   }
 }
 
@@ -923,8 +930,7 @@ export async function handleAnalytics(url: URL, env: Env): Promise<Response> {
     }
     return Response.json({ configured: true, ...summary });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Zone analytics") }, { status: 502 });
   }
 }
 
@@ -959,8 +965,7 @@ export async function handleGatewayAnalytics(url: URL, env: Env): Promise<Respon
     }
     return Response.json({ configured: true, ...summary });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Gateway analytics") }, { status: 502 });
   }
 }
 
@@ -1019,8 +1024,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
       await env.DB.prepare("DELETE FROM prompt_log").run();
       return Response.json({ configured: true, cleared: true });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return Response.json({ configured: true, error: message }, { status: 502 });
+      return Response.json({ configured: true, error: clientError(err, "Clearing the prompt log") }, { status: 502 });
     }
   }
   if (request.method !== "GET") return Response.json({ error: "Use GET or DELETE" }, { status: 405 });
@@ -1074,7 +1078,7 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
     const message = err instanceof Error ? err.message : String(err);
     // A missing table reads as "not configured" so the UI shows the setup hint.
     if (/no such table/i.test(message)) return Response.json({ configured: false });
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Prompt log") }, { status: 502 });
   }
 }
 
@@ -1248,7 +1252,7 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return Response.json({ configured: false });
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Prompt analytics") }, { status: 502 });
   }
 }
 
@@ -1283,7 +1287,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/no such table/i.test(message)) return Response.json({ configured: false });
-      return Response.json({ configured: true, error: message }, { status: 502 });
+      return Response.json({ configured: true, error: clientError(err, "Deleting the run") }, { status: 502 });
     }
   }
 
@@ -1380,7 +1384,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (/no such table/i.test(message)) return Response.json({ configured: false });
-      return Response.json({ configured: true, error: message }, { status: 502 });
+      return Response.json({ configured: true, error: clientError(err, "Saving the run") }, { status: 502 });
     }
   }
 
@@ -1432,7 +1436,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return Response.json({ configured: false });
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Saved runs") }, { status: 502 });
   }
 }
 
@@ -1467,7 +1471,7 @@ async function guardrailState(env: Env): Promise<Response> {
         pipeline: defaultPipeline(),
       });
     }
-    return Response.json({ configured: true, error: message, providers: [], pipeline: defaultPipeline() }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "External guardrail settings"), providers: [], pipeline: defaultPipeline() }, { status: 502 });
   }
 }
 
@@ -1493,7 +1497,7 @@ export async function handleGuardrailPipeline(request: Request, env: Env): Promi
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return guardrailState(env);
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Pipeline update") }, { status: 502 });
   }
 }
 
@@ -1530,7 +1534,7 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (/no such table/i.test(message)) return guardrailState(env);
-    return Response.json({ configured: true, error: message }, { status: 502 });
+    return Response.json({ configured: true, error: clientError(err, "Guardrail update") }, { status: 502 });
   }
 }
 
@@ -1568,8 +1572,7 @@ export async function handleExternalGuardrailReport(request: Request, url: URL, 
     const status = r.ok || r.pending ? 200 : 502;
     return Response.json(r, { status, headers: { "cache-control": "no-store" } });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ ok: false, error: message }, { status: 502 });
+    return Response.json({ ok: false, error: clientError(err, "Prisma AIRS report") }, { status: 502 });
   }
 }
 
@@ -1610,7 +1613,6 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
     const result = await scanWithKey(c, apiKey, { prompt: GUARDRAIL_TEST_PROMPT, model: "", ray: null });
     return Response.json({ ok: result.outcome !== "error", result });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return Response.json({ error: message }, { status: 502 });
+    return Response.json({ error: clientError(err, "Connection test") }, { status: 502 });
   }
 }

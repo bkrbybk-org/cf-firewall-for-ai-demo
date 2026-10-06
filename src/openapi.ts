@@ -505,7 +505,13 @@ export const openapi = {
       ChatTurn: obj({ role: { type: "string", enum: ["user", "assistant"] }, content: str() }, ["role", "content"]),
       ChatRequest: obj(
         {
-          prompt: { type: "string", minLength: 1, description: "The latest user message. **This is what the edge scan inspects.** Required and non-blank." },
+          prompt: {
+            type: "string",
+            minLength: 1,
+            maxLength: 8000,
+            description:
+              "The latest user message. **This is what the edge scan inspects.** Required and non-blank. Over 8000 characters is a 400 — never cut short, since the edge scanned the full body.",
+          },
           model: str("An id from `/api/models`. Anything off the allowlist silently falls back to the default model."),
           systemPrompt: { type: "string", maxLength: 2000, description: "Trimmed and truncated to 2000 characters. Blank = the server default." },
           history: {

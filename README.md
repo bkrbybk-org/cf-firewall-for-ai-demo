@@ -147,7 +147,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default, the numeric gateway `limits`, and the resolved `promptLog.enabled` flag |
-| `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE |
+| `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE. `prompt` is capped at 8,000 characters: longer is a 400, never cut short, since the edge scanned the full body |
 | `GET /api/verdict?ray=&ts=` | What the edge did to one request (GraphQL). `ts` anchors the lookup window |
 | `GET /api/zone-rules` | The zone's real WAF custom rules (Rulesets API), for the flow trace and the rule split |
 | `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
@@ -613,7 +613,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 
 ## Tests
 
-`npm test` — **442 tests across 29 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
+`npm test` — **454 tests across 31 files**, all pure functions (no network, no D1), which is why CI can run them on a bare runner.
 
 The suites up to 2026-08 each exist because a real bug shipped and were **mutation-verified** (reintroduce the bug → red). The September additions — saved runs, gap controls, compliance evidence, the latency sort — were written alongside their code and are **not** mutation-verified; treat them as regression tests, not as proof each assertion can fail.
 
@@ -631,7 +631,9 @@ The suites up to 2026-08 each exist because a real bug shipped and were **mutati
 | `web/src/lib/gapControls.test.ts` (22) | Recommendation generator — thresholds compare with `le`, never `ge` (these scores invert: low = attack); custom-topic labels that would break out of the string literal are rejected; coverage provenance (live expression vs static-mirror name match) |
 | `web/src/lib/complianceEvidence.test.ts` (19) | Evidence resolver — unconfigured, no-data-in-window, genuine zero and truncated ("at least N") stay four distinct outcomes |
 | `scripts/thaisafety-csv.test.ts` (18) | The ThaiSafetyBench → CSV converter |
-| `src/openapi.test.ts` (6) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
+| `src/gatewayErrors.test.ts` (5) | AI Gateway refusals: the real prod code-10000 body (and the v4 envelope, and a bare 401) becomes a message naming `CF_AIG_TOKEN`, its three scopes and the fix; not every 403 is called auth; **a Guardrails 2016/2017 body is never rewritten** (its detector reads it). **Mutation-verified** (drop the 2016/2017 guard) |
+| `src/publicError.test.ts` (6) | What an error may tell the client (#25): a `PublicError` shows as-is; anything else — D1 SQL, paths — becomes "X failed — the detail is in the Worker log" and is logged whole; Workers AI text keeps its first line with paths stripped, capped. **Mutation-verified** (return the raw message) |
+| `src/openapi.test.ts` (7) | The OpenAPI document: valid 3.1 (every `$ref` resolves), unique operationIds and declared tags, and **drift guards** — its paths equal the routes in `index.ts`, its `ChatRequest` fields equal `ChatRequestBody`, its `sort` and result-state enums equal the server whitelists. **Mutation-verified**: six planted drifts (an extra route, a removed route, an undocumented request field, a broken `$ref`, a new sort key, a new result state) each turn the suite red |
 | `src/openapi30.test.ts` (9) | The OAS 3.0.3 down-conversion API Shield needs: type arrays → `nullable`, `const` → `enum`, numeric `exclusiveMinimum` → boolean + `minimum`, `examples` → `example`, no 3.1-only keyword left anywhere, one absolute `servers` URL, every path and the chat request schema preserved, the source document untouched, and a union 3.0 cannot express refused rather than silently narrowed |
 | `web/src/lib/savedRuns.test.ts` (11) | Saving and comparing red-team runs: the save body carries every `scoreRun` total incl. `external`/`skipped`; a subset run fingerprints only the attacks with a result and says "(N of M)"; gateway fields dropped on the direct route; `summarizeDiff` credits each closed gap to the control that closed it, and **a verdict that never resolved is not a fix** although `reachedDelta` drops. **Mutation-verified** (fingerprint over the whole corpus) |
 | `web/src/lib/edgeBlock.test.ts` (6) | The edge 403 body (bug #4): the real prod PII body maps to `pii` with the rule's message + detail; an unseen `reason_code` keeps its message and code but claims no detection, even when spelled like one; inherited keys (`toString`, `__proto__`) never resolve; the legacy shape still works; HTML / empty / partial bodies are unstructured. **Mutation-verified** (no own-key check; a guessed code mapping) |

@@ -9,6 +9,7 @@ import {
   type SeriesBucket,
 } from "./config";
 import { markReadCoverage } from "./coverage";
+import { PublicError } from "./publicError";
 import { nearestRank } from "./percentile";
 import type { AnalyticsSummary, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
 
@@ -61,7 +62,7 @@ export async function listAiGateways(accountId: string, token: string): Promise<
     result?: { id?: string }[];
   };
   if (!j.success || !Array.isArray(j.result)) {
-    throw new Error(j.errors?.[0]?.message || `AI Gateway list failed (HTTP ${res.status})`);
+    throw new PublicError(j.errors?.[0]?.message || `AI Gateway list failed (HTTP ${res.status})`);
   }
   return j.result.map((g) => String(g.id ?? "")).filter(Boolean);
 }
@@ -115,7 +116,7 @@ export async function queryZoneRules(zoneId: string, token: string): Promise<Zon
   const listRes = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets`, { headers });
   const list = (await listRes.json()) as RulesetsListData;
   if (!list.success || !Array.isArray(list.result)) {
-    throw new Error(`Ruleset list failed (HTTP ${listRes.status})`);
+    throw new PublicError(`Ruleset list failed (HTTP ${listRes.status})`);
   }
   const entry = list.result.find((r) => r.phase === CUSTOM_RULES_PHASE && r.kind === "zone");
   if (!entry?.id) {
@@ -128,7 +129,7 @@ export async function queryZoneRules(zoneId: string, token: string): Promise<Zon
   const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets/${entry.id}`, { headers });
   const j = (await res.json()) as RulesetData;
   if (!j.success || !j.result) {
-    throw new Error(j.errors?.[0]?.message || `Ruleset fetch failed (HTTP ${res.status})`);
+    throw new PublicError(j.errors?.[0]?.message || `Ruleset fetch failed (HTTP ${res.status})`);
   }
 
   zoneRulesCache = (j.result.rules ?? []).map((r) => {

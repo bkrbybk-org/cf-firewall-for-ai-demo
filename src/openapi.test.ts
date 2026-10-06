@@ -8,6 +8,7 @@
 // and has not drifted from the code it duplicates.
 import { validate } from "@readme/openapi-parser";
 import { describe, expect, it } from "vitest";
+import { MAX_PROMPT_LEN, MAX_SYSTEM_PROMPT_LEN } from "./config";
 import indexSrc from "./index.ts?raw";
 import { openapi } from "./openapi";
 import { PROMPT_LOG_SORTS } from "./promptlog";
@@ -52,6 +53,12 @@ describe("drift from the code it describes", () => {
     const fields = [...block.matchAll(/^ {2}([a-zA-Z]+)\?: unknown;/gm)].map((m) => m[1]).sort();
     expect(fields.length, "found no fields — the regex no longer matches types.ts").toBeGreaterThan(10);
     expect(Object.keys(openapi.components.schemas.ChatRequest.properties as Record<string, unknown>).sort()).toEqual(fields);
+  });
+
+  it("states the server's own prompt and system-prompt caps", () => {
+    const p = openapi.components.schemas.ChatRequest.properties as Record<string, { maxLength?: number }>;
+    expect(p.prompt.maxLength).toBe(MAX_PROMPT_LEN);
+    expect(p.systemPrompt.maxLength).toBe(MAX_SYSTEM_PROMPT_LEN);
   });
 
   it("uses the prompt-log sort whitelist as its `sort` enum", () => {

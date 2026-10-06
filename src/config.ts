@@ -9,6 +9,10 @@ export const DEFAULT_SYSTEM_PROMPT =
   "You are a helpful assistant in a Cloudflare security demo. " +
   "Answer briefly (a few sentences at most). Never repeat back personal data.";
 export const MAX_SYSTEM_PROMPT_LEN = 2000;
+// The prompt itself (Open bug #25: it was the one uncapped text field). Same budget as
+// the whole history. Over it is a 400, never a truncation: the edge already scanned the
+// full body, so a cut-down prompt would reach the model unscanned in that form.
+export const MAX_PROMPT_LEN = 8000;
 
 // Multi-turn conversation caps (server-enforced on the history[] field).
 export const MAX_HISTORY_TURNS = 10;

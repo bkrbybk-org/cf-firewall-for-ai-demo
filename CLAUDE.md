@@ -190,6 +190,10 @@ alters what a customer sees in a demo. State it and let them choose.
 - No formatter is configured. Double quotes, ~110 columns, closing JSX bracket on its own line.
   **Never run Prettier or Biome** — one accidental run produced a 624-line diff with one line of
   real change in it.
+- **Errors reaching the client** go through `src/publicError.ts`: throw a `PublicError` for a message written for
+  the operator; return `clientError(err, "What")` from a catch (logs it whole, shows only what failed);
+  `aiErrorText(err)` for Workers AI. Never `error: err.message` — D1 errors quote SQL, and a local one once
+  carried an absolute path.
 - Comments explain **why**, not what. This codebase reasons about its own honesty; match that
   density and never delete a comment to make room.
 - Analytics and compliance surfaces grade their own coverage honestly: "no data" is never
