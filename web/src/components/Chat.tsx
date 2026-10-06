@@ -13,6 +13,7 @@ import { GuardrailReports } from "./GuardrailReportPanel";
 import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
+import { useShowTurnDetails } from "../hooks/useShowTurnDetails";
 
 function CacheBadge({ cached }: { cached?: boolean | null }) {
   if (cached === true)
@@ -28,11 +29,24 @@ function CacheBadge({ cached }: { cached?: boolean | null }) {
 // in lib/controlMatrix.ts.
 function TurnControls({ ray, ...input }: Omit<ControlMatrixInput, "edge"> & { ray?: string | null }) {
   const edge = useEdgeKnowledge(ray);
+  const [show] = useShowTurnDetails();
+  // Per-viewer "Turn details: Hidden" (/guardrails). Hooks above run either way.
+  if (!show) return null;
   return (
     <div className="max-w-[min(92%,720px)] self-start pl-1">
       <ControlMatrix cells={controlMatrix({ ...input, edge })} />
     </div>
   );
+}
+
+// The edge-verdict line under a chat turn, unless this viewer hid the turn details. At module
+// level, not defined inside the render: a component created per render would remount Verdict
+// on every keystroke and restart its edge-log polling. Hidden means not mounted, so no
+// /api/verdict polling happens for those turns. The prompt log's verdict column uses
+// <Verdict> directly and is unaffected.
+function TurnVerdict(props: React.ComponentProps<typeof Verdict>) {
+  const [show] = useShowTurnDetails();
+  return show ? <Verdict {...props} /> : null;
 }
 
 function GuardrailsCard({ m }: { m: Extract<Msg, { kind: "guardrails" }> }) {
@@ -401,7 +415,7 @@ export function Chat({
                       guarded={m.meta.gateway?.guarded}
                       pipeline={m.meta.externalGuardrails}
                     />
-                    {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
+                    {m.ray && <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
                   </>
                 )}
               </div>
@@ -412,7 +426,7 @@ export function Chat({
                 <BlockedCard m={m} />
                 <Stamp side="assistant" ts={m.ts} />
                 <TurnControls kind="blocked" ray={m.ray} route={cfgBefore(idx)?.route ?? "direct"} />
-                {m.ray && <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
+                {m.ray && <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} />}
               </div>
             );
           if (m.kind === "external")
@@ -424,7 +438,7 @@ export function Chat({
                 {/* The edge scan ran before the Worker, so its verdict exists
                     for this request too — both layers stay visible. */}
                 {m.ray && (
-                  <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="external" />
+                  <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="external" />
                 )}
               </div>
             );
@@ -437,7 +451,7 @@ export function Chat({
                 {/* stoppedInWorker, or the edge verdict would headline "Reached
                     the model" for a turn the model never saw. */}
                 {m.ray && (
-                  <Verdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="skipped" />
+                  <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="skipped" />
                 )}
               </div>
             );
@@ -455,7 +469,7 @@ export function Chat({
                   pipeline={m.pipeline}
                 />
                 {m.ray && (
-                  <Verdict
+                  <TurnVerdict
                     ray={m.ray}
                     prompt={promptBefore(idx)}
                     gateway={m.gateway}

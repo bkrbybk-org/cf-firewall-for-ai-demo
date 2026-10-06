@@ -2,9 +2,10 @@
 // guardrail-only turn). A per-viewer presentation preference stored in this browser
 // (lib/cardLayout.ts) — unlike the traffic flow above it, it changes nothing on the
 // server and nothing anyone else sees.
-import { useState } from "react";
+import { useId, useState } from "react";
 import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
 import { useShowRawResponses } from "../hooks/useShowRawResponses";
+import { useShowTurnDetails } from "../hooks/useShowTurnDetails";
 import type { CardLayout } from "../lib/cardLayout";
 
 const OPTIONS: { id: CardLayout; label: string; hint: string }[] = [
@@ -48,23 +49,49 @@ export function CardLayoutPicker() {
           ? "This browser would not save the choice — it applies until you reload."
           : "How the chat shows a turn an external guardrail stopped. Saved in this browser only; it changes nothing for anyone else."}
       </p>
-      <RawResponsesSwitch />
+      <ViewerSwitch
+        title="Turn details"
+        labels={["Hidden", "Shown"]}
+        flag={useShowTurnDetails}
+        hint="the control strip and the edge-verdict line under each chat turn"
+        note="Shown by default — the strip says which control stopped or passed each prompt, and the verdict line looks up what the edge WAF did. Hiding them also stops that lookup for new turns. Saved in this browser only; the prompt log's verdict column is unaffected."
+      />
+      {/* The raw-response debug view: off by default; the warning is part of the control, not a footnote. */}
+      <ViewerSwitch
+        title="Raw vendor responses"
+        labels={["Off", "On"]}
+        flag={useShowRawResponses}
+        hint={'a "Raw responses" panel under each chat turn the guardrails scanned'}
+        note="Each vendor's response body as it came back — it can include your prompt and anything the vendor detected. Only your own chat asks for it; it is not stored, logged or exported. Not available on streamed replies (no JSON body to carry it)."
+      />
     </section>
   );
 }
 
-// The raw-response debug view: asks this viewer's own chat requests for each vendor's
-// response body. Off by default; the warning is part of the control, not a footnote.
-function RawResponsesSwitch() {
-  const [on, setOn] = useShowRawResponses();
+// One per-viewer on/off preference (hooks/useViewerFlag.ts), as a two-button group.
+function ViewerSwitch({
+  title,
+  labels,
+  flag,
+  hint,
+  note,
+}: {
+  title: string;
+  labels: [off: string, on: string];
+  flag: () => [boolean, (on: boolean) => boolean];
+  hint: string;
+  note: string;
+}) {
+  const [on, setOn] = flag();
   const [saved, setSaved] = useState<boolean | null>(null);
+  const labelId = useId();
   return (
     <div className="mt-3 border-t border-line pt-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <h2 id="raw-switch-label" className="text-[13px] font-bold text-text">
-          Raw vendor responses
+        <h2 id={labelId} className="text-[13px] font-bold text-text">
+          {title}
         </h2>
-        <div role="group" aria-labelledby="raw-switch-label" className="inline-flex overflow-hidden rounded-full border border-line">
+        <div role="group" aria-labelledby={labelId} className="inline-flex overflow-hidden rounded-full border border-line">
           {[false, true].map((v) => (
             <button
               key={String(v)}
@@ -75,16 +102,14 @@ function RawResponsesSwitch() {
                 on === v ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
               }`}
             >
-              {v ? "On" : "Off"}
+              {v ? labels[1] : labels[0]}
             </button>
           ))}
         </div>
-        <span className="text-[12px] text-muted">a "Raw responses" panel under each chat turn the guardrails scanned</span>
+        <span className="text-[12px] text-muted">{hint}</span>
       </div>
       <p aria-live="polite" className="mt-1.5 text-[11.5px] text-subtle">
-        {saved === false
-          ? "This browser would not save the choice — it applies until you reload."
-          : "Each vendor's response body as it came back — it can include your prompt and anything the vendor detected. Only your own chat asks for it; it is not stored, logged or exported. Not available on streamed replies (no JSON body to carry it)."}
+        {saved === false ? "This browser would not save the choice — it applies until you reload." : note}
       </p>
     </div>
   );

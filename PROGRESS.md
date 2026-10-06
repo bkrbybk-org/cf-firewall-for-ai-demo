@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **622 across 40 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **621 across 40 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,30 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — "Turn details" switch: hide the control strip and edge-verdict line
+
+**Asked for:** "add option to disable this" (a screenshot of the control strip with the "checking Cloudflare edge
+log…" line under it). Deploy `3d11ce9c-560f-41a5-a6ab-a520b511a508`.
+
+- **The switch:** per viewer, `/guardrails` → *Turn details: Hidden / Shown*, key `chatTurnDetails`. Shown unless
+  exactly `off`. It is the opposite safe direction from raw responses: these are the demo's evidence, so a missing
+  value must not hide them.
+- **Implementation:** `TurnControls` returns null when hidden (its hooks still run). The five chat call sites use
+  a module-level `TurnVerdict` wrapper, so `Verdict` is not mounted and does not poll. A wrapper defined inside the
+  render would have remounted it every render.
+- **Unaffected:** the prompt log's `<Verdict>` and the "Run demo" autopilot, which polls through
+  `lib/verdict.ts` itself.
+- **Refactor:** the per-viewer flag logic now lives in `hooks/useViewerFlag.ts` (`createViewerFlag(key, parse)`),
+  shared by raw responses and turn details. The now-unused `readShowRaw`/`writeShowRaw` were removed. The parse
+  rules for both flags are pinned in one test file.
+- **Browser:**
+  - Defaults read Shown / Off.
+  - With Hidden + raw On, a blocked turn had no strip, no verdict line and **0** `/api/verdict` calls, while
+    `includeRaw` was still sent and the raw panel still rendered.
+  - A storage event setting `on` brought the strip and the verdict line back on the same page, without a reload.
+- **Gates:** 621 across 40 files (the two switch test files were consolidated). **Prod:** smoke all pass; the
+  bundle contains both keys and the hint.
 
 ### 2026-10-06 — raw responses: JSON colours, keyboard access, a resetting Copy label
 
