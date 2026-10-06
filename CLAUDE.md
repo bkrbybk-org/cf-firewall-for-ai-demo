@@ -185,9 +185,13 @@ alters what a customer sees in a demo. State it and let them choose.
   answer `disabled` on a plain `wrangler dev`. To exercise them, start the **`wrangler-dev-promptlog`** launch
   config (port 8788, `--var PROMPT_LOG_ENABLED:true`) — never flip the flag in `wrangler.jsonc` to test.
 - The guardrail admin gate (`src/accessAuth.ts`) is off unless the `GUARDRAIL_ADMIN_EMAILS` secret is set (prod:
-  unset as of 2026-10-06 — the user decides who). To see it enforcing, start **`wrangler-dev-guardrail-admins`**
+  SET since 2026-10-06 to the user's own Access login — only they can change guardrails there; the service token
+  in `.env` can read but every write is a 403). To see it enforcing locally, start **`wrangler-dev-guardrail-admins`**
   (port 8789): local requests carry no Access JWT, so every guardrail write is a 403 and the page is read-only.
   Setting that secret on prod changes who can edit a live demo's guardrails — ask first.
+  **Consequence for you:** prod guardrail writes — saving a key, *Test connection*, toggling guardrail-only — can
+  no longer be done with the service token. They need the user in their browser (or the user adding an admin).
+  Plan prod guardrail verification around that.
 
 ## House style
 

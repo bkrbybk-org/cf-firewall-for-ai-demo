@@ -1878,9 +1878,19 @@ exercised):
 
 **External-guardrail caveats** (2026-10-01):
 
-26. **FIX BUILT 2026-10-06, NOT YET SWITCHED ON** (deploy `a14d7614`). `src/accessAuth.ts` verifies the Access JWT
-    and limits writes to `GUARDRAIL_ADMIN_EMAILS`. Prod has no list yet, so writes stay open and
-    `access.mode` is `"open"`. **Open until the user sets the secret.** Original entry:
+26. ~~**Anything that passes Access can reconfigure the guardrail**~~ **FIXED 2026-10-06.**
+    `src/accessAuth.ts` verifies the Access JWT and limits writes to `GUARDRAIL_ADMIN_EMAILS`.
+    - **Switched on the same day:** the secret holds one address, the user's work email, which is their
+      Access login. The address is deliberately not recorded here.
+    - **Measured on prod with the service token:** GET `access` →
+      `{canEdit:false, mode:"admin", who:"service token ….access", reason:"service tokens can read … but not change them"}`.
+      A pipeline PUT → **403**, so nothing changed. The user's parallel AIDR + AIRS pipeline is untouched.
+      Smoke 5/5.
+    - **Not yet seen:** the user's own browser session showing "Signed in as …, a guardrail admin".
+    - **To add or change admins:** `npx wrangler secret put GUARDRAIL_ADMIN_EMAILS` (comma-separated).
+      **Remove** it to reopen writes.
+
+    Original entry:
     **Anything that passes Access can reconfigure the guardrail** — enable or disable it, change region, fail
     mode or profile, or replace the key — because `/api/external-guardrails` cannot tell a human from the
     red-team scanner's service token. It **cannot read or redirect the key** (write-only; allowlisted hosts),
@@ -2003,7 +2013,9 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 5. [x] **Unauthenticated probes** (done 2026-10-05) (*self*): POST each documented path with no key and record the error
    shape. CrowdStrike taught us a 401 does not prove a path exists; PANW answers 403 to any path. Record only
    what a probe proves.
-6. [ ] **Live verification on prod** (*self*; needs 0). First flip that provider's `supported` to `true` in
+6. [ ] **Live verification on prod** (*self* to unlock and read; **the user** to save keys and press *Test
+   connection*, since the admin gate is on and the service token can no longer write; needs 0). First flip that
+   provider's `supported` to `true` in
    `PROVIDERS` and deploy: the server refuses to store anything for an unsupported provider, key included. Then
    save each key with the provider **disabled**, then
    *Test connection* with a benign prompt and an injection prompt. Capture the real payloads and correct the
