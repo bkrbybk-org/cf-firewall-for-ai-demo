@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **606 across 38 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **611 across 38 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,40 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — chat card layout 3: Table
+
+**Asked for:** "add 1 more type as a table" (vendors as columns; Action / Topic / Session ID rows; "feel free to
+adjust data in rows"). Deploy `759756e7-67b6-4e39-beb7-e993f4453f49`.
+
+- **Rows** (adjusted from the sample):
+  - **Verdict:** the pill plus DECIDED / BLOCKED INDEPENDENTLY.
+  - **Detections:** stands in for "Topic".
+  - **Policy:** the policy, or the profile.
+  - **Reference ID:** stands in for "Session ID". It shows each vendor's own id under its own field name, which
+    is what its console searches for. The shared session id, the ray, is already on the strip below.
+  - **Latency.**
+  - **Notes:** the honesty notes plus the error or not-run reason.
+  - Rows nobody has data for are omitted.
+- **The one new honesty rule** (`vendorTableColumn()` in `guardrailView.ts`, pure, +4 tests):
+  - "none reported" only for a verdict that found nothing; "—" for no verdict (error, not run).
+  - Latency is "—" for a vendor that never ran, never 0 ms.
+  - Mutation-verified: an error reading as "none reported" (1 red); 0 ms for not-run (1 red).
+- **`cardLayout.ts`:** `CARD_LAYOUTS` with `table`; still only an exact name parses (`Table`, `tables` and
+  `toString` fall back to columns).
+- **Found while checking:** Cato's id was labelled `x-cato-session-id` (a placeholder from before
+  `invocation_id` was seen live), in every layout. It is now `invocation_id`.
+- **Layout:** the table's overflow box is `relative`, per the new scroll-container rule. Five vendors scroll
+  sideways with the field column sticky.
+- **Browser checks** (stubbed mixed five-vendor result: redaction-not-applied allow, two independent blocks, a
+  clean allow, a 401 fail-open):
+  - Every cell read back via the DOM.
+  - At 1680×990 dark: the table is 830 px wide in a 660 px box and scrolls.
+  - At 375 px light: the table scrolls inside the card, no page overflow, and the chat wrapper is still not
+    scrollable (`scrollHeight − clientHeight = 0`).
+  - The picker shows Columns / Compact / Table.
+- **Gates:** 611 tests. **Prod:** smoke all pass; the bundle contains the picker hint, "none reported" and the
+  `invocation_id` label, and no `x-cato-session-id` label.
 
 ### 2026-10-06 — "Could not be reached" said only when it is true
 

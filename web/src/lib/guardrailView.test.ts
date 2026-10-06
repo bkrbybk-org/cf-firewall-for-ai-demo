@@ -4,7 +4,7 @@
 // pin the places where a card could: crediting the wrong vendor with the stop, turning
 // an outage into a verdict, or reading a partial scan as a clean pass.
 import { describe, expect, it } from "vitest";
-import { pipelineView } from "./guardrailView";
+import { pipelineView, vendorTableColumn } from "./guardrailView";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 
 const AIRS = "prisma-airs" as const;
@@ -517,5 +517,51 @@ describe("rule 7: why", () => {
       stoppedBy: AIRS,
     });
     expect(pipelineView(errored, "blocked").why).toBeNull();
+  });
+});
+
+// The table layout's only new risk is an empty cell: "found nothing" and "gave no
+// verdict" must never look alike, and a guardrail that never ran has no latency.
+describe("table layout cells", () => {
+  const CATO = "cato-ai-security" as const;
+  const view = pipelineView(
+    pipe({
+      mode: "sequential",
+      results: [
+        result({ provider: AIDR, outcome: "allow", policy: "Default", scanId: "req_1" }),
+        result({ provider: CATO, outcome: "error", failedOpen: true, httpStatus: 200, error: "verdict not recognised" }),
+        result({ provider: AIRS, outcome: "block", detected: ["injection"], profileName: "demo-profile", scanId: "scan_9" }),
+      ],
+      notRun: [{ provider: "lakera-guard", reason: "Not run: Prisma AIRS already stopped the turn" }],
+      stoppedBy: AIRS,
+    }),
+    "blocked",
+  );
+  const col = (p: string) => vendorTableColumn(view.vendors.find((v) => v.provider === p)!);
+
+  it("says 'none reported' only for a verdict that found nothing", () => {
+    expect(col(AIDR).detections).toBe("none reported");
+    expect(col(AIRS).detections).toEqual(["Prompt injection"]);
+  });
+
+  it("shows a dash, never 'none reported', when there was no verdict — and says why", () => {
+    expect(col(CATO).detections).toBe("—");
+    expect(col(CATO).notes.join(" ")).toContain("verdict not recognised");
+    expect(col(CATO).notes.join(" ")).toContain("Answered, but not with a verdict this app can read");
+    expect(col("lakera-guard").detections).toBe("—");
+    expect(col("lakera-guard").notes).toContain("Not run: Prisma AIRS already stopped the turn");
+  });
+
+  it("has no latency for a guardrail that never ran, rather than 0 ms", () => {
+    expect(col("lakera-guard").latency).toBe("—");
+    expect(col(AIDR).latency).toBe("100 ms");
+  });
+
+  it("names each reference id by the vendor's own field, and the policy or profile", () => {
+    expect(col(AIDR).reference).toEqual({ label: "request_id", value: "req_1" });
+    expect(col(AIRS).reference).toEqual({ label: "scan_id", value: "scan_9" });
+    expect(col(CATO).reference).toBeNull();
+    expect(col(AIDR).policy).toBe("Default");
+    expect(col(AIRS).policy).toBe("demo-profile");
   });
 });

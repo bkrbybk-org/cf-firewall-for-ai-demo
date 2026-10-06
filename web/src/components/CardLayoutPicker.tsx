@@ -9,6 +9,7 @@ import type { CardLayout } from "../lib/cardLayout";
 const OPTIONS: { id: CardLayout; label: string; hint: string }[] = [
   { id: "columns", label: "Columns", hint: "one card per guardrail — findings, notes, details" },
   { id: "compact", label: "Compact", hint: "one row per guardrail — ids and config behind Details" },
+  { id: "table", label: "Table", hint: "one column per guardrail — verdict, detections, policy, id side by side" },
 ];
 
 export function CardLayoutPicker() {

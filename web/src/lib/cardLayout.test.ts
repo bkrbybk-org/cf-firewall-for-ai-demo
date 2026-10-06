@@ -20,10 +20,14 @@ const throwing = {
 };
 
 describe("parseCardLayout", () => {
-  it("accepts only the exact word compact", () => {
+  it("accepts only an exact layout name", () => {
     expect(parseCardLayout("compact")).toBe("compact");
+    expect(parseCardLayout("table")).toBe("table");
     expect(parseCardLayout("columns")).toBe("columns");
     expect(parseCardLayout("Compact")).toBe("columns");
+    expect(parseCardLayout("Table")).toBe("columns");
+    expect(parseCardLayout("tables")).toBe("columns");
+    expect(parseCardLayout("toString")).toBe("columns");
     expect(parseCardLayout("rows")).toBe("columns");
     expect(parseCardLayout("")).toBe("columns");
     expect(parseCardLayout(null)).toBe("columns");

@@ -40,9 +40,9 @@ export const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
   "crowdstrike-aidr": "request_id",
   "cisco-ai-defense": "event_id",
   "lakera-guard": "request_uuid",
-  // Cato documents no request id, so its results carry none and this is never shown;
-  // the Cloudflare ray goes out as `x-cato-session-id` for matching in Cato's console.
-  "cato-ai-security": "x-cato-session-id",
+  // Seen live (not in Cato's sample): the id of one analysis. The Cloudflare ray goes
+  // out separately as `x-cato-session-id`.
+  "cato-ai-security": "invocation_id",
 };
 
 export const DETECTION_LABELS: Record<string, string> = {
@@ -327,4 +327,33 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
   }
 
   return { headline, tone, subline, vendors, why: whyLine(ran), caveat };
+}
+
+// The "table" card layout: one column per vendor, one row per field. Derived from the
+// VendorView, so it can only re-arrange what the other layouts say, never re-decide it.
+// The one thing a table adds is an empty cell, and an empty cell has two meanings that
+// must not look alike: a vendor that gave a verdict and found nothing ("none reported")
+// versus one that gave no verdict at all ("—"). A blank or a zero would let an outage
+// read as a clean scan.
+export interface VendorTableColumn {
+  detections: string[] | "none reported" | "—";
+  policy: string | null;
+  reference: { label: string; value: string } | null;
+  latency: string; // "—" when it never ran: there is no latency, and 0 ms would be a lie
+  notes: string[]; // the honesty notes, plus the error or skip reason the details hold
+}
+
+export function vendorTableColumn(v: VendorView): VendorTableColumn {
+  const detail = (label: string) => v.details.find((d) => d.label === label)?.value ?? null;
+  const verdict = v.state === "block" || v.state === "allow";
+  const refLabel = scanIdLabel(v.provider);
+  const refValue = detail(refLabel);
+  const why = detail("error") ?? detail("reason");
+  return {
+    detections: !verdict ? "—" : v.findings.length > 0 ? v.findings : "none reported",
+    policy: detail("policy") ?? detail("profile"),
+    reference: refValue ? { label: refLabel, value: refValue } : null,
+    latency: v.latencyMs == null ? "—" : `${v.latencyMs} ms`,
+    notes: why ? [...v.notes, why] : v.notes,
+  };
 }

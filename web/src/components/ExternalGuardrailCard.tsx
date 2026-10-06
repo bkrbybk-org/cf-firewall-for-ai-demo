@@ -7,10 +7,10 @@
 // and before the model. A colour of its own is what lets someone looking at a
 // blocked turn tell which layer actually stopped it.
 //
-// Two layouts, chosen per viewer on /guardrails (lib/cardLayout.ts): "columns" — a
-// headline, then one bordered mini card per vendor — and "compact", one row per vendor.
-// Every fact comes from pipelineView() (lib/guardrailView.ts), so neither layout
-// re-decides what a result means.
+// Three layouts, chosen per viewer on /guardrails (lib/cardLayout.ts): "columns" — a
+// headline, then one bordered mini card per vendor — "compact", one row per vendor, and
+// "table", one column per vendor and one row per field. Every fact comes from
+// pipelineView() (lib/guardrailView.ts), so no layout re-decides what a result means.
 import { Fragment, useId, useState } from "react";
 import { ChevronDown, ChevronRight, Shield, ShieldAlert } from "lucide-react";
 import { GuardrailReportPanel } from "./GuardrailReportPanel";
@@ -19,6 +19,7 @@ import {
   GUARDRAIL_ONLY_HEADLINE,
   pipelineView,
   providerLabel,
+  vendorTableColumn,
   type PipelineView,
   type VendorView,
 } from "../lib/guardrailView";
@@ -273,6 +274,120 @@ function CompactDetails({ vendors }: { vendors: VendorView[] }) {
   );
 }
 
+// Layout "table": one column per vendor, one row per field, so the vendors read side by
+// side. Every cell comes from vendorTableColumn(), which keeps "found nothing" and "gave
+// no verdict" apart. A row nobody has anything for (policy, reference, notes) is left out
+// rather than drawn as a line of dashes. Five vendors outgrow a chat column, so the
+// table scrolls sideways inside the card with the field names pinned.
+function VendorTable({ vendors }: { vendors: VendorView[] }) {
+  const cols = vendors.map((v) => ({ v, c: vendorTableColumn(v) }));
+  const cell = "border-t border-line px-2.5 py-1.5 align-top";
+  const head = `${cell} sticky left-0 z-[1] bg-surface text-left text-[11px] font-semibold whitespace-nowrap text-subtle`;
+  const dash = <span className="text-subtle">—</span>;
+  const rows: { label: string; render: (x: (typeof cols)[number]) => React.ReactNode }[] = [
+    {
+      label: "Verdict",
+      render: ({ v }) => (
+        <div className="flex flex-col items-start gap-1">
+          <span className={`rounded-full border px-2 py-px text-[10.5px] font-bold whitespace-nowrap ${pillClass(v)}`}>
+            {v.stateLabel}
+          </span>
+          <Marker v={v} />
+        </div>
+      ),
+    },
+    {
+      label: "Detections",
+      render: ({ c }) =>
+        Array.isArray(c.detections) ? (
+          <ul className="flex flex-col gap-0.5 font-semibold text-cf-amber">
+            {c.detections.map((d) => (
+              <li key={d}>{d}</li>
+            ))}
+          </ul>
+        ) : c.detections === "—" ? (
+          dash
+        ) : (
+          <span className="text-muted">{c.detections}</span>
+        ),
+    },
+  ];
+  if (cols.some(({ c }) => c.policy)) {
+    rows.push({
+      label: "Policy",
+      render: ({ c }) => (c.policy ? <span className="font-mono text-[11px] break-all text-text">{c.policy}</span> : dash),
+    });
+  }
+  if (cols.some(({ c }) => c.reference)) {
+    rows.push({
+      label: "Reference ID",
+      // Each vendor's own field name: it is what you search for in that vendor's console.
+      render: ({ c }) =>
+        c.reference ? (
+          <div>
+            <div className="text-[10px] text-subtle">{c.reference.label}</div>
+            <div className="font-mono text-[11px] break-all text-text">{c.reference.value}</div>
+          </div>
+        ) : (
+          dash
+        ),
+    });
+  }
+  rows.push({ label: "Latency", render: ({ c }) => <span className="font-mono text-[11px] text-muted">{c.latency}</span> });
+  if (cols.some(({ c }) => c.notes.length > 0)) {
+    rows.push({
+      label: "Notes",
+      render: ({ c }) =>
+        c.notes.length > 0 ? (
+          <ul className="flex flex-col gap-1 text-[11px] text-cf-amber">
+            {c.notes.map((n) => (
+              <li key={n}>{n}</li>
+            ))}
+          </ul>
+        ) : (
+          dash
+        ),
+    });
+  }
+  return (
+    // `relative`: an overflow box must contain its own absolutely positioned descendants
+    // (CLAUDE.md, scroll containers) — the sticky column's stacking needs it too.
+    <div className="relative mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
+      <table className="w-full border-collapse text-[11.5px]">
+        <thead>
+          <tr>
+            <th scope="col" aria-label="Field" className="sticky left-0 z-[1] bg-surface px-2.5 py-1.5" />
+            {cols.map(({ v }) => (
+              <th
+                key={v.provider}
+                scope="col"
+                title={v.fullName}
+                className={`px-2.5 py-1.5 text-left align-bottom font-bold ${v.state === "notRun" ? "text-muted" : "text-text"}`}
+              >
+                <div className="w-32">{v.name}</div>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label}>
+              <th scope="row" className={head}>
+                {r.label}
+              </th>
+              {cols.map((x) => (
+                <td key={x.v.provider} className={`${cell} ${x.v.marker ? "bg-cf-amber/[0.06]" : ""}`}>
+                  <div className="w-32 break-words">{r.render(x)}</div>
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function PipelineBody({ view, layout }: { view: PipelineView; layout: CardLayout }) {
   const withReport = view.vendors.filter((v) => v.reportId);
   return (
@@ -293,6 +408,7 @@ function PipelineBody({ view, layout }: { view: PipelineView; layout: CardLayout
           <CompactDetails vendors={view.vendors} />
         </>
       )}
+      {view.vendors.length > 0 && layout === "table" && <VendorTable vendors={view.vendors} />}
       {view.vendors.length > 0 && layout === "columns" && (
         <div className="@container mt-3">
           <ul
