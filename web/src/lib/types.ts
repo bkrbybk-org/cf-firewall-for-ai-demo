@@ -272,12 +272,16 @@ export interface ExternalGuardrailUpdate {
   clearApiKey?: boolean;
 }
 
-// POST /api/external-guardrails/test — scans a fixed benign prompt with the
+// Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an
+// action neither other prompt triggers (Cato: "anonymize_action", seen 2026-10-06).
+export type GuardrailTestSample = "benign" | "attack" | "pii";
+
+// POST /api/external-guardrails/test — scans a fixed prompt with the
 // SAVED configuration (it never sends an unsaved key).
 export interface ExternalGuardrailTestResult {
   ok: boolean; // the provider answered with a verdict
   result: ExternalGuardrailResult;
-  sample?: "benign" | "attack"; // which fixed prompt was scanned
+  sample?: GuardrailTestSample; // which fixed prompt was scanned
   verified?: boolean; // this provider's parser has been checked against a real payload
   // The vendor response's field names, types and booleans — never text (src/responseShape.ts).
   // What an admin hands back so an unverified parser can be checked.

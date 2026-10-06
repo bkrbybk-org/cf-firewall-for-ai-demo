@@ -288,9 +288,12 @@ function CompactDetails({ vendors }: { vendors: VendorView[] }) {
 // a vendor's console search.
 const breakable = (s: string) => s.replace(/([/_])/g, "$1​");
 
-// Which vendor columns are not fully in view, re-measured on scroll and on resize.
+// How many vendor columns are out of view on each side, and whether anything at all is
+// clipped — re-measured on scroll and on resize. A column counts as "more" only when
+// less than half of it shows: three columns with the last one's edge clipped read
+// "1 more →" (2026-10-06) while all three were plainly on screen.
 function useHiddenColumns(box: React.RefObject<HTMLDivElement | null>) {
-  const [hidden, setHidden] = useState({ left: 0, right: 0 });
+  const [hidden, setHidden] = useState({ left: 0, right: 0, clippedLeft: false, clippedRight: false });
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -299,11 +302,21 @@ function useHiddenColumns(box: React.RefObject<HTMLDivElement | null>) {
       // The pinned field column covers the left edge, so "hidden on the left" is measured from its right side.
       const pinned = el.querySelector("thead th")?.getBoundingClientRect().right ?? r.left;
       const heads = [...el.querySelectorAll<HTMLElement>("thead th[data-vendor]")].map((th) => th.getBoundingClientRect());
+      const shown = (h: DOMRect) => Math.max(0, Math.min(h.right, r.right) - Math.max(h.left, pinned)) / h.width;
       const next = {
-        left: heads.filter((h) => h.left < pinned - 1).length,
-        right: heads.filter((h) => h.right > r.right + 1).length,
+        left: heads.filter((h) => h.left < pinned && shown(h) < 0.5).length,
+        right: heads.filter((h) => h.right > r.right && shown(h) < 0.5).length,
+        clippedLeft: el.scrollLeft > 1,
+        clippedRight: el.scrollLeft + el.clientWidth < el.scrollWidth - 1,
       };
-      setHidden((prev) => (prev.left === next.left && prev.right === next.right ? prev : next));
+      setHidden((prev) =>
+        prev.left === next.left &&
+        prev.right === next.right &&
+        prev.clippedLeft === next.clippedLeft &&
+        prev.clippedRight === next.clippedRight
+          ? prev
+          : next,
+      );
     };
     measure();
     el.addEventListener("scroll", measure, { passive: true });
@@ -443,19 +456,19 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
             </tbody>
           </table>
         </div>
-        {hidden.right > 0 && (
+        {hidden.clippedRight && (
           <div
             aria-hidden="true"
             className="pointer-events-none absolute inset-y-px right-px w-10 rounded-r-xl bg-gradient-to-l from-surface to-transparent"
           />
         )}
       </div>
-      {(hidden.left > 0 || hidden.right > 0) && (
+      {(hidden.clippedLeft || hidden.clippedRight) && (
         <p className="mt-1 text-right text-[11px] text-muted">
-          <span className="text-subtle">Scroll sideways · </span>
-          {hidden.left > 0 && `← ${hidden.left} more`}
-          {hidden.left > 0 && hidden.right > 0 && " · "}
-          {hidden.right > 0 && `${hidden.right} more →`}
+          <span className="text-subtle">Scroll sideways</span>
+          {hidden.left > 0 && ` · ← ${hidden.left} more`}
+          {hidden.right > 0 && ` · ${hidden.right} more →`}
+          {hidden.left === 0 && hidden.right === 0 && (hidden.clippedRight ? " →" : " ←")}
         </p>
       )}
     </div>

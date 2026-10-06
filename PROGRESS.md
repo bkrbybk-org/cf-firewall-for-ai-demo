@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **611 across 38 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **612 across 38 files** (measured 2026-10-06; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,34 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-06 — Cato `anonymize_action`; a PII test sample; the table's "N more" count
+
+**Asked:** "why cato return no verdict? can you check with real response on what data field can be used?". The
+user's table screenshot of the Thai OTP-redirect prompt (two phone numbers) answered the first half. Cato's error
+row read `action_type was "anonymize_action"`: its policy asked for the PII to be anonymized and the prompt to go
+on. The value is undocumented, so the parser refused it, and fail open let the prompt through. Deploy
+`7160d263-aedd-4ee7-96c2-49794027d60d`.
+
+- **Parser:** the exact value `anonymize_action` is now an **allow + `transformed`**, with the fired detections,
+  `required_action.policy_name` and `invocation_id`. It follows decision 2 (redaction shown, not applied), as
+  AIDR's `transformed` is. The card says *"Redaction requested by Cato AI Security was not applied — the model
+  would receive the original prompt"*; the strip says "passed · partial". The flag rides on the action, not on
+  whether `redacted_new_message.entities` lists anything. Near misses (`anonymize_action `,
+  `Anonymize_Action`) stay errors. +1 test; mutation: drop `transformed` (1 red).
+- **Seen live now:** `required_action: null` (allow) and `block_action` (block; the injection in chat). Still
+  **not seen as a payload shape:** the anonymize and block bodies' `detections[]` items. The parser reads
+  `entity.type` there from the console sample. So `verified` stays `false`.
+- **A third test sample, `pii`:** Cato's own doc prompt, with the published example SSN 078-05-1120. Wired
+  through `GUARDRAIL_TEST_PROMPTS`, the openapi enums, `GuardrailTestSample` and a **Test with a PII prompt**
+  button on every card. Only the sample NAME is accepted, never text. Prod: a service-token POST with
+  `sample: "pii"` → 403.
+- **Table hint:** "1 more →" appeared with all three columns on screen, because only the last one's edge was
+  clipped. A column now counts only when less than half of it shows; a clipped edge alone keeps the fade and
+  reads "Scroll sideways →". Browser, the user's exact 3-vendor case: `scrollWidth 678` vs `660`, hint "Scroll
+  sideways →".
+- **Gates:** 612. **Prod:** smoke all pass; the bundle contains the button and "redaction requested, not
+  applied"; `/api/openapi.json` carries `"benign","attack","pii"`.
 
 ### 2026-10-06 — Table layout: four UI bugs found by stress-testing it
 

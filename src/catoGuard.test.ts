@@ -397,6 +397,28 @@ describe("parseCatoResponse — anything that is not block_action is an error, n
     expect(parseCatoResponse(200, { required_action: {} }, 1).outcome).toBe("error");
   });
 
+  // Seen live 2026-10-06 (a chat prompt carrying two phone numbers). Decided with the user:
+  // redaction is shown, not applied — so an allow flagged transformed, as AIDR's is.
+  it("reads anonymize_action as an allow whose redaction is not applied — never a block, never clean", () => {
+    const r = parseCatoResponse(200, { ...withAction("anonymize_action"), invocation_id: "inv_1" }, 4);
+    expect(r).toMatchObject({
+      outcome: "allow",
+      action: "allow",
+      transformed: true,
+      detected: ["PII", "SSN"],
+      policy: "Example Policy",
+      scanId: "inv_1",
+    });
+    expect(r.detectOnly).toBeUndefined();
+    expectNoLeak(r);
+    // The flag rides on the action, even when the redacted message lists no entities.
+    const bare = parseCatoResponse(200, { analysis_result: {}, required_action: { action_type: "anonymize_action" } }, 1);
+    expect(bare).toMatchObject({ outcome: "allow", transformed: true, detected: [] });
+    // Exact value only: a near miss stays an error.
+    expect(parseCatoResponse(200, withAction("anonymize_action "), 1).outcome).toBe("error");
+    expect(parseCatoResponse(200, withAction("Anonymize_Action"), 1).outcome).toBe("error");
+  });
+
   it("errors on any other string, naming it when it is a short lowercase token", () => {
     for (const other of ["no_action", "allow", "redact_action", "allow_action", "BLOCK_ACTION", "block_action "]) {
       const r = parseCatoResponse(200, withAction(other), 1);

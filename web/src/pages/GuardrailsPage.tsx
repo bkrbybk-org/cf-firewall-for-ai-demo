@@ -33,6 +33,7 @@ import type {
   ExternalGuardrailUpdate,
   GuardrailAccess,
   GuardrailPipelineUpdate,
+  GuardrailTestSample,
 } from "../lib/types";
 
 const INPUT_CLS =
@@ -187,9 +188,10 @@ function TestVerdict({ t }: { t: ExternalGuardrailTestResult }) {
       <div className="flex items-start gap-1.5 text-[12px] text-cf-green">
         <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
         <span>
-          {t.sample === "attack" ? "Attack prompt" : "Connection works"} — verdict{" "}
+          {t.sample === "attack" ? "Attack prompt" : t.sample === "pii" ? "PII prompt" : "Connection works"} — verdict{" "}
           <b className="font-mono">{r.action ?? r.outcome}</b>
-          {r.detectOnly && <b className="text-cf-amber"> · alerts only (Detect mode)</b>}
+          {r.detectOnly && <b className="text-cf-amber"> · alerts only</b>}
+          {r.transformed && <b className="text-cf-amber"> · redaction requested, not applied</b>}
           {r.detected && r.detected.length > 0 && (
             <>
               {" "}
@@ -346,7 +348,7 @@ function ProviderCard({
     }
   }
 
-  async function runTest(sample: "benign" | "attack" = "benign") {
+  async function runTest(sample: GuardrailTestSample = "benign") {
     setTesting(true);
     setTest(null);
     setTestErr(null);
@@ -571,6 +573,18 @@ function ProviderCard({
           className={BTN_CLS}
         >
           Test with an attack prompt
+        </button>
+        {/* PII is where vendors answer with something other than allow/block (Cato:
+            "anonymize_action"), so it gets its own fixed sample — the SSN from Cato's own
+            API docs, a long-published example number, not a person's. */}
+        <button
+          type="button"
+          onClick={() => void runTest("pii")}
+          title="Scans a fixed prompt containing a well-known example SSN (from Cato's API docs) with the saved configuration"
+          disabled={testing || saving || busy || dirty || !config.apiKeySet}
+          className={BTN_CLS}
+        >
+          Test with a PII prompt
         </button>
         <span className="text-[11px] text-subtle">Tests the saved configuration, not unsaved edits.</span>
         <div aria-live="polite" className="text-[12px]">

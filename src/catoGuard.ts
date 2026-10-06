@@ -128,7 +128,7 @@ function invocationId(v: unknown): string | null {
 // named only when it is a short lowercase token; otherwise it is not echoed at all.
 function unrecognisedVerdict(actionType: unknown, requiredActionPresent: boolean): string {
   const lead =
-    "Cato AI Security's verdict was not recognised (seen live: required_action null = allow; documented: action_type block_action)";
+    "Cato AI Security's verdict was not recognised (seen live: required_action null = allow, anonymize_action = allow + redaction; documented: block_action)";
   if (!requiredActionPresent) return `${lead}: required_action was missing or not an object`;
   if (typeof actionType !== "string") return `${lead}: required_action.action_type was missing or not a string`;
   if (SAFE_ACTION.test(actionType)) return `${lead}: action_type was "${actionType}"`;
@@ -209,6 +209,28 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
   if (required === null) {
     return { ...base, outcome: "error", error: "Cato AI Security returned no action and no analysis_result — not a verdict" };
   }
+  const policy =
+    isObject(required) && typeof required.policy_name === "string" ? required.policy_name.trim().slice(0, ERROR_CAP) : "";
+
+  // SEEN LIVE (2026-10-06, a Thai OTP-redirect prompt carrying two phone numbers, in
+  // chat): `action_type: "anonymize_action"` — Cato's policy asks for the PII to be
+  // anonymized and the prompt to go on. Undocumented. Read the way AIDR's redaction is
+  // (decided with the user: redaction is shown, not applied): an ALLOW, flagged
+  // `transformed`, so the card says the redaction was not applied and the model would
+  // receive the original prompt — amber, never a clean pass, and never a block Cato
+  // did not ask for. The flag rides on the action itself, not on whether the redacted
+  // message happens to list entities.
+  if (isObject(required) && required.action_type === "anonymize_action") {
+    return {
+      ...base,
+      outcome: "allow",
+      action: "allow",
+      detected: analysis ? firedNames(analysis) : [],
+      ...ids,
+      ...(policy ? { policy } : {}),
+      transformed: true,
+    };
+  }
   if (!isObject(required) || required.action_type !== "block_action") {
     return {
       ...base,
@@ -217,7 +239,6 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
     };
   }
 
-  const policy = typeof required.policy_name === "string" ? required.policy_name.trim().slice(0, ERROR_CAP) : "";
   return {
     ...base,
     outcome: "block",

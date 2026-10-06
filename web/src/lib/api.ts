@@ -10,6 +10,7 @@ import type {
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
+  GuardrailTestSample,
   GatewayAnalytics,
   GatewayMeta,
   ModelsResponse,
@@ -338,7 +339,7 @@ export async function saveExternalGuardrail(
 
 export async function testExternalGuardrail(
   provider: ExternalGuardrailProvider,
-  sample: "benign" | "attack" = "benign",
+  sample: GuardrailTestSample = "benign",
 ): Promise<ExternalGuardrailTestResult> {
   const r = await fetch("/api/external-guardrails/test", {
     method: "POST",

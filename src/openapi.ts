@@ -427,7 +427,7 @@ export const openapi = {
               schema: obj(
                 {
                   provider: ref("ExternalGuardrailProvider"),
-                  sample: { type: "string", enum: ["benign", "attack"], description: "Which FIXED prompt to scan; anything else is `benign`. No prompt text is accepted." },
+                  sample: { type: "string", enum: ["benign", "attack", "pii"], description: "Which FIXED prompt to scan (`pii` carries the example SSN from Cato's API docs); anything else is `benign`. No prompt text is accepted." },
                 },
                 ["provider"],
               ),
@@ -441,7 +441,7 @@ export const openapi = {
               {
                 ok: bool(),
                 result: ref("ExternalGuardrailResult"),
-                sample: { type: "string", enum: ["benign", "attack"] },
+                sample: { type: "string", enum: ["benign", "attack", "pii"] },
                 verified: bool("This provider's parser has been checked against a real payload."),
                 responseShape: {
                   type: ["object", "null"],
