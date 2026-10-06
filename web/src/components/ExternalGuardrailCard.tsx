@@ -11,7 +11,7 @@
 // headline, then one bordered mini card per vendor — "compact", one row per vendor, and
 // "table", one column per vendor and one row per field. Every fact comes from
 // pipelineView() (lib/guardrailView.ts), so no layout re-decides what a result means.
-import { Fragment, useId, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Shield, ShieldAlert } from "lucide-react";
 import { GuardrailReportPanel } from "./GuardrailReportPanel";
 import { DEFAULT_CARD_LAYOUT, type CardLayout } from "../lib/cardLayout";
@@ -278,8 +278,48 @@ function CompactDetails({ vendors }: { vendors: VendorView[] }) {
 // side. Every cell comes from vendorTableColumn(), which keeps "found nothing" and "gave
 // no verdict" apart. A row nobody has anything for (policy, reference, notes) is left out
 // rather than drawn as a line of dashes. Five vendors outgrow a chat column, so the
-// table scrolls sideways inside the card with the field names pinned.
+// table scrolls sideways inside the card with the field names pinned — and SAYS so:
+// macOS overlay scrollbars are invisible until used, so without the fade and the
+// "N more" line a hidden fifth vendor simply looked absent.
+//
+// Detection names are vendor identifiers like `pii/us_social_security_number`; a break
+// opportunity after each `/` and `_` lets them wrap at a separator instead of mid-word.
+// Display only — ids (reference, policy) are never touched, since they get copied into
+// a vendor's console search.
+const breakable = (s: string) => s.replace(/([/_])/g, "$1​");
+
+// Which vendor columns are not fully in view, re-measured on scroll and on resize.
+function useHiddenColumns(box: React.RefObject<HTMLDivElement | null>) {
+  const [hidden, setHidden] = useState({ left: 0, right: 0 });
+  useEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const measure = () => {
+      const r = el.getBoundingClientRect();
+      // The pinned field column covers the left edge, so "hidden on the left" is measured from its right side.
+      const pinned = el.querySelector("thead th")?.getBoundingClientRect().right ?? r.left;
+      const heads = [...el.querySelectorAll<HTMLElement>("thead th[data-vendor]")].map((th) => th.getBoundingClientRect());
+      const next = {
+        left: heads.filter((h) => h.left < pinned - 1).length,
+        right: heads.filter((h) => h.right > r.right + 1).length,
+      };
+      setHidden((prev) => (prev.left === next.left && prev.right === next.right ? prev : next));
+    };
+    measure();
+    el.addEventListener("scroll", measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", measure);
+      ro.disconnect();
+    };
+  }, [box]);
+  return hidden;
+}
+
 function VendorTable({ vendors }: { vendors: VendorView[] }) {
+  const boxRef = useRef<HTMLDivElement>(null);
+  const hidden = useHiddenColumns(boxRef);
   const cols = vendors.map((v) => ({ v, c: vendorTableColumn(v) }));
   const cell = "border-t border-line px-2.5 py-1.5 align-top";
   const head = `${cell} sticky left-0 z-[1] bg-surface text-left text-[11px] font-semibold whitespace-nowrap text-subtle`;
@@ -302,7 +342,7 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
         Array.isArray(c.detections) ? (
           <ul className="flex flex-col gap-0.5 font-semibold text-cf-amber">
             {c.detections.map((d) => (
-              <li key={d}>{d}</li>
+              <li key={d}>{breakable(d)}</li>
             ))}
           </ul>
         ) : c.detections === "—" ? (
@@ -349,41 +389,75 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
         ),
     });
   }
+  // Content-sized between 7.5rem and 11rem: a fixed 8rem made a three-sentence note
+  // ~180px tall while a "—" column sat just as wide.
+  const width = "w-max min-w-[7.5rem] max-w-[11rem]";
+  // The column of the result that stopped the turn is tinted top to bottom, header included.
+  const tint = (v: VendorView) => (v.marker ? "bg-cf-amber/[0.06]" : "");
   return (
-    // `relative`: an overflow box must contain its own absolutely positioned descendants
-    // (CLAUDE.md, scroll containers) — the sticky column's stacking needs it too.
-    <div className="relative mt-3 overflow-x-auto rounded-xl border border-line bg-surface">
-      <table className="w-full border-collapse text-[11.5px]">
-        <thead>
-          <tr>
-            <th scope="col" aria-label="Field" className="sticky left-0 z-[1] bg-surface px-2.5 py-1.5" />
-            {cols.map(({ v }) => (
-              <th
-                key={v.provider}
-                scope="col"
-                title={v.fullName}
-                className={`px-2.5 py-1.5 text-left align-bottom font-bold ${v.state === "notRun" ? "text-muted" : "text-text"}`}
-              >
-                <div className="w-32">{v.name}</div>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.label}>
-              <th scope="row" className={head}>
-                {r.label}
-              </th>
-              {cols.map((x) => (
-                <td key={x.v.provider} className={`${cell} ${x.v.marker ? "bg-cf-amber/[0.06]" : ""}`}>
-                  <div className="w-32 break-words">{r.render(x)}</div>
-                </td>
+    <div className="mt-3">
+      {/* Not a scroller itself: it only anchors the edge fades, which must stay put while
+          the table scrolls under them. */}
+      <div className="relative">
+        {/* `relative`: an overflow box must contain its own absolutely positioned
+            descendants (CLAUDE.md, scroll containers). Focusable and named, so a keyboard
+            user can scroll it — a scroll region with nothing focusable inside is otherwise
+            unreachable without a mouse. */}
+        <div
+          ref={boxRef}
+          tabIndex={0}
+          role="region"
+          aria-label="Guardrail results, one column per guardrail"
+          className="relative overflow-x-auto rounded-xl border border-line bg-surface focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <table className="w-full border-collapse text-[11.5px]">
+            <thead>
+              <tr>
+                <th scope="col" aria-label="Field" className="sticky left-0 z-[1] bg-surface px-2.5 py-1.5" />
+                {cols.map(({ v }) => (
+                  <th
+                    key={v.provider}
+                    data-vendor={v.provider}
+                    scope="col"
+                    title={v.fullName}
+                    className={`px-2.5 py-1.5 text-left align-bottom font-bold ${tint(v)} ${v.state === "notRun" ? "text-muted" : "text-text"}`}
+                  >
+                    <div className={width}>{v.name}</div>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.label}>
+                  <th scope="row" className={head}>
+                    {r.label}
+                  </th>
+                  {cols.map((x) => (
+                    <td key={x.v.provider} className={`${cell} ${tint(x.v)}`}>
+                      <div className={`${width} break-words`}>{r.render(x)}</div>
+                    </td>
+                  ))}
+                </tr>
               ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </tbody>
+          </table>
+        </div>
+        {hidden.right > 0 && (
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-px right-px w-10 rounded-r-xl bg-gradient-to-l from-surface to-transparent"
+          />
+        )}
+      </div>
+      {(hidden.left > 0 || hidden.right > 0) && (
+        <p className="mt-1 text-right text-[11px] text-muted">
+          <span className="text-subtle">Scroll sideways · </span>
+          {hidden.left > 0 && `← ${hidden.left} more`}
+          {hidden.left > 0 && hidden.right > 0 && " · "}
+          {hidden.right > 0 && `${hidden.right} more →`}
+        </p>
+      )}
     </div>
   );
 }

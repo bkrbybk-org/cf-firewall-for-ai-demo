@@ -626,6 +626,31 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-06 — Table layout: four UI bugs found by stress-testing it
+
+**Asked for:** "check ui bugs on table layout" (no screenshot). Stubbed in the browser:
+- a sequential run with a detect-only vendor carrying four long detector ids;
+- a fail-closed timeout and two not-run vendors;
+- a single-vendor guardrail-only card;
+- a three-vendor independent block.
+
+Deploy `d7f4d593-b6f3-4a56-96dc-90e4557cd8cc`.
+
+| # | Bug (measured) | Fix |
+|---|---|---|
+| 1 | **Hidden columns had no cue.** `scrollWidth 830 > clientWidth 660`, a 2 px overlay scrollbar, and Cato simply cut off | Right-edge fade, plus "Scroll sideways · ← N more · N more →", re-measured on scroll and resize (`useHiddenColumns`) |
+| 2 | **Not keyboard-scrollable.** `tabIndex −1`, no role or name | `tabIndex 0`, `role="region"`, `aria-label`, focus ring. Arrow keys scrolled it to `scrollLeft 200`, and the hint updated live |
+| 3 | **Fixed 8 rem columns.** Notes row 178 px tall; `pii/us_social_security_number` broke mid-word | Content-sized 7.5–11 rem columns (Notes 130 px, Detections 118 → 85 px); a break opportunity after `/` and `_` in detection names only, never in ids |
+| 4 | The DECIDED / independent tint stopped at the header | The header cell is tinted too |
+
+No change was needed:
+- the sticky field column (stays at x = 1 px when scrolled);
+- the single-vendor guardrail-only card (neutral tone, no empty Policy or Notes rows);
+- light mode at 375 px (no page overflow).
+
+The fade sits in a non-scrolling `relative` wrapper, so it stays put and adds no scroll height. Gates: 611. Prod:
+smoke all pass, and the bundle contains the region label, the hint and the 11 rem cap.
+
 ### 2026-10-06 — chat card layout 3: Table
 
 **Asked for:** "add 1 more type as a table" (vendors as columns; Action / Topic / Session ID rows; "feel free to
