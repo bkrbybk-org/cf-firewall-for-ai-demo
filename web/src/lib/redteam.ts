@@ -482,6 +482,12 @@ export interface RtRunResult {
   // The whole external-guardrail stage for this prompt — what it added before the
   // model: the slowest call in parallel mode, the sum in sequential.
   pipelineLatencyMs?: number;
+  // Design J: what each guardrail said about the model's REPLY. Absent when the reply
+  // was not checked (switch off, no reply, model skipped) — "not checked", never a pass.
+  // Scored as counts only (lib/replyCounts.ts): an attack prompt does not make its reply
+  // harmful, so there is no reply catch rate.
+  replyVendors?: RtVendorOutcome[];
+  replyPipelineMode?: "sequential" | "parallel";
 }
 
 // One external guardrail's answer for one attack. "alerts" is a Detect-mode
@@ -719,6 +725,9 @@ export interface RtStoredResult {
   expected?: "allow" | null; // harmless row: kept for false blocks, never in totals or diffRuns
   topic?: string | null;
   lang?: string | null;
+  // Design J (migration 0008): the reply check; null on runs that did not check replies.
+  replyVendors?: RtVendorOutcome[] | null;
+  replyPipelineMode?: "sequential" | "parallel" | null;
 }
 
 // A saved run's metadata — everything GET /api/redteam-runs (list) returns

@@ -146,6 +146,7 @@ describe("buildRunSaveRequest", () => {
         ts: 1,
         prompt: "prompt rt-02",
         vendors: null, // no pipeline on this result
+        replyVendors: null, // reply not checked
         expected: null,
         topic: "Cat rt-02",
         lang: "Latin script",
@@ -301,3 +302,48 @@ describe("toSavedRun → diffRuns", () => {
 
 // The benchmark's own language key for an attack (vendorBenchmark.ts groups on this).
 const languageOfKey = (a: RedTeamAttack) => vendorBenchmark([a], new Map([[a.id, { id: a.id, state: "allow" }]]), "language", ["edge"]).rows[0].key;
+
+// Design J: the reply check survives save → load as its own field, never folded into
+// the prompt-check verdicts, and a run without one reads "not checked".
+describe("reply verdicts round trip", () => {
+  it("are saved as words and provider ids, and come back on the benchmark input", () => {
+    const r = new Map<string, RtRunResult>([
+      [
+        "rt-01",
+        {
+          id: "rt-01",
+          state: "allow",
+          vendors: [{ provider: "prisma-airs", verdict: "allow", latencyMs: 300 }],
+          pipelineMode: "parallel",
+          replyVendors: [{ provider: "prisma-airs", verdict: "block", latencyMs: 210 }],
+          replyPipelineMode: "parallel",
+        },
+      ],
+      ["rt-02", { id: "rt-02", state: "allow" }],
+    ]);
+    const req = buildRunSaveRequest(ctx(), r)!;
+    expect(req.results[0].replyVendors).toEqual({ mode: "parallel", verdicts: [{ provider: "prisma-airs", verdict: "block" }] });
+    expect(req.results[1].replyVendors).toBeNull();
+
+    const row = (i: number) => ({
+      attackKey: req.results[i].attackKey,
+      attackId: req.results[i].attackId,
+      category: req.results[i].category,
+      severity: null,
+      state: req.results[i].state,
+      ray: null,
+      ts: null,
+      promptPreview: "…",
+      vendors: req.results[i].vendors ?? null,
+      expected: null,
+      topic: null,
+      lang: null,
+      replyVendors: req.results[i].replyVendors ?? null,
+    });
+    const saved = toSavedRun({ id: 1, ts: 1, route: "direct", guarded: 0, corpusName: "x", corpusSize: 2, corpusFingerprint: "f", delayMs: 0, total: 2, scored: 2, reached: 2, stopped: 0, denied: 0, guardrails: 0, external: 0, skipped: 0, pending: 0, error: 0, reachedPct: 100 } as RedTeamRunRow, [row(0), row(1)]);
+    const { results: back } = savedRunBenchmarkInput(saved);
+    expect(back.get("rt-01")).toMatchObject({ replyVendors: [{ provider: "prisma-airs", verdict: "block" }], replyPipelineMode: "parallel" });
+    expect(back.get("rt-01")!.vendors).toEqual([{ provider: "prisma-airs", verdict: "allow", latencyMs: 300 }]);
+    expect(back.get("rt-02")!.replyVendors).toBeUndefined();
+  });
+});

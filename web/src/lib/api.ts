@@ -162,6 +162,11 @@ export interface RedTeamResultInput {
   expected?: "allow" | null;
   topic?: string | null;
   lang?: string | null;
+  // Design J: the reply check's verdicts, same shape and the same server rules as `vendors`.
+  replyVendors?: {
+    mode: "parallel" | "sequential";
+    verdicts: { provider: string; verdict: string; latencyMs?: number }[];
+  } | null;
 }
 
 export interface RedTeamRunSaveRequest {

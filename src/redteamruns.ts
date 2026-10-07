@@ -87,6 +87,7 @@ export interface ValidatedResult {
   ts: number | null;
   promptPreview: string; // redacted + truncated here, never the raw input
   vendors: string | null; // compact JSON (see toStoredVendorsJson), or null
+  replyVendors: string | null; // design J: the reply check, same JSON and the same all-or-nothing rule
   expected: "allow" | null; // harmless row; never counted in the run's totals
   topic: string | null;
   lang: string | null;
@@ -257,6 +258,7 @@ function validateResult(v: unknown): ValidatedResult | null {
     ts: v.ts == null ? null : int(v.ts, 0, Number.MAX_SAFE_INTEGER, 0) || null,
     promptPreview: toPromptPreview(v.prompt),
     vendors: toStoredVendorsJson(v.vendors),
+    replyVendors: toStoredVendorsJson(v.replyVendors),
     expected: v.expected === "allow" ? "allow" : null,
     topic: toTopic(v.topic),
     lang: toLang(v.lang),

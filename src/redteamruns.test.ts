@@ -301,3 +301,18 @@ describe("benchmark fields", () => {
     expect(b.lang).toBeNull();
   });
 });
+
+// Design J (migration 0008): the reply check is stored by exactly the rules of `vendors`.
+describe("reply verdicts", () => {
+  it("are kept as the same compact JSON, and an unknown provider drops the whole value", () => {
+    const good = { mode: "parallel", verdicts: [{ provider: "prisma-airs", verdict: "block" }] };
+    const ok = validateRedTeamRunPayload(validBody({ results: [validResult({ replyVendors: good })] }));
+    expect(ok.ok && ok.run.results[0].replyVendors).toBe('{"m":"parallel","v":[["prisma-airs","block"]]}');
+    const bad = validateRedTeamRunPayload(
+      validBody({ results: [validResult({ replyVendors: { ...good, verdicts: [{ provider: "evil-corp", verdict: "block" }] } })] }),
+    );
+    expect(bad.ok && bad.run.results[0].replyVendors).toBeNull();
+    const none = validateRedTeamRunPayload(validBody());
+    expect(none.ok && none.run.results[0].replyVendors).toBeNull();
+  });
+});

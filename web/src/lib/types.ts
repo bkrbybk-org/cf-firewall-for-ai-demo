@@ -541,6 +541,8 @@ export interface RedTeamResultRow {
   expected?: "allow" | null; // a harmless row — never in the run's totals
   topic?: string | null;
   lang?: string | null;
+  // Design J (migration 0008): each guardrail's verdict on the reply; null = not checked.
+  replyVendors?: RedTeamResultRow["vendors"];
 }
 
 export interface RedTeamRunsList {

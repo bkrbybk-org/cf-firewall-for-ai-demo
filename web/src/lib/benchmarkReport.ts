@@ -20,6 +20,7 @@
 //    escaped before it reaches Markdown (mdText), invisible characters included.
 import { isAttack, scoreRun, type RtRunResult, type RtSavedRun, type RtScore } from "./redteam";
 import { savedRunBenchmarkInput } from "./savedRuns";
+import { replyCounts, type ReplyCounts } from "./replyCounts";
 import { fmtInterval, wilson } from "./stats";
 import { TECHNIQUE_LABEL } from "./techniques";
 import { topicOf, vendorBenchmark, type BenchmarkGroupBy, type BenchmarkMetric } from "./vendorBenchmark";
@@ -90,6 +91,8 @@ export interface BenchmarkReport {
   headToHead: HeadToHead[];
   latency: { perControl: { control: string; stat: LatencyStat }[]; stage: { mode: string; stat: LatencyStat }[] };
   grids: ReportGrid[];
+  // Design J: the reply check, as counts (lib/replyCounts.ts). null when no reply was checked.
+  replies: ReplyCounts | null;
   prompts: ReportPrompt[];
   notes: string[];
 }
@@ -182,6 +185,10 @@ export function buildBenchmarkReport(
       stage: stageLatency(all).map((s) => ({ mode: s.mode, stat: s.stat })),
     },
     grids,
+    replies: (() => {
+      const c = replyCounts(corpus, results, labels);
+      return c.providers.length > 0 ? c : null;
+    })(),
     prompts: corpus.map((a) => {
       const r = results.get(a.id) as RtRunResult;
       return {
@@ -400,6 +407,38 @@ export function reportToMarkdown(r: BenchmarkReport): string {
         : `${plural(ranked, "row compares", "rows compare")} controls on the same prompts; ${marked === 0 ? `${ranked === 1 ? "its lead is" : "in each, the lead is"} within the margin of error, so nothing is marked` : `${plural(marked, "has", "have")} a lead bigger than the margin of error`}.`,
       "",
     );
+  }
+
+  if (r.replies) {
+    const rp = r.replies;
+    L.push(
+      "## Replies checked",
+      "",
+      "What each guardrail said about the model's reply. Counts only: an attack prompt does not make its reply harmful (a model that refused wrote a harmless reply), so there is no reply catch rate. On harmless prompts a blocked reply is very likely a false block." +
+        (rp.notCheckedRows > 0 ? ` ${plural(rp.notCheckedRows, "prompt's reply was", "prompts' replies were")} not checked and not counted.` : ""),
+      "",
+    );
+    for (const [title, side] of [
+      ["Attack prompts", rp.attacks],
+      ["Harmless prompts", rp.harmless],
+    ] as const) {
+      if (side.rows === 0) continue;
+      L.push(`**${title}** — ${plural(side.rows, "reply", "replies")} checked, ${side.withheld} withheld by one or more guardrails.`, "");
+      L.push(
+        ...table(
+          ["Guardrail", "Blocked of checked", "Alerts only", "Errors", "Not checked"],
+          side.byControl.map((c) => [
+            mdText(c.label),
+            c.checked === 0 ? "—" : `${c.blocked} of ${c.checked}`,
+            String(c.alerts),
+            String(c.errors),
+            String(c.notChecked),
+          ]),
+          [1, 2, 3, 4],
+        ),
+        "",
+      );
+    }
   }
 
   if (r.prompts.length > 0) {

@@ -226,16 +226,23 @@ export function useRedTeam(): RedTeamRun {
     setPhase("sending");
 
     // ── Phase 1: send ────────────────────────────────────────────────────
-    const sent: { id: string; ray?: string; ts: number; kind: SendKind; pipeline?: GuardrailPipelineResult }[] = [];
+    const sent: {
+      id: string;
+      ray?: string;
+      ts: number;
+      kind: SendKind;
+      pipeline?: GuardrailPipelineResult;
+      replyPipeline?: GuardrailPipelineResult;
+    }[] = [];
     const delayMs = Math.max(0, cfg.delayMs ?? 0);
     for (let i = 0; i < corpus.length; i++) {
       const a = corpus[i];
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
-      const { ray, kind, pipeline } = await sendOne(a.prompt, cfg);
+      const { ray, kind, pipeline, replyPipeline } = await sendOne(a.prompt, cfg);
       if (stopRef.current) return;
-      sent.push({ id: a.id, ray, ts, kind, pipeline });
+      sent.push({ id: a.id, ray, ts, kind, pipeline, replyPipeline });
       setOne(a.id, "sent");
       // Pace the next send. Skipped after the last one — trailing dead time
       // before the settle phase would be pure waiting for nothing.
@@ -280,6 +287,13 @@ export function useRedTeam(): RedTeamRun {
         result.vendors = vendors;
         result.pipelineMode = s.pipeline!.mode;
         if (Number.isFinite(s.pipeline!.latencyMs)) result.pipelineLatencyMs = Math.round(s.pipeline!.latencyMs);
+      }
+      // Design J: the reply check, kept apart from the prompt check — a reply verdict is
+      // never folded into what a guardrail said about the prompt.
+      const replyVendors = toVendorOutcomes(s.replyPipeline);
+      if (replyVendors) {
+        result.replyVendors = replyVendors;
+        result.replyPipelineMode = s.replyPipeline!.mode;
       }
       out.set(s.id, result);
       setResults(new Map(out));

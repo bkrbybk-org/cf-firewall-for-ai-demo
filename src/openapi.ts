@@ -1151,8 +1151,12 @@ export const openapi = {
           expected: { anyOf: [{ type: "string", enum: ["allow"] }, { type: "null" }], description: "`allow` = a harmless row, scored only for false blocks. Never counted in the run's totals or by `diffRuns`." },
           topic: nullable("string", "The benchmark topic: scan category, or the CSV goal (redacted, ≤120 chars)."),
           lang: nullable("string", "Writing-system label from the full prompt, e.g. `Thai`, `Latin script`, `Thai + Latin script`."),
+          replyVendors: {
+            anyOf: [ref("RedTeamVendorVerdicts"), { type: "null" }],
+            description: "Design J (migration 0008): each guardrail's verdict on the model's REPLY, by the same rules as `vendors`. Null when the reply was not checked — *not checked*, never a pass. Scored as counts only: an attack prompt does not make its reply harmful.",
+          },
         },
-        ["attackKey", "attackId", "category", "severity", "state", "ray", "ts", "promptPreview", "vendors", "expected", "topic", "lang"],
+        ["attackKey", "attackId", "category", "severity", "state", "ray", "ts", "promptPreview", "vendors", "expected", "topic", "lang", "replyVendors"],
       ),
       RedTeamVendorVerdicts: obj(
         {
@@ -1218,6 +1222,7 @@ export const openapi = {
                 ts: int(),
                 prompt: { type: "string", description: "The **full** prompt. The server redacts it and stores at most a 200-character preview." },
                 vendors: { anyOf: [ref("RedTeamVendorVerdicts"), { type: "null" }] },
+                replyVendors: { anyOf: [ref("RedTeamVendorVerdicts"), { type: "null" }], description: "Design J: the reply check, stored by the same rules as `vendors`." },
                 expected: { anyOf: [{ type: "string", enum: ["allow"] }, { type: "null" }], description: "Mark a harmless row. Its result is stored but must not be counted in the totals above." },
                 topic: { type: "string", description: "Redacted server-side, stored to 120 characters." },
                 lang: { type: "string", maxLength: 60, pattern: "^[A-Za-z][A-Za-z ()+]*$", description: "A languageOf() label; anything else is stored as null." },

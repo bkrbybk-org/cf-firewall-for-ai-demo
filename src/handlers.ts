@@ -1418,8 +1418,8 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       const resultStmt = env.DB.prepare(
         `INSERT INTO redteam_results
            (run_id, attack_key, attack_id, category, severity, state, ray, ts, prompt_preview,
-            vendors, expected, topic, lang)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            vendors, expected, topic, lang, reply_vendors)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       );
       const statements = run.results.map((r) =>
         resultStmt.bind(
@@ -1436,6 +1436,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
           r.expected,
           r.topic,
           r.lang,
+          r.replyVendors,
         ),
       );
       // Prune to the newest REDTEAM_RUNS_MAX_STORED runs so this table — sitting
@@ -1494,16 +1495,18 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
       if (!run) return Response.json({ configured: true, run: null, results: [] }, { status: 404 });
       const { results } = await env.DB.prepare(
         `SELECT attack_key AS attackKey, attack_id AS attackId, category, severity, state,
-                ray, ts, prompt_preview AS promptPreview, vendors, expected, topic, lang
+                ray, ts, prompt_preview AS promptPreview, vendors, expected, topic, lang,
+                reply_vendors AS replyVendors
          FROM redteam_results WHERE run_id = ? ORDER BY id ASC`,
       )
         .bind(id)
-        .all<Omit<RedTeamResultRow, "vendors"> & { vendors: string | null }>();
+        .all<Omit<RedTeamResultRow, "vendors" | "replyVendors"> & { vendors: string | null; replyVendors: string | null }>();
       // vendors is stored as compact JSON and re-validated on the way out
       // (parseStoredVendors): anything malformed reads as "not recorded".
       const rows: RedTeamResultRow[] = (results ?? []).map((r) => ({
         ...r,
         vendors: parseStoredVendors(r.vendors),
+        replyVendors: parseStoredVendors(r.replyVendors),
         expected: r.expected === "allow" ? "allow" : null,
       }));
       return Response.json({ configured: true, run, results: rows });

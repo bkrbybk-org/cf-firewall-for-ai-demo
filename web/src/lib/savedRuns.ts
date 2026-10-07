@@ -103,6 +103,11 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
               ...(r.pipelineLatencyMs != null ? { latencyMs: r.pipelineLatencyMs } : {}),
             }
           : null,
+      // Design J: the reply check — verdict words and provider ids only, like `vendors`.
+      replyVendors:
+        r.replyVendors && r.replyVendors.length > 0 && r.replyPipelineMode
+          ? { mode: r.replyPipelineMode, verdicts: r.replyVendors.map((v) => ({ provider: v.provider, verdict: v.verdict })) }
+          : null,
       expected: isAttack(a) ? null : "allow",
       topic: topicOf(a),
       lang: a.lang ?? languageOf(a.prompt), // a variant's own text (base64…) is not its language
@@ -184,6 +189,12 @@ export function toSavedRun(run: RedTeamRunRow, results: RedTeamResultRow[]): RtS
       expected: r.expected === "allow" ? "allow" : null,
       topic: r.topic ?? null,
       lang: r.lang ?? null,
+      // Design J: re-validated by the server like `vendors`; an unknown verdict here means
+      // the lists drifted, so it reads as "not checked" rather than a guess.
+      replyVendors: r.replyVendors?.verdicts.every((v) => VENDOR_VERDICTS.has(v.verdict))
+        ? r.replyVendors.verdicts.map((v) => ({ provider: v.provider, verdict: v.verdict as RtVendorOutcome["verdict"] }))
+        : null,
+      replyPipelineMode: r.replyVendors?.mode ?? null,
     })),
   };
 }
@@ -226,6 +237,9 @@ export function savedRunBenchmarkInput(run: RtSavedRun): {
               pipelineMode: r.pipelineMode,
               ...(r.pipelineLatencyMs != null ? { pipelineLatencyMs: r.pipelineLatencyMs } : {}),
             }
+          : {}),
+        ...(r.replyVendors && r.replyVendors.length > 0 && r.replyPipelineMode
+          ? { replyVendors: r.replyVendors, replyPipelineMode: r.replyPipelineMode }
           : {}),
       },
     ]),

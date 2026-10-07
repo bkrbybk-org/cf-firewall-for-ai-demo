@@ -17,6 +17,8 @@ import {
 import { fmtInterval, wilson } from "../../lib/stats";
 import { fmtMs, stageLatency, vendorLatency, type LatencyStat } from "../../lib/vendorLatency";
 import { VendorBenchmark } from "./VendorBenchmark";
+import { ReplyChecks } from "./ReplyChecks";
+import { replyCounts } from "../../lib/replyCounts";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
 
@@ -346,6 +348,7 @@ export function VendorScorecard({
       )}
 
       <HeadToHeadTable pairs={pairs} />
+      <ReplyChecks counts={replyCounts([...corpus, ...benignCorpus], results, labels)} />
 
       <VendorBenchmark
         corpus={corpus}

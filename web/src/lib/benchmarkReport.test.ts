@@ -145,6 +145,24 @@ describe("buildBenchmarkReport", () => {
     expect(untimed).not.toMatch(/Prisma AIRS[^\n]*\| — \|$/m);
   });
 
+  it("design J: reply checks appear as counts only — no rate, no mark — and not at all when none ran", () => {
+    expect(r.replies).toBeNull();
+    expect(reportToMarkdown(r)).not.toContain("## Replies checked");
+    const withReplies = run([
+      R("a1", "allow", V(["allow"]), { replyVendors: [{ provider: "prisma-airs", verdict: "block" }], replyPipelineMode: "parallel" }),
+      R("a2", "allow", V(["allow"]), { replyVendors: [{ provider: "prisma-airs", verdict: "allow" }], replyPipelineMode: "parallel" }),
+      R("h1", "allow", V(["allow"]), { expected: "allow", replyVendors: [{ provider: "prisma-airs", verdict: "block" }], replyPipelineMode: "parallel" }),
+    ]);
+    const rep = buildBenchmarkReport(withReplies, LABELS);
+    expect(rep.replies!.attacks).toMatchObject({ rows: 2, withheld: 1 });
+    const md = reportToMarkdown(rep);
+    const section = md.split("## Replies checked")[1].split("\n## ")[0];
+    expect(section).toContain("| Prisma AIRS | 1 of 2 | 0 | 0 | 0 |");
+    expect(section).toContain("**Harmless prompts** — 1 reply checked, 1 withheld");
+    expect(section).not.toMatch(/\d%/);
+    expect(section).not.toMatch(/best|lowest/);
+  });
+
   it("names the file after the run and the time it was saved", () => {
     expect(reportFilename(r, "md")).toBe("redteam-benchmark-run-7-20261007-0304.md");
   });

@@ -626,6 +626,41 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-08 — Design J, part 2: reply verdicts in the Red Team, as counts only
+
+Deploy `c74474a0-dbc2-4feb-ad2b-44b48b2b6ef4`. No new migration: `0008` already added `redteam_results.reply_vendors`.
+The part-1 commit had not landed when the app quit; it was re-checked (722 tests) and committed as `77e9373`
+before this work began.
+
+- **Runner:** `useRedTeam` keeps the reply check apart from the prompt check (`RtRunResult.replyVendors` and
+  `replyPipelineMode`). A withheld reply resolves as reached.
+- **Saved runs:**
+  - The save request carries `replyVendors` (verdict words and provider ids only).
+  - The server stores it with `toStoredVendorsJson` by the `vendors` rules: all or nothing, known ids only.
+  - `toSavedRun` and `savedRunBenchmarkInput` bring it back. A run without it reads "not checked".
+- **Scoring:** `lib/replyCounts.ts`. Counts only, per the user's D4:
+  - per guardrail, attack and harmless rows apart: blocked of checked, alerts, errors, not checked;
+  - withheld by at least one guardrail;
+  - the prompts whose reply was not checked.
+  - No rate, interval or mark, because an attack prompt does not make its reply harmful.
+- **UI and report:**
+  - a *Replies checked* table in *Controls compared*, live and for a saved run;
+  - the downloadable report (H) gains the same section, with no `%`.
+- **Verified:**
+  - **Tests:** 729, with 0 type errors.
+  - **Mutation-verified, 7 of 7 caught:**
+    - notRun counted as a pass; errors counted as checked;
+    - harmless rows mixed into attacks; unchecked prompts not stated;
+    - prompt verdicts saved as the reply's, on the client and on the server;
+    - the report dropping replies.
+  - **Real local D1:** I posted run #68 with reply verdicts for 2 attacks and 1 harmless row.
+    - `reply_vendors` holds the compact JSON, and GET returned it parsed.
+    - The page shows the counts I worked out by hand from those rows: AIRS 1 of 2, AIDR 0 of 1 (1 error), Cato not checked 2, and harmless AIDR 1 of 1.
+    - Checked in dark mode, and in light mode at 375 px with no page scroll; no console errors.
+  - **Prod:** smoke passes, and bundle `index-CnaTKOyI.js` carries "Replies checked". There are 0 saved runs on prod, so
+    nothing has been saved with reply verdicts there yet.
+- **Still not seen: a real reply verdict from any vendor.** Next is the user's *Test a reply* for AIRS and AIDR on prod.
+
 ### 2026-10-07 — Design J, part 1: the external guardrails check the model's reply (server, chat, Settings)
 
 **Asked for:** "D1 A, D2 yes, D3 a, D4 counts only — go".
@@ -758,7 +793,7 @@ migration.
   - Benchmark by → **Technique**, offered only when the run has variants; a stale choice falls back to Topic.
 - **Saved runs:** `buildRunSaveRequest` saves `a.lang ?? languageOf(a.prompt)`; `savedRunBenchmarkInput` restores
   `technique` from `attackId`.
-- **Also:** three invisible literal U+200B characters in source were replaced by `​` escapes. Two were written
+- **Also:** three invisible literal U+200B characters in source were replaced by `\u200b` escapes. Two were written
   this session in `variants.ts`/its test; one was in `ExternalGuardrailCard.tsx`'s `breakable()` from 2026-10-06.
   Behaviour is unchanged.
 - **Verified:**
@@ -3192,9 +3227,11 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.
-- [ ] **Red Team benchmark J: scan the model's output** — decided 2026-10-07 (D1 buffer, D2 AIRS/AIDR/Lakera, D3
-      (a), D4 counts only). Part 1 (server, chat, Settings) shipped: deploy `42368cb3`. Left: part 2, Red Team reply
-      verdicts and counts; and a real reply verdict from each vendor (the user, *Test a reply* on prod).
+- [x] ~~**Red Team benchmark J: scan the model's output**~~ — built 2026-10-07/08 (D1 buffer, D2 AIRS/AIDR/Lakera,
+      D3 (a), D4 counts only): part 1 deploy `42368cb3`, part 2 deploy `c74474a0`. See Implemented.
+- [ ] **J verification (the user, on prod):** Settings → Prisma AIRS and CrowdStrike AIDR → *Test a reply (PII)* and
+      *Test a reply (harmless)*, then paste the response shapes. Until then the reply direction is documented, not
+      verified. Then, optionally, turn *Check replies too* on (turns stop streaming; each guardrail is called twice).
 
 **Design J: guardrails on the model's reply** (2026-10-07; every vendor fact is *documented*, not verified)
 
