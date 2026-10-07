@@ -2892,8 +2892,8 @@ exercised):
 
 **Fix next, in this order** (who per CLAUDE.md's implementation approach):
 
-- [ ] **#22 compliance attribution** — *self*: it is honesty semantics on a customer-facing page. Decide the
-      mitigation with the user first.
+- [x] ~~**#22 compliance attribution**~~ — done 2026-10-07 (deploy `e63f171b`, commit `8bdb240`): MEASURE 2.7
+      counts AI Security rules only. See Implemented.
 - [x] ~~**#24 percentile rank**~~ — done 2026-10-05, checked against a hand calculation on real rows.
 - [x] ~~**#23 capped charts**~~ — done 2026-10-05: "mark unread" chosen (Groups datasets are sampled).
 
@@ -3047,6 +3047,15 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
       through REST now, so a rejected token (as in bug #1, fixed 2026-09-30) surfaces on any of them.
 - [x] ~~Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
       buildHistory, cost calc)~~ — done 2026-10-06, 76 tests; found two small bugs (see Implemented).
+- [ ] **Red Team benchmark H: export a report** — one self-contained file from a saved run (scorecard,
+      grid, head to head, margins, window and corpus stated). Same rule as saved runs: named fields only,
+      never `raw` vendor responses (House style). Not started.
+- [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
+      run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
+      calls: needs a budget and cadence from the user first. Not started.
+- [ ] **Red Team benchmark J: scan the model's output** — guardrails on the reply as well as the prompt. Needs
+      a design first: which vendors accept a response role (per their own spec, then a live payload), and what
+      a blocked reply turns into. Not started.
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
       (53 successful attacks) has no rule covering it at all.
 - [ ] **Run the ThaiSafetyBench corpus on prod** (`npm run corpus:thai`) — the point is which Thai
