@@ -70,16 +70,17 @@ describe("vendorScorecard", () => {
         latencyMs: 1,
         stoppedBy: AIDR,
         results: [
-          { provider: AIDR, outcome: "block", latencyMs: 1 },
-          { provider: "lakera-guard", outcome: "allow", detectOnly: true, latencyMs: 1 },
-          { provider: "cisco-ai-defense", outcome: "error", failedOpen: true, latencyMs: 1 },
+          { provider: AIDR, outcome: "block", latencyMs: 412.6 },
+          { provider: "lakera-guard", outcome: "allow", detectOnly: true, latencyMs: 90 },
+          { provider: "cisco-ai-defense", outcome: "error", failedOpen: true, latencyMs: 5000 },
         ],
         notRun: [{ provider: AIRS, reason: "earlier stop" }],
       }),
     ).toEqual([
-      { provider: AIDR, verdict: "block" },
-      { provider: "lakera-guard", verdict: "alerts" },
-      { provider: "cisco-ai-defense", verdict: "error" },
+      // Each call's own time rides along (rounded); notRun was never called, so it has none.
+      { provider: AIDR, verdict: "block", latencyMs: 413 },
+      { provider: "lakera-guard", verdict: "alerts", latencyMs: 90 },
+      { provider: "cisco-ai-defense", verdict: "error", latencyMs: 5000 },
       { provider: AIRS, verdict: "notRun" },
     ]);
     expect(toVendorOutcomes(undefined)).toBeUndefined();

@@ -274,6 +274,7 @@ export function useRedTeam(): RedTeamRun {
       if (vendors) {
         result.vendors = vendors;
         result.pipelineMode = s.pipeline!.mode;
+        if (Number.isFinite(s.pipeline!.latencyMs)) result.pipelineLatencyMs = Math.round(s.pipeline!.latencyMs);
       }
       out.set(s.id, result);
       setResults(new Map(out));

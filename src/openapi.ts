@@ -1110,10 +1110,12 @@ export const openapi = {
               {
                 provider: ref("ExternalGuardrailProvider"),
                 verdict: { type: "string", enum: ["block", "allow", "alerts", "error", "notRun"], description: "`alerts` = Detect mode flagged but let it through; `error` is not a verdict; `notRun` = an earlier guardrail stopped it (sequential)." },
+                latencyMs: { type: "integer", minimum: 0, maximum: 60000, description: "That guardrail's own call as the Worker timed it (Cloudflare → vendor and back). Optional; an out-of-range value is dropped on its own, never the verdict." },
               },
               ["provider", "verdict"],
             ),
           ),
+          latencyMs: { type: "integer", minimum: 0, maximum: 60000, description: "The whole guardrail stage for this prompt: the slowest call in parallel mode, the sum in sequential." },
         },
         ["mode", "verdicts"],
         "Provider ids and verdict words only — never a vendor's text. The server stores it all-or-nothing: one unknown provider or verdict drops the whole value.",

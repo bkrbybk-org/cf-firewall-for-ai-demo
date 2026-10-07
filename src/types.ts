@@ -281,7 +281,11 @@ export interface RedTeamResultRow {
   ts: number | null;
   promptPreview: string | null;
   // Since migration 0007; null on older rows ("not recorded", never a miss).
-  vendors: { mode: "parallel" | "sequential"; verdicts: { provider: string; verdict: string }[] } | null;
+  vendors: {
+    mode: "parallel" | "sequential";
+    verdicts: { provider: string; verdict: string; latencyMs?: number }[];
+    latencyMs?: number; // the whole guardrail stage for this prompt
+  } | null;
   expected: "allow" | null; // a harmless row — never in the run's totals
   topic: string | null;
   lang: string | null;

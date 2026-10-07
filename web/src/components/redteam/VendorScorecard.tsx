@@ -12,6 +12,7 @@ import {
   type FalseBlockScore,
   type VendorScorecard as VendorScorecardData,
 } from "../../lib/vendorScorecard";
+import { fmtMs, stageLatency, vendorLatency, type LatencyStat } from "../../lib/vendorLatency";
 import { VendorBenchmark } from "./VendorBenchmark";
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -62,7 +63,7 @@ function FalseBlockCell({ fb }: { fb: FalseBlockScore | undefined }) {
   );
 }
 
-function Row({ c, fb, showFb }: { c: ControlScore; fb?: FalseBlockScore; showFb: boolean }) {
+function Row({ c, fb, showFb, lat }: { c: ControlScore; fb?: FalseBlockScore; showFb: boolean; lat?: LatencyStat }) {
   const balanced = balancedAccuracy(c, fb);
   const notScored = c.errors + c.notSeen + c.notRun;
   // The accent is the control's own colour (edge red, guardrails amber) so a
@@ -106,7 +107,44 @@ function Row({ c, fb, showFb }: { c: ControlScore; fb?: FalseBlockScore; showFb:
           </td>
         </>
       )}
+      <td className={`${num} text-muted`}>
+        <LatencyCell control={c.control} lat={lat} />
+      </td>
     </tr>
+  );
+}
+
+// p50 · p95 of this control's own calls (lib/vendorLatency.ts). The edge cannot be
+// timed from the Worker — its scan runs before the Worker exists for the request — so
+// it reads "not measurable", never 0 ms.
+function LatencyCell({ control, lat }: { control: string; lat?: LatencyStat }) {
+  if (control === "edge") {
+    return (
+      <span className="text-subtle" title="The edge scan runs before the Worker is invoked and is not exposed to it">
+        not measurable
+      </span>
+    );
+  }
+  if (!lat || lat.n === 0) {
+    const why = lat?.untimed ? "this run did not record timings" : lat?.errorsExcluded ? "every call errored" : "no call";
+    return (
+      <span className="text-subtle" title={why}>
+        —
+      </span>
+    );
+  }
+  const title =
+    `${lat.n} timed call${lat.n === 1 ? "" : "s"} · max ${fmtMs(lat.max)}` +
+    (lat.errorsExcluded ? ` · ${lat.errorsExcluded} errored and are not counted (a timeout would time our cap, not the vendor)` : "") +
+    " · nearest rank: at small n, p95 is usually the max";
+  return (
+    <span title={title}>
+      <span className="text-text">{fmtMs(lat.p50)}</span> <span className="text-subtle">·</span> {fmtMs(lat.p95)}
+      <span className="block text-[10px] text-subtle">
+        n={lat.n}
+        {lat.errorsExcluded ? ` · ${lat.errorsExcluded} err` : ""}
+      </span>
+    </span>
   );
 }
 
@@ -133,6 +171,10 @@ export function VendorScorecard({
   if (card.controls.length <= 1 && !falseBlocks) return null;
   const showFb = !!falseBlocks;
   const fbOf = (control: string) => falseBlocks?.find((f) => f.control === control);
+  // Latency is about the call, not the prompt: attack and harmless rows both count.
+  const all = [...results.values()];
+  const latOf = (control: string) => (control === "edge" ? undefined : vendorLatency(all, control));
+  const stages = stageLatency(all);
 
   const sequential = card.modes.includes("sequential");
   const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
@@ -167,11 +209,14 @@ export function VendorScorecard({
               <th className={th}>Not scored</th>
               {showFb && <th className={th}>False blocks</th>}
               {showFb && <th className={th}>Balanced</th>}
+              <th className={th} title="p50 · p95 of each guardrail's own call, as the Worker timed it">
+                Latency p50 · p95
+              </th>
             </tr>
           </thead>
           <tbody>
             {card.controls.map((c) => (
-              <Row key={c.control} c={c} fb={fbOf(c.control)} showFb={showFb} />
+              <Row key={c.control} c={c} fb={fbOf(c.control)} showFb={showFb} lat={latOf(c.control)} />
             ))}
           </tbody>
         </table>
@@ -191,6 +236,26 @@ export function VendorScorecard({
           </>
         )}
       </p>
+
+      {/* The cost side: what the guardrail stage added before the model, per prompt. */}
+      {stages.map(({ mode, stat }) => (
+        <p key={mode} className="mt-1.5 text-[12px] leading-relaxed text-muted">
+          {stat.n === 0 ? (
+            <>
+              Guardrail stage ({mode}): no timed prompts
+              {stat.untimed ? " — this run did not record timings" : stat.errorsExcluded ? " — every stage had an error" : ""}.
+            </>
+          ) : (
+            <>
+              The guardrail stage added <span className="font-semibold text-text">{fmtMs(stat.p50)}</span> per prompt
+              at the median, <span className="font-semibold text-text">{fmtMs(stat.p95)}</span> at p95 (
+              {mode === "parallel" ? "parallel — it waits for the slowest guardrail" : "sequential — the calls add up"};
+              n={stat.n}
+              {stat.errorsExcluded ? `, ${stat.errorsExcluded} with an error not counted` : ""}).
+            </>
+          )}
+        </p>
+      ))}
 
       {/* Over-blocking: catch rate alone rewards a control that blocks everything. */}
       {falseBlocks ? (
@@ -220,7 +285,9 @@ export function VendorScorecard({
       <p className="mt-2 text-[10.5px] leading-relaxed text-subtle">
         The edge scores every request that got a verdict; a guardrail never sees a prompt the edge refused. Detect-mode alerts
         are not catches, and an alert on a harmless prompt is not a false block. Harmless rows are kept out of every attack
-        score. Saving the run keeps the verdicts, topics and languages, so it can be redrawn from Saved runs.
+        score. Latency is each guardrail's own call from Cloudflare to the vendor, so it depends on the region chosen —
+        vendors in different regions are not on equal footing; errored calls are left out. Saving the run keeps the verdicts,
+        timings, topics and languages, so it can be redrawn from Saved runs.
       </p>
     </Card>
   );

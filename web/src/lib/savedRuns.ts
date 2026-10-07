@@ -92,7 +92,15 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
       // because the server keeps only a redacted preview.
       vendors:
         r.vendors && r.vendors.length > 0 && r.pipelineMode
-          ? { mode: r.pipelineMode, verdicts: r.vendors.map((v) => ({ provider: v.provider, verdict: v.verdict })) }
+          ? {
+              mode: r.pipelineMode,
+              verdicts: r.vendors.map((v) => ({
+                provider: v.provider,
+                verdict: v.verdict,
+                ...(v.latencyMs != null ? { latencyMs: v.latencyMs } : {}),
+              })),
+              ...(r.pipelineLatencyMs != null ? { latencyMs: r.pipelineLatencyMs } : {}),
+            }
           : null,
       expected: isAttack(a) ? null : "allow",
       topic: topicOf(a),
@@ -164,9 +172,14 @@ export function toSavedRun(run: RedTeamRunRow, results: RedTeamResultRow[]): RtS
       // unknown verdict here can only mean the two lists drifted — drop it to
       // "not recorded" rather than guess.
       vendors: r.vendors?.verdicts.every((v) => VENDOR_VERDICTS.has(v.verdict))
-        ? r.vendors.verdicts.map((v) => ({ provider: v.provider, verdict: v.verdict as RtVendorOutcome["verdict"] }))
+        ? r.vendors.verdicts.map((v) => ({
+            provider: v.provider,
+            verdict: v.verdict as RtVendorOutcome["verdict"],
+            ...(typeof v.latencyMs === "number" ? { latencyMs: v.latencyMs } : {}),
+          }))
         : null,
       pipelineMode: r.vendors?.mode ?? null,
+      pipelineLatencyMs: typeof r.vendors?.latencyMs === "number" ? r.vendors.latencyMs : null,
       expected: r.expected === "allow" ? "allow" : null,
       topic: r.topic ?? null,
       lang: r.lang ?? null,
@@ -205,7 +218,11 @@ export function savedRunBenchmarkInput(run: RtSavedRun): {
         id: r.attackId,
         state: r.state,
         ...(r.vendors && r.vendors.length > 0 && r.pipelineMode
-          ? { vendors: r.vendors, pipelineMode: r.pipelineMode }
+          ? {
+              vendors: r.vendors,
+              pipelineMode: r.pipelineMode,
+              ...(r.pipelineLatencyMs != null ? { pipelineLatencyMs: r.pipelineLatencyMs } : {}),
+            }
           : {}),
       },
     ]),

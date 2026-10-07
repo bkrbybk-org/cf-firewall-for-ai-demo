@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **654 across 41 files** (measured 2026-10-06; README's Tests table has the
+**Tests** — `npm test`, **665 across 43 files** (measured 2026-10-07; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,60 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-07 — Red Team benchmark C: latency per guardrail, and per prompt for the stage
+
+**Asked for:** "do C next" (from the improvement list: latency per guardrail beside the catch rate). Deploy
+`b98377f5-e0cc-43ae-84dc-964acb18273b`. No migration: timings ride inside the existing `vendors` JSON.
+
+- **Data:**
+  - `toVendorOutcomes` now keeps each result's `latencyMs` (rounded), and the runner keeps the pipeline's own
+    `latencyMs` as `RtRunResult.pipelineLatencyMs`.
+  - The per-vendor value is timed inside each client (fetch start → parsed body), so it is colo-to-vendor network
+    plus vendor work. It excludes Worker CPU, and it is not the edge.
+- **Stats (`lib/vendorLatency.ts`):**
+  - Nearest-rank p50/p95/max per guardrail, over **verdicts only** (block / allow / alerts).
+  - Errors are excluded but counted: a timeout times our 5 s cap, and a refused connection ~0 ms.
+  - notRun or untimed verdicts are never 0 ms.
+  - The stage is reported **per mode** (parallel = the slowest call, sequential = the sum), excluding prompts where
+    a guardrail errored.
+  - `lib/percentile.ts` is the browser's copy of `src/percentile.ts`; the web tree cannot import the Worker's. It is
+    pinned to the same bug #24 rows.
+- **UI (Controls compared):**
+  - A **Latency p50 · p95** column with `n` (and "N err"). The tooltip gives the max and why errors are left out.
+  - The edge reads **"not measurable"**.
+  - A stage line, e.g. "The guardrail stage added 300 ms per prompt at the median, 500 ms at p95 (parallel — it
+    waits for the slowest guardrail; n=5, 1 with an error not counted)".
+  - The footnote says latency depends on each vendor's region, so vendors are not on equal footing.
+- **Saved runs:**
+  - Stored JSON gains an optional third tuple element (ms) and `t` (the stage).
+  - Server `toLatency`: whole ms, 0–60,000. A bad timing drops **only itself**, unlike a bad verdict, because a
+    timing is not a coverage claim.
+  - Read back through `parseStoredVendors` → `toSavedRun` → `savedRunBenchmarkInput`.
+  - A run saved before this reads "this run did not record timings".
+- **Also:**
+  - README's "Storage: session only" line for Controls compared was stale since B; it is corrected.
+  - The benchmark headline no longer says "tied in all 1 topics".
+
+**Verified:**
+- **Gates:** 665 across 43 files (+11, two new test files).
+- **Mutations,** all caught:
+  - percentile floor rank;
+  - errors timed;
+  - errored stages kept;
+  - a bad latency dropping the verdicts;
+  - no latency cap.
+- **Browser** (`wrangler dev`, stubbed `/api/chat`: AIRS 100…600 ms, AIDR 50…90 ms plus one 5,000 ms error, stage =
+  the max per prompt). Every number matched a hand calculation:
+  - AIRS **300 · 600 ms n=6**.
+  - AIDR **70 · 90 ms n=5 · 1 err**.
+  - Stage **300 / 500 ms, n=5, 1 not counted**.
+  - Edge "not measurable".
+- **Round trip:** saved as #67 to local D1, reloaded and ticked: identical numbers.
+- **Old run:** #65 (saved before timings) shows "—" with "this run did not record timings" and "no timed prompts" for
+  the stage.
+- **Prod:** smoke all pass, and the bundle `index-BYw9h4wE.js` contains the column, "not measurable", the stage line and
+  the untimed note.
 
 ### 2026-10-07 — Settings: providers as a collapsible list, closed by default
 

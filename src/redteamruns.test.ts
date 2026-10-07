@@ -251,6 +251,31 @@ describe("benchmark fields", () => {
     for (const b of bad.filter((_, i) => i !== 5)) expect(toStoredVendorsJson(b, P), JSON.stringify(b)).toBeNull();
   });
 
+  it("timings: kept when they are a measurement, dropped alone when not — never the verdict beside them", () => {
+    const json = toStoredVendorsJson(
+      {
+        mode: "parallel",
+        latencyMs: 812.4,
+        verdicts: [
+          { provider: "prisma-airs", verdict: "block", latencyMs: 640 },
+          { provider: "crowdstrike-aidr", verdict: "allow", latencyMs: -5 },
+        ],
+      },
+      P,
+    )!;
+    expect(json).toBe('{"m":"parallel","v":[["prisma-airs","block",640],["crowdstrike-aidr","allow"]],"t":812}');
+    expect(parseStoredVendors(json, P)).toEqual({
+      mode: "parallel",
+      latencyMs: 812,
+      verdicts: [{ provider: "prisma-airs", verdict: "block", latencyMs: 640 }, { provider: "crowdstrike-aidr", verdict: "allow" }],
+    });
+    for (const bad of [Number.NaN, 60_001, "300", null]) {
+      expect(toStoredVendorsJson({ mode: "parallel", latencyMs: bad, verdicts: [good.verdicts[0]] }, P)).toBe(
+        '{"m":"parallel","v":[["prisma-airs","block"]]}',
+      );
+    }
+  });
+
   it("a stored value that no longer validates reads as not recorded", () => {
     expect(parseStoredVendors('{"m":"parallel","v":[["gone-vendor","block"]]}', P)).toBeNull();
     expect(parseStoredVendors("not json", P)).toBeNull();

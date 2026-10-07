@@ -211,7 +211,8 @@ export function VendorBenchmark({
           </>
         ) : winners.length === 0 ? (
           <>
-            Every control tied in all {bench.rankedRows} {nouns} that could be compared.
+            Every control tied in {bench.rankedRows === 1 ? `the one ${noun}` : `all ${bench.rankedRows} ${nouns}`} that could
+            be compared.
           </>
         ) : (
           <>

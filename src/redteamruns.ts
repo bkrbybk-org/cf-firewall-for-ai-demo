@@ -67,7 +67,8 @@ export type RtVendorVerdictServer = (typeof RT_VENDOR_VERDICTS)[number];
 
 export interface StoredVendors {
   mode: "parallel" | "sequential";
-  verdicts: { provider: string; verdict: RtVendorVerdictServer }[];
+  verdicts: { provider: string; verdict: RtVendorVerdictServer; latencyMs?: number }[];
+  latencyMs?: number; // the whole guardrail stage for this prompt
 }
 
 // The benchmark topic is operator-typed (a CSV goal), so it is redacted and capped
@@ -172,7 +173,7 @@ export function toStoredVendorsJson(v: unknown, providers: readonly string[] = P
   if (!isPlainObject(v)) return null;
   if (v.mode !== "parallel" && v.mode !== "sequential") return null;
   if (!Array.isArray(v.verdicts) || v.verdicts.length === 0 || v.verdicts.length > providers.length) return null;
-  const out: [string, string][] = [];
+  const out: ([string, string] | [string, string, number])[] = [];
   const seen = new Set<string>();
   for (const e of v.verdicts) {
     if (!isPlainObject(e)) return null;
@@ -180,9 +181,20 @@ export function toStoredVendorsJson(v: unknown, providers: readonly string[] = P
     if (typeof provider !== "string" || !providers.includes(provider) || seen.has(provider)) return null;
     if (typeof verdict !== "string" || !(RT_VENDOR_VERDICTS as readonly string[]).includes(verdict)) return null;
     seen.add(provider);
-    out.push([provider, verdict]);
+    const ms = toLatency(e.latencyMs);
+    out.push(ms == null ? [provider, verdict] : [provider, verdict, ms]);
   }
-  return JSON.stringify({ m: v.mode, v: out });
+  const t = toLatency(v.latencyMs);
+  return JSON.stringify(t == null ? { m: v.mode, v: out } : { m: v.mode, v: out, t });
+}
+
+// A timing is optional and not a coverage claim, so — unlike a verdict — a bad one
+// drops only itself ("not recorded"), never the verdicts beside it. Whole ms, within
+// REDTEAM_MAX_LATENCY_MS: a guardrail call is capped at 5 s, a sequential stage of
+// five at ~25 s, so anything past a minute is not a measurement.
+export const REDTEAM_MAX_LATENCY_MS = 60_000;
+function toLatency(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= REDTEAM_MAX_LATENCY_MS ? Math.round(v) : null;
 }
 
 // The stored JSON back into the API shape — re-validated on the way out, so a
@@ -197,12 +209,20 @@ export function parseStoredVendors(raw: unknown, providers: readonly string[] = 
   }
   if (!isPlainObject(j) || !Array.isArray(j.v)) return null;
   const again = toStoredVendorsJson(
-    { mode: j.m, verdicts: j.v.map((p) => (Array.isArray(p) ? { provider: p[0], verdict: p[1] } : null)) },
+    {
+      mode: j.m,
+      verdicts: j.v.map((p) => (Array.isArray(p) ? { provider: p[0], verdict: p[1], latencyMs: p[2] } : null)),
+      latencyMs: j.t,
+    },
     providers,
   );
   if (!again) return null;
-  const k = JSON.parse(again) as { m: StoredVendors["mode"]; v: [string, RtVendorVerdictServer][] };
-  return { mode: k.m, verdicts: k.v.map(([provider, verdict]) => ({ provider, verdict })) };
+  const k = JSON.parse(again) as { m: StoredVendors["mode"]; v: [string, RtVendorVerdictServer, number?][]; t?: number };
+  return {
+    mode: k.m,
+    verdicts: k.v.map(([provider, verdict, ms]) => (ms == null ? { provider, verdict } : { provider, verdict, latencyMs: ms })),
+    ...(k.t != null ? { latencyMs: k.t } : {}),
+  };
 }
 
 function toTopic(v: unknown): string | null {

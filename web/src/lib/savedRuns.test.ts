@@ -87,6 +87,22 @@ describe("buildRunSaveRequest", () => {
     expect(row.lang).toBe("Thai");
   });
 
+  it("timings survive save → load: each guardrail's call and the stage total", () => {
+    const r = results([["rt-01", "external"]]);
+    r.get("rt-01")!.vendors = [{ provider: "prisma-airs", verdict: "block", latencyMs: 640 }];
+    r.get("rt-01")!.pipelineMode = "parallel";
+    r.get("rt-01")!.pipelineLatencyMs = 655;
+    const [sent] = buildRunSaveRequest(ctx(), r)!.results;
+    expect(sent.vendors).toEqual({ mode: "parallel", latencyMs: 655, verdicts: [{ provider: "prisma-airs", verdict: "block", latencyMs: 640 }] });
+    // …and what the server returns (same shape) maps back into the live result fields.
+    const saved = toSavedRun(
+      { id: 1, ts: 1, label: null, route: "direct", gatewayId: null, guarded: 0, model: null, dynamicRoute: null, corpusName: "x", corpusSize: 1, corpusFingerprint: "f", delayMs: 0, total: 1, scored: 0, reached: 0, stopped: 0, denied: 0, guardrails: 0, external: 1, skipped: 0, pending: 0, error: 0, reachedPct: 0 },
+      [{ attackKey: "rt-01", attackId: "rt-01", category: "c", severity: null, state: "external", ray: null, ts: null, promptPreview: null, vendors: sent.vendors }],
+    );
+    const live = savedRunBenchmarkInput(saved).results.get("rt-01")!;
+    expect(live).toMatchObject({ pipelineLatencyMs: 655, vendors: [{ provider: "prisma-airs", verdict: "block", latencyMs: 640 }] });
+  });
+
   it("keeps the plain corpus name and fingerprint for a full run", () => {
     const req = buildRunSaveRequest(ctx(), results(CORPUS.map((a) => [a.id, "block"])))!;
     expect(req.corpusName).toBe("AI Red Team Sample");

@@ -475,6 +475,9 @@ export interface RtRunResult {
   // response carried no pipeline. Saved with a run since migration 0007 (RtStoredResult.vendors).
   vendors?: RtVendorOutcome[];
   pipelineMode?: "sequential" | "parallel";
+  // The whole external-guardrail stage for this prompt — what it added before the
+  // model: the slowest call in parallel mode, the sum in sequential.
+  pipelineLatencyMs?: number;
 }
 
 // One external guardrail's answer for one attack. "alerts" is a Detect-mode
@@ -483,6 +486,10 @@ export interface RtRunResult {
 export interface RtVendorOutcome {
   provider: string;
   verdict: "block" | "allow" | "alerts" | "error" | "notRun";
+  // That guardrail's own call, as the Worker timed it: fetch start → parsed response,
+  // i.e. the network from Cloudflare's colo to the vendor plus its processing. Absent
+  // for notRun (never called) and on runs saved before latency was recorded.
+  latencyMs?: number;
 }
 
 // Map a settled edge Outcome to the run state. `guardrails` is decided upstream
@@ -704,6 +711,7 @@ export interface RtStoredResult {
   // Benchmark fields (migration 0007) — absent/null on runs saved before it.
   vendors?: RtVendorOutcome[] | null;
   pipelineMode?: "sequential" | "parallel" | null;
+  pipelineLatencyMs?: number | null;
   expected?: "allow" | null; // harmless row: kept for false blocks, never in totals or diffRuns
   topic?: string | null;
   lang?: string | null;

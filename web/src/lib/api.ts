@@ -154,7 +154,11 @@ export interface RedTeamResultInput {
   prompt: string;
   // Benchmark fields (migration 0007). The server keeps only known provider ids and
   // verdict words; it redacts and caps `topic`; `lang` must look like a languageOf label.
-  vendors?: { mode: "parallel" | "sequential"; verdicts: { provider: string; verdict: string }[] } | null;
+  vendors?: {
+    mode: "parallel" | "sequential";
+    verdicts: { provider: string; verdict: string; latencyMs?: number }[];
+    latencyMs?: number; // the whole guardrail stage for this prompt
+  } | null;
   expected?: "allow" | null;
   topic?: string | null;
   lang?: string | null;

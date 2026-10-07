@@ -26,6 +26,7 @@ export function toVendorOutcomes(p: GuardrailPipelineResult | undefined): RtVend
     ...p.results.map((r): RtVendorOutcome => ({
       provider: r.provider,
       verdict: r.outcome === "block" ? "block" : r.outcome === "allow" ? (r.detectOnly ? "alerts" : "allow") : "error",
+      ...(Number.isFinite(r.latencyMs) && r.latencyMs >= 0 ? { latencyMs: Math.round(r.latencyMs) } : {}),
     })),
     ...p.notRun.map((n): RtVendorOutcome => ({ provider: n.provider, verdict: "notRun" })),
   ];
