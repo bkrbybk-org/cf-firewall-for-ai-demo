@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { CircleAlert, Eraser, SendHorizontal, ShieldBan, ShieldX } from "lucide-react";
 import { fmtCost } from "../lib/format";
-import type { GatewayOption, Model } from "../lib/types";
+import type { GatewayOption, Model, NotStreamedReason } from "../lib/types";
 import type { Msg, Route, RequestConfig } from "../hooks/useChat";
 import { controlMatrix, type ControlMatrixInput } from "../lib/controlMatrix";
 import { useEdgeKnowledge } from "../lib/verdictStore";
@@ -14,6 +14,12 @@ import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 import { useShowTurnDetails } from "../hooks/useShowTurnDetails";
+
+const NOT_STREAMED_WHY: Record<NotStreamedReason, string> = {
+  "guarded-gateway":
+    "Answered in one piece: AI Gateway Guardrails can only block a reply it sees whole. Streamed through the REST API, a reply would only be checked and logged.",
+  "reply-scan": "Answered in one piece: the external guardrails check the whole reply before it is shown.",
+};
 
 function CacheBadge({ cached }: { cached?: boolean | null }) {
   if (cached === true)
@@ -369,6 +375,17 @@ export function Chat({
                             </span>
                           )}
                         </>
+                      )}
+                      {m.meta.notStreamed && (
+                        // The turn asked to stream and the server answered in one piece, so the
+                        // reply could be checked before it was shown. Said, so the missing
+                        // token-by-token rendering does not look like a fault.
+                        <span
+                          className="rounded-full border border-line px-2 py-0.5 text-[10.5px] font-semibold text-muted"
+                          title={NOT_STREAMED_WHY[m.meta.notStreamed]}
+                        >
+                          NOT STREAMED
+                        </span>
                       )}
                       {m.meta.dynamicRoute && (
                         <span

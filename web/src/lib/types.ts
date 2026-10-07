@@ -104,7 +104,11 @@ export interface ChatResponse {
   // model call. Never render this as a model answer.
   guardrailOnly?: boolean;
   externalGuardrails?: GuardrailPipelineResult;
+  notStreamed?: NotStreamedReason;
 }
+
+// Why a turn that asked to stream came back in one piece (src/types.ts has the why).
+export type NotStreamedReason = "guarded-gateway" | "reply-scan";
 
 // ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
 // Third-party guardrails the Worker forwards each prompt to before calling the

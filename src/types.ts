@@ -58,6 +58,13 @@ export interface ChatTurn {
   content: string;
 }
 
+// Why a turn that asked to stream was answered in one piece, carried on the JSON
+// reply so the UI can say so: a reply check that must see the whole reply before
+// the user does cannot run on a stream. "guarded-gateway" — AI Gateway Guardrails only
+// logs a streamed reply on the REST API (Open bug #30); "reply-scan" — the external
+// guardrails check the reply (design J).
+export type NotStreamedReason = "guarded-gateway" | "reply-scan";
+
 export interface ChatRequestBody {
   prompt?: unknown;
   model?: unknown;

@@ -2938,8 +2938,15 @@ exercised):
     apply AIDR's redaction — on a turn AIDR allows-but-redacts, the model receives the original prompt (the
     chip says so in amber). Whether to apply it is an unmade design decision. The block card's rendering of
     AIDR detectors has not been seen in a browser on prod.
-30. **🟠 AI Gateway Guardrails does not block a streamed reply here, and the README says it does** (found
-    2026-10-07 while designing J; **not fixed**, needs the user's choice because it changes what a demo shows).
+30. ~~**🟠 AI Gateway Guardrails does not block a streamed reply here, and the README says it does**~~ **FIXED
+    2026-10-07** (deploy `4a40eab3`; the user chose option (a)). On the guarded gateway the Worker now ignores
+    `stream: true` and answers with JSON carrying `notStreamed: "guarded-gateway"`. The reply shows a NOT STREAMED
+    label whose tooltip says why.
+    - **Verified on prod with the service token:** a streamed request to `cf-ai-sec-demo-gw` came back as
+      `application/json` with `notStreamed: "guarded-gateway"`. The default gateway with `stream: true` still
+      answers `text/event-stream`. Smoke passes, and the bundle carries the label.
+    - **Still not measured:** a real 2017 (reply) block. That needs a reply that trips a category.
+    - **Original entry** (found 2026-10-07 while designing J):
     - **The source:** Cloudflare's docs (ai-gateway/features/guardrails/usage-considerations, "Streaming
       behavior", fetched 2026-10-07) say that on the REST API (`api.cloudflare.com/*`) Guardrails "evaluates the
       response and logs the result, but does not enforce it" for `stream: true`. Only the

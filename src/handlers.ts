@@ -79,6 +79,7 @@ import type {
   ChatTurn,
   Env,
   ExternalGuardrailProvider,
+  NotStreamedReason,
   PromptAnalytics,
   PromptLogRow,
   RedTeamResultRow,
@@ -257,6 +258,7 @@ function guardrailsResponse(
   model: string,
   gatewayId: string,
   guarded: boolean,
+  notStreamed?: NotStreamedReason,
 ): Response | null {
   const message = err instanceof Error ? err.message : String(err);
   const promptBlocked = /\b2016\b|prompt blocked/i.test(message);
@@ -270,6 +272,7 @@ function guardrailsResponse(
     // (id + guarded flag) uniformly via `data.gateway` on both paths.
     gateway: { gatewayId, guarded },
     detail: message,
+    notStreamed,
   });
 }
 
@@ -675,6 +678,16 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     gatewayId = valid ? requestedGatewayId! : env.CF_AI_GATEWAY_ID || DEFAULT_AI_GATEWAY_ID;
     guarded = !!env.CF_AI_GATEWAY_GUARDED_ID && gatewayId === env.CF_AI_GATEWAY_GUARDED_ID;
   }
+  // Why a turn that asked to stream did not (Open bug #30, the user's choice 2026-10-07):
+  // on the REST API AI Gateway Guardrails only LOGS a streamed reply ("evaluates the
+  // response and logs the result, but does not enforce it" — ai-gateway/features/
+  // guardrails/usage-considerations). Every gateway call here is REST, so a streamed
+  // turn on the guarded gateway could never show a reply block. Buffered, it can.
+  let notStreamed: NotStreamedReason | undefined;
+  if (stream && guarded) {
+    stream = false;
+    notStreamed = "guarded-gateway";
+  }
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -767,7 +780,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     if (r.kind === "error") {
       // A Guardrails block arrives as an HTTP error here rather than a binding
       // exception; the same 2016/2017 detector maps it to the purple card.
-      const gr = guardrailsResponse(r.message, model, gatewayId, guarded);
+      const gr = guardrailsResponse(r.message, model, gatewayId, guarded, notStreamed);
       log(gr ? "guardrails" : "error", { reply: null, streamed: false });
       if (gr) {
         for (const [k, v] of Object.entries(extHeaders)) gr.headers.set(k, v);
@@ -819,6 +832,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       gateway: { gatewayId, cached: r.cached, latencyMs: Date.now() - started, logId: r.logId, guarded },
       dynamicRoute: dynamicRoute || undefined,
       externalGuardrails: external ?? undefined,
+      notStreamed,
     }, { headers: extHeaders });
   }
 

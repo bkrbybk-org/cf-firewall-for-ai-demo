@@ -13,7 +13,7 @@ import { parseEdgeBlock } from "../lib/edgeBlock";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
-import type { GatewayMeta, GuardrailPipelineResult, Model, Usage } from "../lib/types";
+import type { GatewayMeta, GuardrailPipelineResult, Model, NotStreamedReason, Usage } from "../lib/types";
 
 export type Route = "direct" | "gateway";
 
@@ -71,6 +71,7 @@ export type Msg =
         gateway?: GatewayMeta; // set when this reply was routed via AI Gateway
         dynamicRoute?: string; // set when a dynamic route chose the model
         externalGuardrails?: GuardrailPipelineResult; // the pipeline verdicts that let it through
+        notStreamed?: NotStreamedReason; // asked to stream, answered in one piece — and why
       };
       ray?: string;
     }
@@ -349,6 +350,7 @@ export function useChat(cfg: {
               gateway: gwMeta,
               dynamicRoute: data.dynamicRoute,
               externalGuardrails: data.externalGuardrails,
+              notStreamed: data.notStreamed,
             },
             ray,
           });

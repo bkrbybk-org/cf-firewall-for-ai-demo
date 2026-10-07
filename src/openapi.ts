@@ -547,7 +547,7 @@ export const openapi = {
             items: ref("ChatTurn"),
             description: "Prior turns, re-validated server-side: only `user`/`assistant`, newest kept, capped at 10 turns and 8000 characters.",
           },
-          stream: bool("`true` → an SSE response instead of JSON."),
+          stream: bool("`true` → an SSE response instead of JSON — except on the guarded AI Gateway, which is always answered as JSON so Guardrails can block the reply (the JSON then carries `notStreamed`)."),
           gateway: bool("`true` → route through AI Gateway. Needs `CF_AIG_TOKEN`."),
           gatewayId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,64}$", description: "Gateway route only. An id not on the account falls back to the default gateway." },
           dynamicRoute: {
@@ -591,9 +591,16 @@ export const openapi = {
           gateway: ref("GatewayMeta"),
           dynamicRoute: str("Echoed when the reply came from a Dynamic Route."),
           externalGuardrails: ref("GuardrailPipelineResult"),
+          notStreamed: ref("NotStreamedReason"),
         },
         ["reply", "model", "ray", "usage", "cost"],
       ),
+      NotStreamedReason: {
+        type: "string",
+        enum: ["guarded-gateway", "reply-scan"],
+        description:
+          "Present when the request asked for `stream: true` and was answered as JSON instead. `guarded-gateway`: the guarded AI Gateway was picked, and on the REST API Guardrails only **logs** a streamed reply, so the turn is buffered to let it block one. `reply-scan`: the external guardrails check the reply before it is returned.",
+      },
       GatewayMeta: obj(
         {
           gatewayId: str(),
@@ -612,6 +619,7 @@ export const openapi = {
           model: str(),
           gateway: obj({ gatewayId: str(), guarded: bool() }, ["gatewayId", "guarded"]),
           detail: str("The upstream error text."),
+          notStreamed: ref("NotStreamedReason"),
         },
         ["guardrailsBlocked", "direction", "model", "gateway", "detail"],
         "An AI Gateway Guardrails block. Note the HTTP status is **200**, unlike a WAF block.",
