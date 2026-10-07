@@ -194,6 +194,14 @@ function TestOutcome({ t }: { t: ExternalGuardrailTestResult }) {
   );
 }
 
+const TEST_SAMPLE_LABEL: Record<GuardrailTestSample, string> = {
+  benign: "Connection works",
+  attack: "Attack prompt",
+  pii: "PII prompt",
+  "reply-pii": "Reply with PII",
+  "reply-benign": "Harmless reply",
+};
+
 function TestVerdict({ t }: { t: ExternalGuardrailTestResult }) {
   const r = t.result;
   // `ok` means the provider answered with a verdict. A failed test is shown as
@@ -203,7 +211,7 @@ function TestVerdict({ t }: { t: ExternalGuardrailTestResult }) {
       <div className="flex items-start gap-1.5 text-[12px] text-cf-green">
         <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
         <span>
-          {t.sample === "attack" ? "Attack prompt" : t.sample === "pii" ? "PII prompt" : "Connection works"} — verdict{" "}
+          {TEST_SAMPLE_LABEL[t.sample ?? "benign"]} — verdict{" "}
           <b className="font-mono">{r.action ?? r.outcome}</b>
           {r.detectOnly && <b className="text-cf-amber"> · alerts only</b>}
           {r.transformed && <b className="text-cf-amber"> · redaction requested, not applied</b>}
@@ -642,6 +650,31 @@ function ProviderCard({
         >
           Test with a PII prompt
         </button>
+        {/* Design J's verification: a fixed prompt WITH a fixed model reply, sent as the
+            reply check sends it — the payload that turns "documented" into "verified".
+            Only where the vendor documents checking replies. */}
+        {config.replyCheck && (
+          <button
+            type="button"
+            onClick={() => void runTest("reply-pii")}
+            title="Sends a fixed prompt with a fixed model REPLY that contains a void sample SSN (078-05-1120), the way the reply check does"
+            disabled={testing || saving || busy || dirty || !config.apiKeySet}
+            className={BTN_CLS}
+          >
+            Test a reply (PII)
+          </button>
+        )}
+        {config.replyCheck && (
+          <button
+            type="button"
+            onClick={() => void runTest("reply-benign")}
+            title="Sends a fixed prompt with a harmless fixed model reply, the way the reply check does"
+            disabled={testing || saving || busy || dirty || !config.apiKeySet}
+            className={BTN_CLS}
+          >
+            Test a reply (harmless)
+          </button>
+        )}
         <span className="text-[11px] text-subtle">Tests the saved configuration, not unsaved edits.</span>
         <div aria-live="polite" className="text-[12px]">
           {saveStatus === "saved" && !dirty && <span className="text-cf-green">Saved.</span>}

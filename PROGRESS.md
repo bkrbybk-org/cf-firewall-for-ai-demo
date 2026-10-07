@@ -626,6 +626,67 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-07 — Design J, part 1: the external guardrails check the model's reply (server, chat, Settings)
+
+**Asked for:** "D1 A, D2 yes, D3 a, D4 counts only — go".
+- D1: buffer the reply.
+- D2: v1 covers Prisma AIRS, CrowdStrike AIDR and Lakera.
+- D3: #30 fixed first, deploy `4a40eab3`.
+- D4: the Red Team scores reply checks with counts only.
+
+This entry covers the reply check itself, deploy `42368cb3-3e44-4c90-8e86-052aa15757ca`, migration `0008` (purely additive, applied remote before the Worker). Red Team scoring (D4) is part 2.
+
+- **Model:**
+  - `GuardrailPipelineConfig.scanReplies`, plus `ProviderSpec.replyCheck` (true only for the three vendors that document it).
+  - `loadGuardrailSetup` reads the settings once per turn, because whether the reply is checked decides whether the turn streams, before the model runs.
+  - `willCheckReply` is true only when the switch is on and an enabled guardrail can check a reply.
+  - `runReplyCheck` produces a `GuardrailPipelineResult` with `direction: "reply"`.
+  - `executePipeline` gains a direction and `cannotCheck`: those guardrails are listed as not run, with the reason.
+  - The prompt check strips any `response`, so a prompt check never sends a reply.
+- **Vendor requests** (documented, **not verified**):
+  - **AIRS:** `contents:[{prompt, response}]`; detections come from `response_detected`, and prompt ones are kept as `prompt:<name>`.
+  - **AIDR:** `event_type: "output"` with the user and assistant turns.
+  - **Lakera:** the reply as the assistant turn. Lakera screens the user turn too, which the code comment says.
+- **Handler:**
+  - When the check will run, `stream` is forced off (`notStreamed: "reply-scan"`).
+  - After the model, on the gateway JSON path and the direct path, an empty reply is not checked.
+  - **A block withholds the reply:**
+    - the response is a 200 `externalReplyBlocked` with usage and cost and no reply text;
+    - the header is `x-external-guardrails-reply`, stripped of raw responses;
+    - the log outcome is `external_reply` with a null reply, and `latency_ms` is the model's time, taken before the check.
+  - The analytics series counts `external_reply` with the `external` series. It would otherwise have fallen into `reply`, because the bucketing ended in `else row.reply++`.
+- ***Test connection*:** `reply-benign` and `reply-pii` samples (a fixed prompt and a fixed reply; the SSN is the void Woolworth sample). A provider without `replyCheck` refuses them with a 400.
+- **UI:**
+  - **Chat:** a `replyWithheld` message kind, never an assistant message, so it never enters history. Its card reads "Reply withheld — …" and shows the tokens spent. Allowed replies get "(reply)" chips.
+  - **Control strip:** reply cells (layer `replyCheck`) come after *Model*.
+  - **Export:** a withheld turn exports as "Reply withheld"; the export used to drop unknown kinds silently.
+  - **Prompt log:** a "reply withheld" label and filter.
+  - **Settings:** a *Check replies too* switch and a *Reply check* stage in the diagram that names who does not check replies; Test buttons only for the three vendors.
+  - **Red Team:** the runner counts a withheld reply as reached, not as an error.
+- **Verified:**
+  - **Tests:** 722, with 0 type errors. `src/chatReplyCheck.test.ts` drives the real `handleChat`, on the direct and the gateway route, with a stubbed vendor, model and D1.
+  - **Mutation-verified, 11 of 11 caught:**
+    - a block ignored on either route;
+    - the reply never checked; the turn still streaming; withheld logged as `reply`;
+    - the prompt check forwarding a reply; the switch counting with nobody able to check;
+    - unable guardrails vanishing; prompt detections unmarked;
+    - AIDR sent as an input event; Lakera dropping the reply.
+  - **Local `wrangler dev`, real Worker, local D1:**
+    - the migration's column round-trips through `PUT`/`GET` `/pipeline`;
+    - with Lakera enabled (a made-up test key, fail open) and the switch on, `stream:true` came back as `application/json`;
+    - `/test` refused `reply-pii` for Cato with a 400.
+  - **Not measured locally:** local Workers AI returned `internal error` on every try, and local workerd could not reach Lakera either. So no model reply was checked end to end locally; the handler test covers that path with stubs.
+  - **Browser** (stubbed `/api/chat`):
+    - the withheld card, chips and control strip in light and dark;
+    - the Settings switch and the *Reply check* stage;
+    - no console errors.
+  - **Prod:**
+    - smoke passes;
+    - `scanReplies: false` and `replyCheck` true for the three vendors;
+    - a `stream:true` chat still answers `text/event-stream`, since the switch is off;
+    - the bundle carries "Check replies too", "Reply withheld" and "Test a reply (PII)".
+- **Not yet seen: any real reply verdict.** The parsers for the reply direction follow the vendors' docs. Next is the user pressing *Test a reply* for AIRS and AIDR on prod (the admin gate), then reading the shapes.
+
 ### 2026-10-07 — Benchmark H: a saved run's benchmark as a Markdown report and JSON
 
 **Asked for:** "do H, skip I for now, then design J". Deploy `8b53fe0c-a848-4f32-9c1c-342897e0e8df`. Front end only;
@@ -3131,8 +3192,9 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.
-- [ ] **Red Team benchmark J: scan the model's output** — design written 2026-10-07 (below). Not started:
-      it waits on the user's decisions D1–D4.
+- [ ] **Red Team benchmark J: scan the model's output** — decided 2026-10-07 (D1 buffer, D2 AIRS/AIDR/Lakera, D3
+      (a), D4 counts only). Part 1 (server, chat, Settings) shipped: deploy `42368cb3`. Left: part 2, Red Team reply
+      verdicts and counts; and a real reply verdict from each vendor (the user, *Test a reply* on prod).
 
 **Design J: guardrails on the model's reply** (2026-10-07; every vendor fact is *documented*, not verified)
 

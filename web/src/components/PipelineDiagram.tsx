@@ -226,6 +226,12 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
   const active = ordered.filter(isOn);
   const sequential = pipeline.mode === "sequential";
   const skipModel = pipeline.guardrailOnly;
+  // Design J: whether replies are really checked — the switch, at least one enabled
+  // guardrail able to check a reply, and a model to write one. Mirrors the server's
+  // willCheckReply() (src/externalGuardrails.ts).
+  const replyCheckers = active.filter((p) => p.replyCheck);
+  const replySkipped = active.filter((p) => !p.replyCheck);
+  const checkReplies = !!pipeline.scanReplies && replyCheckers.length > 0 && !skipModel;
 
   function move(i: number, delta: -1 | 1) {
     const ids = ordered.map((p) => p.provider);
@@ -240,7 +246,9 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
     (active.length === 0
       ? "no external guardrail"
       : active.map((p) => p.label).join(sequential ? ", then " : " and ") + (sequential ? "" : ", in parallel")) +
-    (skipModel ? ", then the model is skipped." : ", then the model with AI Gateway Guardrails, then the reply.");
+    (skipModel
+      ? ", then the model is skipped."
+      : `, then the model with AI Gateway Guardrails, ${checkReplies ? `then a reply check by ${replyCheckers.map((p) => p.label).join(" and ")}, ` : ""}then the reply.`);
 
   return (
     <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
@@ -366,6 +374,27 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
         </div>
         <Arrow dim={skipModel} />
 
+        {checkReplies && (
+          // Design J: the same guardrails again, on the finished reply. Drawn only when
+          // it will really run; a guardrail that cannot check replies is named here as
+          // not checking them, never left to look like it does.
+          <>
+            <div className="w-full shrink-0 rounded-xl border border-dashed border-cf-amber/60 bg-cf-amber/[0.06] px-3 py-2 xl:w-48">
+              <div className="text-[11px] font-bold tracking-wider text-cf-amber uppercase">Reply check</div>
+              <div className="mt-1 text-[11.5px] leading-snug text-text">{replyCheckers.map((p) => p.label).join(", ")}</div>
+              {replySkipped.length > 0 && (
+                <div className="mt-1 text-[11px] leading-snug text-muted">
+                  Not checking replies: {replySkipped.map((p) => p.label).join(", ")}
+                </div>
+              )}
+              <div className="mt-1 text-[11px] leading-snug text-subtle">
+                A blocked reply is withheld. Turns are not streamed while this is on.
+              </div>
+            </div>
+            <Arrow />
+          </>
+        )}
+
         <EndPill dim={skipModel}>{skipModel ? "No reply — verdict only" : "Reply"}</EndPill>
       </div>
 
@@ -395,6 +424,16 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
           label="Guardrail-only (skip the model)"
           title="Test the edge WAF and the external guardrails without calling the model. Applies to chat and Red Team runs."
         />
+        <Switch
+          checked={!!pipeline.scanReplies}
+          onChange={(v) => void run(() => onPipeline({ scanReplies: v }))}
+          disabled={busy}
+          label="Check replies too"
+          title="After the model answers, send its reply to every enabled guardrail that can check replies (Prisma AIRS, CrowdStrike AIDR, Lakera Guard — documented, not yet verified). A blocked reply is withheld. Turns are not streamed while this is on, and each guardrail is called twice."
+        />
+        {pipeline.scanReplies && replyCheckers.length === 0 && !skipModel && (
+          <span className="text-[11px] text-muted">On, but no enabled guardrail can check replies — nothing is checked.</span>
+        )}
       </div>
       <div aria-live="polite" className="empty:hidden">
         {err && (

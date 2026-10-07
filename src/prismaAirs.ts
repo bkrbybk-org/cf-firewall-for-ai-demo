@@ -50,6 +50,10 @@ export interface PrismaAirsScanInput {
   apiKey: string;
   profileName: string;
   prompt: string;
+  // The model's reply, for a reply check (design J): sent beside its prompt as one
+  // `contents` item — the spec's ScanContent has both, and its result reports
+  // `response_detected` apart from `prompt_detected`.
+  response?: string;
   model?: string;
   trId?: string; // correlates with the Cloudflare ray, so both consoles can be joined
   timeoutMs?: number;
@@ -63,7 +67,7 @@ export function buildPrismaAirsRequest(input: PrismaAirsScanInput): { url: strin
     // `user_ip`: the prompt already leaves Cloudflare for a third party, and the
     // person behind it does not need to as well.
     metadata: { app_name: "cf-ai-waf-demo", ...(input.model ? { ai_model: input.model } : {}) },
-    contents: [{ prompt: input.prompt }],
+    contents: [{ prompt: input.prompt, ...(input.response != null ? { response: input.response } : {}) }],
   };
   return {
     url: input.baseUrl + PRISMA_AIRS_SCAN_PATH,
@@ -91,7 +95,12 @@ function errorMessage(body: unknown, status: number): string {
 // by PANW's `action` alone — the app never re-derives a verdict from
 // `category` or the detection flags, which would be second-guessing the
 // operator's AI security profile.
-export function parsePrismaAirsResponse(status: number, body: unknown, latencyMs: number): ExternalGuardrailResult {
+export function parsePrismaAirsResponse(
+  status: number,
+  body: unknown,
+  latencyMs: number,
+  reply = false,
+): ExternalGuardrailResult {
   const base = { provider: "prisma-airs" as const, latencyMs, httpStatus: status };
   if (status < 200 || status >= 300) {
     return { ...base, outcome: "error", error: errorMessage(body, status) };
@@ -103,8 +112,16 @@ export function parsePrismaAirsResponse(status: number, body: unknown, latencyMs
     // "allow" would let a malformed response wave every prompt through.
     return { ...base, outcome: "error", error: `Prisma AIRS returned no usable action (got ${JSON.stringify(action)})` };
   }
-  const flags = (r.prompt_detected ?? {}) as Record<string, unknown>;
-  const detected = Object.keys(flags).filter((k) => flags[k] === true);
+  const trueKeys = (v: unknown) => {
+    const flags = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+    return Object.keys(flags).filter((k) => flags[k] === true);
+  };
+  // A reply check sends the prompt too, and `action` covers both. So the reply's own
+  // detections come first, and any prompt detection is kept but marked "prompt:" — a
+  // reply block caused by the prompt must not read as something the model said.
+  const detected = reply
+    ? [...trueKeys(r.response_detected), ...trueKeys(r.prompt_detected).map((k) => `prompt:${k}`)]
+    : trueKeys(r.prompt_detected);
   return {
     ...base,
     outcome: action,
@@ -136,7 +153,7 @@ export async function scanPromptWithPrismaAirs(
     } catch {
       body = null; // non-JSON body: errorMessage() falls back to the status
     }
-    return parsePrismaAirsResponse(res.status, body, Date.now() - started);
+    return parsePrismaAirsResponse(res.status, body, Date.now() - started, input.response != null);
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
     const message =

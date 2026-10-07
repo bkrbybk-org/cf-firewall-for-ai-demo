@@ -296,25 +296,30 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
   const unavailable = ran.filter((v) => v.state === "unavailable" || v.state === "failedOpen").length;
   const tone: PipelineView["tone"] = blocks > 0 || unavailable > 0 ? "warning" : "neutral";
 
+  // Design J: the same view for the reply check after the model. Worded for what it
+  // stopped — a reply the model had already written, which nobody was shown — never
+  // as a prompt block: the model ran, and its cost was spent.
+  const reply = pipeline.direction === "reply";
   let headline: string;
   let caveat: string | null = null;
   if (kind === "guardrailOnly") {
     headline = GUARDRAIL_ONLY_HEADLINE;
   } else if (blocks > 0) {
-    headline = `Blocked by ${blocks} of ${ran.length} ${ran.length === 1 ? "guardrail" : "guardrails"}`;
+    const by = `${blocks} of ${ran.length} ${ran.length === 1 ? "guardrail" : "guardrails"}`;
+    headline = reply ? `Reply withheld — blocked by ${by}` : `Blocked by ${by}`;
   } else {
     // Stopped with no block: a fail-closed error. Name the unavailable vendor — and
     // never word it as a block, because it never looked at the prompt.
     const decided = ran.find((v) => v.decided && v.state === "unavailable");
     const stopper = decided ?? ran.find((v) => v.state === "unavailable");
     if (stopper) {
-      headline = `Not sent to the model — ${stopper.name} unavailable`;
+      headline = reply ? `Reply withheld — ${stopper.name} unavailable` : `Not sent to the model — ${stopper.name} unavailable`;
     } else {
       const named = pipeline.stoppedBy ? providerLabel(pipeline.stoppedBy) : null;
-      headline = `Stopped by ${named ?? "an external guardrail"} — no verdict shown`;
+      headline = `${reply ? "Reply withheld" : "Stopped"} by ${named ?? "an external guardrail"} — no verdict shown`;
       caveat =
-        `The pipeline reports the turn was stopped${named ? ` by ${named}` : ""}, but no matching block or ` +
-        "failure came back, so no verdict is shown. The prompt was not sent to the model.";
+        `The pipeline reports the ${reply ? "reply" : "turn"} was stopped${named ? ` by ${named}` : ""}, but no matching block or ` +
+        `failure came back, so no verdict is shown. ${reply ? "The reply was not shown." : "The prompt was not sent to the model."}`;
     }
   }
 
@@ -323,7 +328,7 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
     subline = "Passed the edge WAF; no external guardrail is enabled";
   } else {
     const mode = pipeline.mode === "parallel" ? "parallel (waited for all)" : "sequential";
-    subline = `${mode} · ${pipeline.latencyMs} ms${kind === "guardrailOnly" ? " · model not called" : ""}`;
+    subline = `${reply ? "reply check · " : ""}${mode} · ${pipeline.latencyMs} ms${kind === "guardrailOnly" ? " · model not called" : ""}`;
   }
 
   return { headline, tone, subline, vendors, why: whyLine(ran), caveat };

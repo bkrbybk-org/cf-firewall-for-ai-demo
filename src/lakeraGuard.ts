@@ -44,12 +44,20 @@ export interface LakeraScanInput {
   apiKey: string;
   projectId: string; // selects the project's policy — and whether it is in Enforce or Detect mode
   prompt: string;
+  // The model's reply, for a reply check (design J). Lakera's docs: "the most recent
+  // user content is screened as input and the most recent assistant content as output"
+  // — so it goes in as the assistant turn. Both are screened, and which one a flag came
+  // from is not documented: a reply-check flag may be the prompt's. Unverified.
+  response?: string;
   timeoutMs?: number;
 }
 
 export function buildLakeraRequest(input: LakeraScanInput): { url: string; init: RequestInit } {
   const body = {
-    messages: [{ role: "user", content: input.prompt }],
+    messages: [
+      { role: "user", content: input.prompt },
+      ...(input.response != null ? [{ role: "assistant", content: input.response }] : []),
+    ],
     project_id: input.projectId,
     // Per-detector results, so the UI can name what fired.
     breakdown: true,

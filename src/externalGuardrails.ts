@@ -66,6 +66,10 @@ interface ProviderSpec {
   // (src/responseShape.ts). Only for a verdict that is a string with an undocumented
   // allow value; everything else stays names and types.
   revealPaths?: readonly string[];
+  // Design J: the vendor DOCUMENTS checking a model reply and this client sends one.
+  // Documented, not verified — no real reply verdict has been seen from any of them yet.
+  // false → the reply stage lists it as not run, with the reason, never as an allow.
+  replyCheck: boolean;
 }
 
 export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
@@ -80,6 +84,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "AI security profile name",
     keyLabel: "API key",
     vendor: "Palo Alto Networks",
+    replyCheck: true, // ScanContent.response; result.response_detected (scan-service_latest.yaml)
   },
   "crowdstrike-aidr": {
     label: "CrowdStrike Falcon AIDR",
@@ -92,6 +97,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "",
     keyLabel: "Collector token",
     vendor: "CrowdStrike",
+    replyCheck: true, // event_type "output" (aidr_openapi.json)
   },
   // Built from the vendor docs; unverified until the admin runs Test connection with a real key and the
   // returned response shape matches the parser (PROGRESS.md plan, step 6).
@@ -106,6 +112,8 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "",
     keyLabel: "API key",
     vendor: "Cisco",
+    // "prompts and responses", but which roles are inspected is not documented: off until a payload is seen.
+    replyCheck: false,
   },
   "lakera-guard": {
     label: "Check Point Lakera Guard",
@@ -118,6 +126,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "Project ID",
     keyLabel: "API key",
     vendor: "Lakera (Check Point)",
+    replyCheck: true, // "the most recent assistant content [is screened] as output" (docs.lakera.ai/docs/api/guard)
   },
   // The ALLOW is checked against real payloads (2026-10-06: `required_action: null`); the
   // BLOCK is still only Cato's console sample, so it stays unverified until a prompt the
@@ -134,6 +143,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "",
     keyLabel: "API key",
     vendor: "Cato Networks",
+    replyCheck: false, // reply checking is not documented
     revealPaths: ["required_action.action_type"],
   },
 };
@@ -185,6 +195,7 @@ export function toPublicConfig(c: StoredConfig) {
     label: spec.label,
     supported: spec.supported,
     verified: spec.verified,
+    replyCheck: spec.replyCheck, // design J: can check a model reply (documented, not verified)
     enabled: c.enabled,
     region: c.region,
     endpoint: endpointFor(c.provider, c.region),
@@ -371,7 +382,7 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
 export const PIPELINE_MODES = ["sequential", "parallel"] as const satisfies readonly GuardrailPipelineMode[];
 
 export function defaultPipeline(): GuardrailPipelineConfig {
-  return { mode: "sequential", guardrailOnly: false, order: [...PROVIDER_IDS] };
+  return { mode: "sequential", guardrailOnly: false, order: [...PROVIDER_IDS], scanReplies: false };
 }
 
 // Stored order → a full permutation of the registry: unknown ids dropped,
@@ -399,6 +410,10 @@ export function validatePipelineUpdate(body: unknown, current: GuardrailPipeline
     if (typeof b.guardrailOnly !== "boolean") return { ok: false, error: "guardrailOnly must be a boolean" };
     next.guardrailOnly = b.guardrailOnly;
   }
+  if (b.scanReplies !== undefined) {
+    if (typeof b.scanReplies !== "boolean") return { ok: false, error: "scanReplies must be a boolean" };
+    next.scanReplies = b.scanReplies;
+  }
   if (b.order !== undefined) {
     // Strict on input (lenient only on read): an order that is not exactly a
     // permutation is a client bug, and silently "fixing" it would save an order
@@ -419,6 +434,7 @@ interface PipelineRow {
   mode: string;
   guardrail_only: number;
   provider_order: string;
+  scan_replies?: number; // absent before migration 0008
 }
 
 function pipelineFromRow(r: PipelineRow | null): GuardrailPipelineConfig {
@@ -427,6 +443,7 @@ function pipelineFromRow(r: PipelineRow | null): GuardrailPipelineConfig {
     mode: r.mode === "parallel" ? "parallel" : "sequential",
     guardrailOnly: r.guardrail_only === 1,
     order: normalizeOrder(r.provider_order ? r.provider_order.split(",") : []),
+    scanReplies: r.scan_replies === 1,
   };
 }
 
@@ -444,17 +461,19 @@ export async function loadPipeline(db: D1Database): Promise<GuardrailPipelineCon
 export async function savePipeline(db: D1Database, p: GuardrailPipelineConfig): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO guardrail_pipeline (id, mode, guardrail_only, provider_order, updated_at) VALUES (1,?,?,?,?)
+      `INSERT INTO guardrail_pipeline (id, mode, guardrail_only, provider_order, scan_replies, updated_at) VALUES (1,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, guardrail_only = excluded.guardrail_only,
-         provider_order = excluded.provider_order, updated_at = excluded.updated_at`,
+         provider_order = excluded.provider_order, scan_replies = excluded.scan_replies, updated_at = excluded.updated_at`,
     )
-    .bind(p.mode, p.guardrailOnly ? 1 : 0, p.order.join(","), Date.now())
+    .bind(p.mode, p.guardrailOnly ? 1 : 0, p.order.join(","), p.scanReplies ? 1 : 0, Date.now())
     .run();
 }
 
 // ── the forwarding step ──────────────────────────────────────────────────────
 export interface ForwardInput {
   prompt: string;
+  // Set → this is a reply check (design J): the model's whole reply, sent with its prompt.
+  response?: string;
   model: string;
   ray: string | null;
 }
@@ -476,10 +495,17 @@ export async function executePipeline(
   guardrailOnly: boolean,
   scan: Scan,
   now: () => number = Date.now,
+  // "reply" = design J's check after the model. `cannotCheck` are enabled guardrails
+  // that cannot check a reply: listed as not run, with the reason, never as an allow.
+  direction: "prompt" | "reply" = "prompt",
+  cannotCheck: StoredConfig[] = [],
 ): Promise<GuardrailPipelineResult> {
   const started = now();
   const results: ExternalGuardrailResult[] = [];
-  const notRun: GuardrailPipelineResult["notRun"] = [];
+  const notRun: GuardrailPipelineResult["notRun"] = cannotCheck.map((c) => ({
+    provider: c.provider,
+    reason: `Not run: ${PROVIDERS[c.provider].label} does not check replies here (not documented, or not yet verified)`,
+  }));
   let stoppedBy: ExternalGuardrailProvider | null = null;
 
   if (mode === "parallel") {
@@ -495,13 +521,22 @@ export async function executePipeline(
       if (stopsTurn(r)) {
         stoppedBy = r.provider;
         const label = PROVIDERS[r.provider].label;
-        const why = r.outcome === "block" ? `${label} blocked the prompt` : `${label} was unavailable (fail closed)`;
+        const why =
+          r.outcome === "block" ? `${label} blocked the ${direction}` : `${label} was unavailable (fail closed)`;
         for (const s of steps.slice(i + 1)) notRun.push({ provider: s.provider, reason: `Not run: ${why}` });
         break;
       }
     }
   }
-  return { mode, guardrailOnly, results, notRun, stoppedBy, latencyMs: now() - started };
+  return {
+    ...(direction === "reply" ? { direction } : {}),
+    mode,
+    guardrailOnly,
+    results,
+    notRun,
+    stoppedBy,
+    latencyMs: now() - started,
+  };
 }
 
 // ── raw responses (opt-in, per request) ─────────────────────────────────────
@@ -587,22 +622,33 @@ export async function scanWithKey(
   if (!spec.supported) return { provider: c.provider, outcome: "error", error: `${spec.label} is not supported yet`, latencyMs: 0 };
   const baseUrl = spec.regions.find((r) => r.id === c.region)?.url;
   if (!baseUrl) return { provider: c.provider, outcome: "error", error: `Unknown region "${c.region}"`, latencyMs: 0 };
+  // Defensive: the reply stage never calls these, but a reply must never be quietly
+  // scanned as if it were a prompt by a client that ignores `response`.
+  if (input.response != null && !spec.replyCheck) {
+    return { provider: c.provider, outcome: "error", error: `${spec.label} does not check replies here`, latencyMs: 0 };
+  }
   const ray = input.ray ?? undefined;
   switch (c.provider) {
     case "prisma-airs":
       return scanPromptWithPrismaAirs(
-        { baseUrl, apiKey, profileName: c.profileName, prompt: input.prompt, model: input.model, trId: ray },
+        { baseUrl, apiKey, profileName: c.profileName, prompt: input.prompt, response: input.response, model: input.model, trId: ray },
         fetchImpl,
       );
     case "crowdstrike-aidr":
-      return scanPromptWithAidr({ baseUrl, token: apiKey, prompt: input.prompt, model: input.model, spanId: ray }, fetchImpl);
+      return scanPromptWithAidr(
+        { baseUrl, token: apiKey, prompt: input.prompt, response: input.response, model: input.model, spanId: ray },
+        fetchImpl,
+      );
     // Both `verified: false` until a real payload has been seen (PROGRESS.md plan,
     // step 6) — the page says so; the parsers follow the vendors' docs.
     case "cisco-ai-defense":
       return scanPromptWithCiscoAid({ baseUrl, apiKey, prompt: input.prompt, transactionId: ray }, fetchImpl);
     case "lakera-guard":
       // The project is the policy, as Prisma AIRS's profile is: profileName holds it.
-      return scanPromptWithLakera({ baseUrl, apiKey, projectId: c.profileName, prompt: input.prompt }, fetchImpl);
+      return scanPromptWithLakera(
+        { baseUrl, apiKey, projectId: c.profileName, prompt: input.prompt, response: input.response },
+        fetchImpl,
+      );
     case "cato-ai-security":
       // The ray as Cato's session id: one request per session, since the Worker has no
       // conversation id — but it joins Cato's console to the edge verdict and our log.
@@ -610,20 +656,20 @@ export async function scanWithKey(
   }
 }
 
-// null → nothing to do: no provider enabled and the model is not skipped (or
-// the feature is not set up). Chat then proceeds exactly as before, with no
-// external call and no added latency beyond the D1 reads.
-export async function runPipeline(
-  env: Env,
-  input: ForwardInput,
-  fetchImpl: typeof fetch = fetch,
-  opts: { captureRaw?: boolean } = {},
-): Promise<GuardrailPipelineResult | null> {
+// The pipeline config and the enabled providers in order, read once per turn so the
+// prompt check, the "will the reply be checked?" decision (which must be made BEFORE
+// the model is called — it decides whether the turn streams) and the reply check all
+// see the same settings. null: the feature is not set up (no D1, or a table missing).
+export interface GuardrailSetup {
+  pipeline: GuardrailPipelineConfig;
+  enabled: StoredConfig[];
+}
+
+export async function loadGuardrailSetup(env: Env): Promise<GuardrailSetup | null> {
   if (!env.DB) return null;
-  let pipeline: GuardrailPipelineConfig;
-  let enabled: StoredConfig[] = [];
   try {
-    pipeline = await loadPipeline(env.DB);
+    const pipeline = await loadPipeline(env.DB);
+    let enabled: StoredConfig[] = [];
     // Without the secret no key can be decrypted, so nothing is scanned — but
     // guardrail-only still applies: it is about the model, not the providers.
     if (env.GUARDRAIL_SECRET_KEY) {
@@ -633,12 +679,58 @@ export async function runPipeline(
       );
       enabled = pipeline.order.flatMap((id) => byId.get(id) ?? []);
     }
+    return { pipeline, enabled };
   } catch {
     // Table missing (migration not applied) reads as "nothing enabled".
     return null;
   }
+}
+
+// Design J: the reply will be checked — the switch is on and at least one enabled
+// guardrail can check a reply. A switch with nobody able to act on it changes nothing,
+// so the turn still streams.
+export function willCheckReply(setup: GuardrailSetup | null): boolean {
+  return !!setup?.pipeline.scanReplies && setup.enabled.some((c) => PROVIDERS[c.provider].replyCheck);
+}
+
+// null → nothing to do: no provider enabled and the model is not skipped (or
+// the feature is not set up). Chat then proceeds exactly as before, with no
+// external call and no added latency beyond the D1 reads.
+export async function runPipeline(
+  env: Env,
+  input: ForwardInput,
+  fetchImpl: typeof fetch = fetch,
+  opts: { captureRaw?: boolean; setup?: GuardrailSetup | null } = {},
+): Promise<GuardrailPipelineResult | null> {
+  const setup = opts.setup !== undefined ? opts.setup : await loadGuardrailSetup(env);
+  if (!setup) return null;
+  const { pipeline, enabled } = setup;
   if (enabled.length === 0 && !pipeline.guardrailOnly) return null;
   return executePipeline(enabled, pipeline.mode, pipeline.guardrailOnly, (c) =>
-    scanProvider(env, c, input, fetchImpl, opts.captureRaw === true),
+    scanProvider(env, c, { ...input, response: undefined }, fetchImpl, opts.captureRaw === true),
+  );
+}
+
+// The reply check (design J), after the model. Same order, mode and fail modes as the
+// prompt check; guardrails that cannot check a reply are listed as not run. null when
+// the reply is not checked (willCheckReply false) — never an empty "passed".
+export async function runReplyCheck(
+  env: Env,
+  setup: GuardrailSetup | null,
+  input: ForwardInput & { response: string },
+  fetchImpl: typeof fetch = fetch,
+  opts: { captureRaw?: boolean } = {},
+): Promise<GuardrailPipelineResult | null> {
+  if (!setup || !willCheckReply(setup)) return null;
+  const able = setup.enabled.filter((c) => PROVIDERS[c.provider].replyCheck);
+  const unable = setup.enabled.filter((c) => !PROVIDERS[c.provider].replyCheck);
+  return executePipeline(
+    able,
+    setup.pipeline.mode,
+    false, // guardrail-only is about the model, which has already run
+    (c) => scanProvider(env, c, input, fetchImpl, opts.captureRaw === true),
+    Date.now,
+    "reply",
+    unable,
   );
 }

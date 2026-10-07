@@ -147,7 +147,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number; // 0/1 (SQLite has no bool)
-  outcome: "reply" | "guardrails" | "external" | "skipped" | "error"; // external = an external guardrail blocked it; skipped = guardrail-only, model not called
+  outcome: "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "error"; // external = an external guardrail blocked the prompt; external_reply = one withheld the reply (the model ran); skipped = guardrail-only, model not called
   prompt: string;
   reply: string | null; // null for streamed replies (not captured) or blocks
   redactions: number; // PII spans masked in prompt+reply
@@ -395,9 +395,15 @@ export interface GuardrailPipelineConfig {
   mode: GuardrailPipelineMode;
   guardrailOnly: boolean;
   order: ExternalGuardrailProvider[];
+  // Design J: also check the model's reply (migration 0008). Turns are then never
+  // streamed — a reply cannot be withheld once its tokens are on screen.
+  scanReplies: boolean;
 }
 
 export interface GuardrailPipelineResult {
+  // What was checked: the prompt (before the model) or the reply (after it). Absent
+  // means the prompt — every pipeline before design J.
+  direction?: "prompt" | "reply";
   mode: GuardrailPipelineMode;
   guardrailOnly: boolean;
   results: ExternalGuardrailResult[];

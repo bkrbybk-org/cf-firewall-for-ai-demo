@@ -18,8 +18,11 @@ import {
   executePipeline,
   normalizeOrder,
   RAW_MAX_CHARS,
+  loadGuardrailSetup,
   runPipeline,
+  runReplyCheck,
   stopsTurn,
+  willCheckReply,
   stripRaw,
   toPublicConfig,
   validatePipelineUpdate,
@@ -227,7 +230,7 @@ describe("pipeline config", () => {
 
   it("accepts a valid update and leaves omitted fields alone", () => {
     const v = validatePipelineUpdate({ mode: "parallel" }, defaultPipeline());
-    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"] } });
+    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"], scanReplies: false } });
     const order = ["crowdstrike-aidr", "cato-ai-security", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
     const w = validatePipelineUpdate({ guardrailOnly: true, order }, defaultPipeline());
     expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order });
@@ -489,5 +492,83 @@ describe("runPipeline", () => {
     const pipe = { mode: "parallel", guardrail_only: 0, provider_order: "crowdstrike-aidr,prisma-airs" };
     const r = await runPipeline(await envWith(await storedRow(), SECRET, pipe), { prompt: "p", model: "m", ray: null }, fetchImpl);
     expect(r).toMatchObject({ mode: "parallel", guardrailOnly: false, stoppedBy: null });
+  });
+
+  // ── design J: the reply check ──────────────────────────────────────────────
+  const REPLIES_ON = { mode: "sequential", guardrail_only: 0, provider_order: "", scan_replies: 1 };
+
+  it("checks a reply only when the switch is on AND an enabled guardrail can check one", async () => {
+    expect(willCheckReply(await loadGuardrailSetup(await envWith(await storedRow(), SECRET, REPLIES_ON)))).toBe(true);
+    // Switch off (and a row from before migration 0008, with no column at all).
+    expect(willCheckReply(await loadGuardrailSetup(await envWith(await storedRow(), SECRET, { ...REPLIES_ON, scan_replies: 0 })))).toBe(false);
+    const { scan_replies: _, ...preMigration } = REPLIES_ON;
+    expect(willCheckReply(await loadGuardrailSetup(await envWith(await storedRow(), SECRET, preMigration)))).toBe(false);
+    // On, but only Cato is enabled, and Cato does not document reply checking: the
+    // switch changes nothing, so the turn must not lose its streaming for nothing.
+    const cato = await storedRow({ provider: "cato-ai-security", region: "global", api_key_enc: await encryptSecret("k", SECRET, "cato-ai-security") });
+    expect(willCheckReply(await loadGuardrailSetup(await envWith(cato, SECRET, REPLIES_ON)))).toBe(false);
+    expect(willCheckReply(null)).toBe(false);
+  });
+
+  it("sends the reply beside its prompt, and the prompt check never sends a reply", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(init!.body as string));
+      return Response.json({ action: "block", response_detected: { dlp: true } });
+    }) as typeof fetch;
+    const env = await envWith(await storedRow(), SECRET, REPLIES_ON);
+    const setup = await loadGuardrailSetup(env);
+    const rc = await runReplyCheck(env, setup, { prompt: "p", response: "the reply", model: "m", ray: null }, fetchImpl);
+    expect(bodies[0].contents).toEqual([{ prompt: "p", response: "the reply" }]);
+    expect(rc).toMatchObject({ direction: "reply", stoppedBy: "prisma-airs", guardrailOnly: false });
+    expect(rc!.results[0].detected).toEqual(["dlp"]);
+    // A stray `response` on the prompt check's input is dropped, never scanned as a prompt check.
+    await runPipeline(env, { prompt: "p", response: "leak", model: "m", ray: null }, fetchImpl, { setup });
+    expect(bodies[1].contents).toEqual([{ prompt: "p" }]);
+  });
+
+  it("no reply check → null, never an empty pass", async () => {
+    const never = (async () => {
+      throw new Error("must not be called");
+    }) as typeof fetch;
+    const env = await envWith(await storedRow(), SECRET, { ...REPLIES_ON, scan_replies: 0 });
+    expect(await runReplyCheck(env, await loadGuardrailSetup(env), { prompt: "p", response: "r", model: "m", ray: null }, never)).toBeNull();
+  });
+});
+
+describe("executePipeline — reply direction", () => {
+  const A = { ...defaultConfig("prisma-airs"), enabled: true };
+  const L = { ...defaultConfig("lakera-guard"), enabled: true };
+  const CATO = { ...defaultConfig("cato-ai-security"), enabled: true };
+  const allow: Scan = async (c) => ({ provider: c.provider, outcome: "allow", latencyMs: 1 });
+  const blockAirs: Scan = async (c) => ({ provider: c.provider, outcome: c.provider === "prisma-airs" ? "block" : "allow", latencyMs: 1 });
+
+  it("lists a guardrail that cannot check a reply as not run, with the reason — never as an allow", async () => {
+    const out = await executePipeline([A], "parallel", false, allow, Date.now, "reply", [CATO]);
+    expect(out.direction).toBe("reply");
+    expect(out.results.map((r) => r.provider)).toEqual(["prisma-airs"]);
+    expect(out.notRun).toEqual([
+      { provider: "cato-ai-security", reason: expect.stringMatching(/Cato Networks AI Security does not check replies here/) },
+    ]);
+  });
+
+  it("a sequential reply block names the reply, not the prompt", async () => {
+    const out = await executePipeline([A, L], "sequential", false, blockAirs, Date.now, "reply");
+    expect(out.stoppedBy).toBe("prisma-airs");
+    expect(out.notRun).toEqual([{ provider: "lakera-guard", reason: "Not run: Palo Alto Networks Prisma AIRS blocked the reply" }]);
+  });
+
+  it("a prompt pipeline carries no direction (every result before design J)", async () => {
+    expect((await executePipeline([A], "parallel", false, allow)).direction).toBeUndefined();
+  });
+
+  it("only documented vendors claim reply checking", () => {
+    expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].replyCheck)).toEqual(["prisma-airs", "crowdstrike-aidr", "lakera-guard"]);
+  });
+
+  it("validates the switch", () => {
+    const v = validatePipelineUpdate({ scanReplies: true }, defaultPipeline());
+    expect(v.ok && v.next.scanReplies).toBe(true);
+    expect(validatePipelineUpdate({ scanReplies: "yes" }, defaultPipeline()).ok).toBe(false);
   });
 });

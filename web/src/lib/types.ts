@@ -104,6 +104,11 @@ export interface ChatResponse {
   // model call. Never render this as a model answer.
   guardrailOnly?: boolean;
   externalGuardrails?: GuardrailPipelineResult;
+  // Design J: the reply check after the model. On a reply, the verdicts that let it
+  // through; with `externalReplyBlocked` the reply was withheld — the body carries usage
+  // and cost (the model ran) and NO reply text.
+  replyGuardrails?: GuardrailPipelineResult;
+  externalReplyBlocked?: boolean;
   notStreamed?: NotStreamedReason;
 }
 
@@ -164,6 +169,9 @@ export interface GuardrailPipelineConfig {
   // to chat AND red-team runs (one global switch).
   guardrailOnly: boolean;
   order: ExternalGuardrailProvider[]; // every provider exactly once; sequential order
+  // Design J: also check the model's reply. Turns are then never streamed. Absent
+  // from an older Worker.
+  scanReplies?: boolean;
 }
 
 // PUT /api/external-guardrails/pipeline. Omitted fields are left unchanged.
@@ -172,6 +180,8 @@ export type GuardrailPipelineUpdate = Partial<GuardrailPipelineConfig>;
 
 // What the pipeline did for one prompt.
 export interface GuardrailPipelineResult {
+  // What was checked: the prompt (before the model) or the reply (after it). Absent = prompt.
+  direction?: "prompt" | "reply";
   mode: GuardrailPipelineMode;
   guardrailOnly: boolean;
   // One per guardrail that ran, in the order run (sequential) or configured order (parallel).
@@ -242,6 +252,7 @@ export interface ExternalGuardrailConfig {
   label: string; // "Palo Alto Networks Prisma AIRS"
   supported: boolean; // false → shown for context, cannot be configured yet
   verified?: boolean; // false → built from the vendor's docs; not yet checked against a real response
+  replyCheck?: boolean; // design J: the vendor documents checking a model reply (not yet verified)
   enabled: boolean;
   region: string; // ExternalGuardrailRegion.id
   endpoint: string; // full scan URL derived from the region (read-only)
@@ -289,7 +300,7 @@ export interface ExternalGuardrailUpdate {
 
 // Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an
 // action neither other prompt triggers (Cato: "anonymize_action", seen 2026-10-06).
-export type GuardrailTestSample = "benign" | "attack" | "pii";
+export type GuardrailTestSample = "benign" | "attack" | "pii" | "reply-benign" | "reply-pii";
 
 // POST /api/external-guardrails/test — scans a fixed prompt with the
 // SAVED configuration (it never sends an unsaved key).
@@ -298,6 +309,7 @@ export interface ExternalGuardrailTestResult {
   result: ExternalGuardrailResult;
   sample?: GuardrailTestSample; // which fixed prompt was scanned
   verified?: boolean; // this provider's parser has been checked against a real payload
+  replyCheck?: boolean; // this provider can check a model reply (the reply-* samples need it)
   // The vendor response's field names, types and booleans — never text (src/responseShape.ts).
   // What an admin hands back so an unverified parser can be checked.
   responseShape?: { status: number; shape: unknown } | null;
@@ -400,7 +412,7 @@ export interface PromptLogRow {
   model: string;
   gatewayId: string | null;
   guarded: number;
-  outcome: "reply" | "guardrails" | "external" | "skipped" | "error"; // external = an external guardrail blocked it; skipped = guardrail-only, model not called
+  outcome: "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "error"; // external = an external guardrail blocked the prompt; external_reply = one withheld the reply (the model ran); skipped = guardrail-only, model not called
   prompt: string;
   reply: string | null;
   redactions: number;

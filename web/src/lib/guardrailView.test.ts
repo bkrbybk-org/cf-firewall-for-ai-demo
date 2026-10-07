@@ -565,3 +565,22 @@ describe("table layout cells", () => {
     expect(col(AIRS).policy).toBe("demo-profile");
   });
 });
+
+describe("design J: a reply-check card is worded for the reply", () => {
+  it("a block withholds the reply — never 'blocked' as if the prompt was", () => {
+    const v = pipelineView(pipe({ direction: "reply", stoppedBy: AIRS, results: [result({ provider: AIRS, outcome: "block" })] }), "blocked");
+    expect(v.headline).toBe("Reply withheld — blocked by 1 of 1 guardrail");
+    expect(v.subline.startsWith("reply check · ")).toBe(true);
+  });
+
+  it("a fail-closed error withholds the reply and names the vendor", () => {
+    const v = pipelineView(pipe({ direction: "reply", stoppedBy: AIRS, results: [result({ provider: AIRS, outcome: "error", error: "timeout" })] }), "blocked");
+    expect(v.headline).toBe("Reply withheld — Prisma AIRS unavailable");
+  });
+
+  it("the prompt card is unchanged", () => {
+    const v = pipelineView(pipe({ stoppedBy: AIRS, results: [result({ provider: AIRS, outcome: "block" })] }), "blocked");
+    expect(v.headline).toBe("Blocked by 1 of 1 guardrail");
+    expect(v.subline.startsWith("reply check")).toBe(false);
+  });
+});

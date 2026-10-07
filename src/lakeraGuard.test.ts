@@ -45,6 +45,19 @@ describe("buildLakeraRequest", () => {
     expect(body).toEqual({ messages: [{ role: "user", content: "hello" }], project_id: "project-1", breakdown: true });
   });
 
+  // Design J: Lakera screens the most recent assistant content as output.
+  it("a reply check adds the reply as the assistant turn, and nothing else changes", () => {
+    const body = JSON.parse(buildLakeraRequest({ ...input, response: "the reply" }).init.body as string);
+    expect(body).toEqual({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "the reply" },
+      ],
+      project_id: "project-1",
+      breakdown: true,
+    });
+  });
+
   // payload:true returns the matched spans of the prompt; the app must not retain those.
   it("never asks for payload spans and never sends metadata", () => {
     const raw = buildLakeraRequest(input).init.body as string;

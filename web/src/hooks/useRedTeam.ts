@@ -61,7 +61,7 @@ type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "e
 async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
-): Promise<{ ray?: string; kind: SendKind; pipeline?: GuardrailPipelineResult }> {
+): Promise<{ ray?: string; kind: SendKind; pipeline?: GuardrailPipelineResult; replyPipeline?: GuardrailPipelineResult }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
@@ -100,7 +100,12 @@ async function sendOne(
     }
     // Guardrail-only: also a 200 with no reply, and also not a failure.
     if (status >= 200 && status < 300 && data?.guardrailOnly) return { ray, pipeline, kind: "skipped" };
-    if (status >= 200 && status < 300 && data?.reply) return { ray, pipeline, kind: "reply" };
+    // Design J: a withheld reply is still a prompt that REACHED the model — the edge and
+    // the prompt check let it through — so it resolves like a reply; the reply check's
+    // verdicts ride along beside the prompt check's, never mixed into them.
+    const replyPipeline = data?.replyGuardrails ?? undefined;
+    if (status >= 200 && status < 300 && data?.externalReplyBlocked) return { ray, pipeline, replyPipeline, kind: "reply" };
+    if (status >= 200 && status < 300 && data?.reply) return { ray, pipeline, replyPipeline, kind: "reply" };
     return { ray, pipeline, kind: "error" };
   } catch {
     return { kind: "error" };

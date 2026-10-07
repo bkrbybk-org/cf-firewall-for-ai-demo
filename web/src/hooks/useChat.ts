@@ -72,6 +72,7 @@ export type Msg =
         dynamicRoute?: string; // set when a dynamic route chose the model
         externalGuardrails?: GuardrailPipelineResult; // the pipeline verdicts that let it through
         notStreamed?: NotStreamedReason; // asked to stream, answered in one piece — and why
+        replyGuardrails?: GuardrailPipelineResult; // design J: the reply check that let this reply through
       };
       ray?: string;
     }
@@ -123,6 +124,23 @@ export type Msg =
       tsMs: number;
       ray?: string;
       pipeline?: GuardrailPipelineResult;
+    }
+  | {
+      id: number;
+      // Design J: the model answered and the reply check withheld the reply. Its own
+      // kind, never an "assistant" message: the client never receives the reply text,
+      // and the turn must not enter multi-turn history (lib/chatHistory.ts pairs
+      // user→assistant only). The model ran, so usage and cost are real.
+      kind: "replyWithheld";
+      ts: string;
+      tsMs: number;
+      ray?: string;
+      replyPipeline: GuardrailPipelineResult;
+      pipeline?: GuardrailPipelineResult; // the prompt check that let it through
+      model?: string;
+      usage?: Usage;
+      cost?: number | null;
+      gateway?: GatewayMeta;
     }
   | { id: number; kind: "error"; text: string; ts: string; tsMs: number }
 
@@ -303,6 +321,21 @@ export function useChat(cfg: {
             code: edge.code,
           });
           outcome = { kind: "blocked", ray };
+        } else if (data?.externalReplyBlocked && data.replyGuardrails) {
+          push({
+            id: nextId(),
+            kind: "replyWithheld",
+            ...stamp(),
+            ray,
+            replyPipeline: data.replyGuardrails,
+            pipeline: data.externalGuardrails,
+            model: data.model,
+            usage: data.usage,
+            cost: data.gateway?.cached === true ? 0 : data.cost,
+            gateway: data.gateway,
+          });
+          // It reached the model: the edge and the prompt check let it through.
+          outcome = { kind: "reply", ray };
         } else if (data?.externalGuardrailBlocked && data.externalGuardrails) {
           push({ id: nextId(), kind: "external", ...stamp(), ray, pipeline: data.externalGuardrails });
           outcome = { kind: "external", ray };
@@ -351,6 +384,7 @@ export function useChat(cfg: {
               dynamicRoute: data.dynamicRoute,
               externalGuardrails: data.externalGuardrails,
               notStreamed: data.notStreamed,
+              replyGuardrails: data.replyGuardrails,
             },
             ray,
           });

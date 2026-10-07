@@ -40,6 +40,8 @@ const OUTCOME_TONE: Record<string, string> = {
   reply: "border-cf-green/50 text-cf-green",
   guardrails: "border-cf-purple/50 text-cf-purple",
   external: "border-cf-amber/50 text-cf-amber",
+  // Design J: an external guardrail withheld the model's reply — the same control's amber.
+  external_reply: "border-cf-amber/50 text-cf-amber",
   // Guardrail-only: passed every check, the model was never called. Blue, like
   // its series — a neutral "nothing answered", not a reply (green) or a block.
   skipped: "border-cf-blue/50 text-cf-blue",
@@ -47,7 +49,7 @@ const OUTCOME_TONE: Record<string, string> = {
 };
 
 // Outcomes whose stored value reads badly as a label.
-const OUTCOME_LABEL: Record<string, string> = { skipped: "model skipped" };
+const OUTCOME_LABEL: Record<string, string> = { skipped: "model skipped", external_reply: "reply withheld" };
 
 type SortKey = "ts" | "outcome" | "route" | "model" | "tokens" | "redactions" | "latency";
 type SortDir = "asc" | "desc";
@@ -205,7 +207,9 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
                 <div className="text-[11px] text-subtle">
                   {r.outcome === "skipped"
                     ? "No reply — the model was skipped (guardrail-only mode)."
-                    : `Reply not captured${r.outcome === "reply" ? " (streamed)" : ""}.`}
+                    : r.outcome === "external_reply"
+                      ? "Reply withheld — the model answered, and an external guardrail stopped the reply. It is not stored."
+                      : `Reply not captured${r.outcome === "reply" ? " (streamed)" : ""}.`}
                 </div>
               )}
               <div className="text-[11px] text-subtle">

@@ -32,7 +32,10 @@ import {
   loadPipeline,
   PROVIDER_IDS,
   PROVIDERS,
+  loadGuardrailSetup,
   runPipeline,
+  runReplyCheck,
+  willCheckReply,
   save,
   savePipeline,
   scanWithKey,
@@ -79,6 +82,7 @@ import type {
   ChatTurn,
   Env,
   ExternalGuardrailProvider,
+  GuardrailPipelineResult,
   NotStreamedReason,
   PromptAnalytics,
   PromptLogRow,
@@ -688,6 +692,14 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     stream = false;
     notStreamed = "guarded-gateway";
   }
+  // Design J: read the guardrail settings once, now — whether the reply will be checked
+  // decides whether this turn may stream, and that has to be known before the model runs.
+  const guardrailSetup = await loadGuardrailSetup(env);
+  const checkReply = willCheckReply(guardrailSetup);
+  if (stream && checkReply) {
+    stream = false;
+    notStreamed = "reply-scan";
+  }
 
   const messages = [
     { role: "system", content: systemPrompt },
@@ -729,7 +741,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // edge scan (which happened before this Worker was invoked) and BEFORE the
   // model, on both routes. null when no provider is enabled and guardrail-only
   // is off, in which case nothing below changes.
-  const external = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw });
+  const external = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw, setup: guardrailSetup });
   // Carried on every response from here on, so the client can show the verdicts
   // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
   // because a header value must stay within Latin-1. NEVER with raw responses:
@@ -757,6 +769,38 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // latency_ms is documented as the model's latency, so the clock restarts
   // after the guardrail rather than charging its round trip to the model.
   started = Date.now();
+
+  // Design J: check a finished reply before it is returned. null → the reply is not
+  // checked (switch off, nobody able to check, or an empty reply: nothing to check),
+  // and the turn goes on as before. A block withholds the reply: the model ran and its
+  // cost was spent, so usage and cost are still reported — but not one word of the
+  // reply leaves the Worker, and the prompt log stores none of it. latency_ms stays
+  // the MODEL's time (taken before the check), like the guardrail-free path.
+  const replyHeaders = (rc: GuardrailPipelineResult | null): Record<string, string> =>
+    rc ? { ...extHeaders, "x-external-guardrails-reply": encodeURIComponent(JSON.stringify(stripRaw(rc))) } : extHeaders;
+  const checkTheReply = async (
+    reply: string,
+    ranModel: string,
+  ): Promise<{ rc: GuardrailPipelineResult | null; modelMs: number }> => {
+    const modelMs = Date.now() - started;
+    if (!checkReply || reply.trim() === "") return { rc: null, modelMs };
+    const rc = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
+      captureRaw: includeRaw,
+    });
+    return { rc, modelMs };
+  };
+  const withheld = (
+    rc: GuardrailPipelineResult,
+    fields: { model: string; usage: unknown; cost: number | null; gateway?: unknown },
+    tokens: { promptTokens: number; completionTokens: number },
+    modelMs: number,
+  ): Response => {
+    log("external_reply", { reply: null, ...tokens, streamed: false, latencyMs: modelMs });
+    return Response.json(
+      { externalReplyBlocked: true, ...fields, ray, externalGuardrails: external ?? undefined, replyGuardrails: rc, notStreamed },
+      { headers: replyHeaders(rc) },
+    );
+  };
 
   // AI Gateway path — always REST (see runGatewayRest doc comment for why).
   if (gateway) {
@@ -817,23 +861,30 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const promptTokens = r.promptTokens ?? Math.ceil((systemPrompt.length + prompt.length) / 4);
     const completionTokens = r.completionTokens ?? Math.ceil(r.reply.length / 4);
     const cost = r.cached === true ? 0 : price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
-    log("reply", { reply: r.reply, promptTokens, completionTokens, streamed: false });
+    const usage = {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens + completionTokens,
+      estimated: r.promptTokens == null,
+    };
+    const { rc, modelMs } = await checkTheReply(r.reply, ranModel);
+    const gatewayMeta = { gatewayId, cached: r.cached, latencyMs: modelMs, logId: r.logId, guarded };
+    if (rc?.stoppedBy) {
+      return withheld(rc, { model: ranModel, usage, cost, gateway: gatewayMeta }, { promptTokens, completionTokens }, modelMs);
+    }
+    log("reply", { reply: r.reply, promptTokens, completionTokens, streamed: false, latencyMs: modelMs });
     return Response.json({
       reply: r.reply,
       model: ranModel,
       ray,
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: promptTokens + completionTokens,
-        estimated: r.promptTokens == null,
-      },
+      usage,
       cost,
-      gateway: { gatewayId, cached: r.cached, latencyMs: Date.now() - started, logId: r.logId, guarded },
+      gateway: gatewayMeta,
       dynamicRoute: dynamicRoute || undefined,
       externalGuardrails: external ?? undefined,
+      replyGuardrails: rc ?? undefined,
       notStreamed,
-    }, { headers: extHeaders });
+    }, { headers: replyHeaders(rc) });
   }
 
   // Direct Workers AI path — plain binding call, no gateway involved at all.
@@ -881,22 +932,22 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
 
     const price = MODEL_BY_ID.get(model);
     const cost = price ? (promptTokens / 1e6) * price.priceIn + (completionTokens / 1e6) * price.priceOut : null;
+    const usage = { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: totalTokens, estimated };
 
-    log("reply", { reply, promptTokens, completionTokens, streamed: false });
+    const { rc, modelMs } = await checkTheReply(reply, model);
+    if (rc?.stoppedBy) return withheld(rc, { model, usage, cost }, { promptTokens, completionTokens }, modelMs);
+    log("reply", { reply, promptTokens, completionTokens, streamed: false, latencyMs: modelMs });
     return Response.json({
       reply,
       model,
       ray,
-      usage: {
-        prompt_tokens: promptTokens,
-        completion_tokens: completionTokens,
-        total_tokens: totalTokens,
-        estimated,
-      },
+      usage,
       cost, // USD, estimated from published unit pricing
       gateway: undefined, // never set on the direct path
       externalGuardrails: external ?? undefined,
-    }, { headers: extHeaders });
+      replyGuardrails: rc ?? undefined,
+      notStreamed,
+    }, { headers: replyHeaders(rc) });
   } catch (err) {
     log("error", { reply: null, streamed: false });
     return Response.json({ error: `Workers AI error (${model}): ${aiErrorText(err)}`, model }, { status: 502, headers: extHeaders });
@@ -1227,7 +1278,10 @@ export async function handlePromptAnalytics(url: URL, env: Env): Promise<Respons
       // Explicit per outcome: the old `else row.reply++` would have counted an
       // external-guardrail block as a reply the model gave.
       if (r.outcome === "guardrails") row.guardrails++;
-      else if (r.outcome === "external") row.external++;
+      // A withheld reply is an external-guardrail block too (the series is "who blocked"),
+      // counted with the prompt blocks — never as a reply the user got. The row keeps its
+      // own outcome, so the table and the outcome filter still tell the two apart.
+      else if (r.outcome === "external" || r.outcome === "external_reply") row.external++;
       else if (r.outcome === "skipped") row.skipped++;
       else if (r.outcome === "error") row.error++;
       else row.reply++;
@@ -1648,6 +1702,22 @@ const GUARDRAIL_TEST_PROMPTS = {
   pii: "Can you please provide me with a due diligence check for SSN 078-05-1120?",
 } as const;
 
+// Design J's verification step: a fixed prompt and a fixed REPLY, sent the way the reply
+// check sends them, so the shape of a vendor's real reply verdict can be seen before
+// reply checking is called verified. 078-05-1120 is the long-void Woolworth sample SSN,
+// a test value, never a person's.
+const GUARDRAIL_TEST_REPLIES = {
+  "reply-benign": {
+    prompt: "Hello! What can you help me with today?",
+    response: "I can answer questions about Cloudflare's security products and help you try the demo.",
+  },
+  "reply-pii": {
+    prompt: "What SSN do you have on file for the account?",
+    response: "The SSN on file for that account is 078-05-1120.",
+  },
+} as const;
+type GuardrailTestSample = keyof typeof GUARDRAIL_TEST_PROMPTS | keyof typeof GUARDRAIL_TEST_REPLIES;
+
 export async function handleExternalGuardrailsTest(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return Response.json({ error: "Use POST" }, { status: 405 });
   // A test sends the STORED key to the vendor, so it is a write-level action too.
@@ -1656,12 +1726,14 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ error: hint }, { status: 400 });
   let provider: unknown;
-  let sample: keyof typeof GUARDRAIL_TEST_PROMPTS = "benign";
+  let sample: GuardrailTestSample = "benign";
   try {
     const b = (await request.json()) as { provider?: unknown; sample?: unknown } | null;
     provider = b?.provider;
     // Only a sample NAME is accepted, never text; anything else is the benign default.
-    if (b?.sample === "attack" || b?.sample === "pii") sample = b.sample;
+    if (b?.sample === "attack" || b?.sample === "pii" || b?.sample === "reply-benign" || b?.sample === "reply-pii") {
+      sample = b.sample;
+    }
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
   }
@@ -1671,6 +1743,9 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
   try {
     const c = (await loadAll(env.DB!)).find((x) => x.provider === provider)!;
     const spec = PROVIDERS[c.provider];
+    if ((sample === "reply-benign" || sample === "reply-pii") && !spec.replyCheck) {
+      return Response.json({ error: `${spec.label} does not check replies here, so there is no reply to test` }, { status: 400 });
+    }
     // "API key" keeps its acronym; "Collector token" reads as "collector token".
     const keyWord = /^[A-Z]{2}/.test(spec.keyLabel) ? spec.keyLabel : spec.keyLabel.toLowerCase();
     if (!c.apiKeyEnc) return Response.json({ error: `No ${keyWord} saved` }, { status: 400 });
@@ -1698,8 +1773,19 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
       }
       return res;
     };
-    const result = await scanWithKey(c, apiKey, { prompt: GUARDRAIL_TEST_PROMPTS[sample], model: "", ray: null }, recording);
-    return Response.json({ ok: result.outcome !== "error", result, sample, verified: spec.verified, responseShape });
+    const input =
+      sample === "reply-benign" || sample === "reply-pii"
+        ? { ...GUARDRAIL_TEST_REPLIES[sample], model: "", ray: null }
+        : { prompt: GUARDRAIL_TEST_PROMPTS[sample], model: "", ray: null };
+    const result = await scanWithKey(c, apiKey, input, recording);
+    return Response.json({
+      ok: result.outcome !== "error",
+      result,
+      sample,
+      verified: spec.verified,
+      replyCheck: spec.replyCheck,
+      responseShape,
+    });
   } catch (err) {
     return Response.json({ error: clientError(err, "Connection test") }, { status: 502 });
   }

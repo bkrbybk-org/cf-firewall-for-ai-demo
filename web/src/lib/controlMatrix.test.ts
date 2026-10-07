@@ -123,3 +123,35 @@ describe("controlMatrix — layers that were off", () => {
     expect(c["ext:prisma-airs"].state).toBe("passed");
   });
 });
+
+describe("controlMatrix — the reply check (design J)", () => {
+  const prompt = P({ results: [R({ provider: "prisma-airs", outcome: "allow" })] });
+  const reply = P({
+    direction: "reply",
+    stoppedBy: "prisma-airs",
+    results: [R({ provider: "prisma-airs", outcome: "block", detected: ["dlp"] })],
+    notRun: [{ provider: "cato-ai-security", reason: "Not run: Cato Networks AI Security does not check replies here" }],
+  });
+
+  it("a withheld reply: the model answered, the reply check stopped it, and it is worded for the reply", () => {
+    const c = byKey(m({ kind: "replyWithheld", pipeline: prompt, replyPipeline: reply }));
+    expect(c["ext:prisma-airs"]).toMatchObject({ layer: "external", state: "passed", detail: "Prisma AIRS allowed the prompt." });
+    expect(c.model).toMatchObject({ state: "reached", stateLabel: "answered · withheld" });
+    expect(c["reply:prisma-airs"]).toMatchObject({
+      layer: "replyCheck",
+      label: "Prisma AIRS (reply)",
+      state: "stopped",
+      decisive: true,
+      detail: "Prisma AIRS (reply) blocked the reply (dlp).",
+    });
+    // A guardrail that cannot check replies is "did not run", never a pass.
+    expect(c["reply:cato-ai-security"]).toMatchObject({ state: "notReached", stateLabel: "did not run" });
+    // The reply check comes after the model.
+    const keys = m({ kind: "replyWithheld", pipeline: prompt, replyPipeline: reply }).map((x) => x.key);
+    expect(keys.indexOf("reply:prisma-airs")).toBeGreaterThan(keys.indexOf("model"));
+  });
+
+  it("no reply check → no reply cells at all, never an empty pass", () => {
+    expect(m({ kind: "assistant", pipeline: prompt }).some((x) => x.layer === "replyCheck")).toBe(false);
+  });
+});

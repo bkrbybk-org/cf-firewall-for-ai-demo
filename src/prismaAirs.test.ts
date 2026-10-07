@@ -47,6 +47,21 @@ describe("buildPrismaAirsRequest", () => {
 });
 
 describe("parsePrismaAirsResponse", () => {
+  // Design J: the reply check sends the prompt too, and `action` covers both — so a
+  // prompt detection must never read as something the model said.
+  it("a reply check lists the reply's detections, and marks any prompt detection as the prompt's", () => {
+    const body = { action: "block", response_detected: { dlp: true, toxic_content: false }, prompt_detected: { injection: true } };
+    expect(parsePrismaAirsResponse(200, body, 5, true).detected).toEqual(["dlp", "prompt:injection"]);
+    // The prompt check is unchanged: response flags are not its business.
+    expect(parsePrismaAirsResponse(200, body, 5).detected).toEqual(["injection"]);
+  });
+
+  it("a reply check sends the reply in the same contents item as its prompt", () => {
+    const b = JSON.parse(buildPrismaAirsRequest({ ...input, response: "the reply" }).init.body as string);
+    expect(b.contents).toEqual([{ prompt: "hello", response: "the reply" }]);
+    expect(JSON.parse(buildPrismaAirsRequest(input).init.body as string).contents).toEqual([{ prompt: "hello" }]);
+  });
+
   it("maps an allow verdict", () => {
     const r = parsePrismaAirsResponse(200, { action: "allow", category: "benign", scan_id: "s1", report_id: "r1", prompt_detected: {} }, 42);
     expect(r).toMatchObject({ outcome: "allow", action: "allow", category: "benign", scanId: "s1", reportId: "r1", latencyMs: 42 });

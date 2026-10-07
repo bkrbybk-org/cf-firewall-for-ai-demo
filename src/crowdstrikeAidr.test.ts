@@ -29,6 +29,18 @@ describe("buildAidrRequest", () => {
   });
 
   // The prompt already leaves Cloudflare for a third party; the person behind it does not need to as well.
+  // Design J: a reply check is the documented output event, with the reply as the assistant turn.
+  it("a reply check is an output event carrying the prompt then the reply", () => {
+    const body = JSON.parse(buildAidrRequest({ ...input, response: "the reply" }).init.body as string);
+    expect(body.event_type).toBe("output");
+    expect(body.guard_input).toEqual({
+      messages: [
+        { role: "user", content: "hello" },
+        { role: "assistant", content: "the reply" },
+      ],
+    });
+  });
+
   it("never sends end-user identity (user_id, source_ip)", () => {
     const body = JSON.parse(buildAidrRequest(input).init.body as string);
     expect(body).not.toHaveProperty("user_id");

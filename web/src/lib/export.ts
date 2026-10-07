@@ -54,8 +54,11 @@ export interface ExportTurn {
   prompt: string;
   // "skipped" = guardrail-only: the model was deliberately not called, so there
   // is no reply and it is neither a block nor an error.
-  outcome: "reply" | "skipped" | "blocked" | "error";
+  // "withheld" (design J) = the model answered and the reply check stopped the reply.
+  // There is no reply text to export: the client never received it.
+  outcome: "reply" | "skipped" | "blocked" | "withheld" | "error";
   externalGuardrails?: ExportGuardrails;
+  replyGuardrails?: ExportGuardrails; // design J: the reply check
   model?: string;
   ray?: string;
   reply?: string;
@@ -99,6 +102,20 @@ function pairTurns(messages: Msg[]): ExportTurn[] {
         usage: next.meta.usage,
         cost: next.meta.cost,
         externalGuardrails: next.meta.externalGuardrails && summarizePipeline(next.meta.externalGuardrails),
+        replyGuardrails: next.meta.replyGuardrails && summarizePipeline(next.meta.replyGuardrails),
+      });
+    } else if (next.kind === "replyWithheld") {
+      turns.push({
+        ts: next.ts,
+        tsMs: next.tsMs,
+        prompt: m.text,
+        outcome: "withheld",
+        model: next.model,
+        ray: next.ray,
+        usage: next.usage,
+        cost: next.cost,
+        externalGuardrails: next.pipeline && summarizePipeline(next.pipeline),
+        replyGuardrails: summarizePipeline(next.replyPipeline),
       });
     } else if (next.kind === "blocked") {
       turns.push({
@@ -249,15 +266,23 @@ export function toMarkdown(exp: SessionExport): string {
           (t.externalGuardrails?.results.length ? " and every enabled external guardrail" : "; no external guardrail was enabled") +
           ". The model was not called, and AI Gateway Guardrails did not run.",
       );
+    } else if (t.outcome === "withheld") {
+      // The model ran and was paid for; its reply never reached this browser, so it
+      // is not here either — say so rather than leave a blank that reads as empty.
+      const cost = t.cost != null ? `, ~$${t.cost.toFixed(6)}` : "";
+      const tok = t.usage ? `, ${t.usage.estimated ? "~" : ""}${t.usage.total_tokens} tokens` : "";
+      lines.push(
+        `**Reply withheld** (${t.model ?? "model"}${tok}${cost}) — the model answered, and the reply check stopped the reply` +
+          `${t.replyGuardrails?.stoppedBy ? ` (${t.replyGuardrails.stoppedBy})` : ""}. The reply was not shown and is not in this export.`,
+      );
     } else {
       const cost = t.cost != null ? `, ~$${t.cost.toFixed(6)}` : "";
       lines.push(`**Reply** (${t.model ?? "model"}${cost}):`, "", t.reply ?? "");
     }
     lines.push("");
     if (t.ray) lines.push(`ray: \`${t.ray}\``);
-    if (t.externalGuardrails) {
-      const g = t.externalGuardrails;
-      lines.push(`external guardrails (${g.mode}, ${g.latencyMs} ms total):`);
+    const pipelineLines = (title: string, g: ExportGuardrails, stopped: string) => {
+      lines.push(`${title} (${g.mode}, ${g.latencyMs} ms total):`);
       for (const r of g.results) {
         const what =
           r.outcome === "error"
@@ -265,10 +290,12 @@ export function toMarkdown(exp: SessionExport): string {
               ? `no verdict (${noVerdictReason(r).toLowerCase()}) — went on (fail open)`
               : `no verdict (${noVerdictReason(r).toLowerCase()})`
             : r.outcome;
-        lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${r.provider === g.stoppedBy ? " — stopped the turn" : ""}`);
+        lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${r.provider === g.stoppedBy ? ` — ${stopped}` : ""}`);
       }
       for (const n of g.notRun) lines.push(`- ${n.provider}: did not run — ${n.reason}`);
-    }
+    };
+    if (t.externalGuardrails) pipelineLines("external guardrails", t.externalGuardrails, "stopped the turn");
+    if (t.replyGuardrails) pipelineLines("reply check", t.replyGuardrails, "withheld the reply");
     if (t.verdict?.available) {
       const v = t.verdict;
       lines.push(`edge verdict: **${v.action}**`);

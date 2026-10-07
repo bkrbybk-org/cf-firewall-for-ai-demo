@@ -31,6 +31,10 @@ import type { ExternalGuardrailResult, GuardrailPipelineResult } from "../lib/ty
 const WHERE_IT_RUNS =
   "This check runs after the Cloudflare edge scan, inside the Worker — a separate control from both the edge WAF and AI Gateway Guardrails.";
 const EXPLAIN_BLOCKED = `${WHERE_IT_RUNS} The prompt was not sent to the model.`;
+// Design J: the reply check runs after the model, so the model did answer — and was paid
+// for — but its reply never left the Worker.
+const EXPLAIN_REPLY_WITHHELD =
+  "This check runs inside the Worker after the model answered, on the model's reply. The model ran (its tokens and cost are real), but its reply was not shown — it never left the Worker.";
 // Guardrail-only is a test result, not an answer: no reply, tokens or cost exist, and
 // AI Gateway Guardrails did not run either — they are part of the model call.
 const EXPLAIN_GUARDRAIL_ONLY = `${WHERE_IT_RUNS} The model was not called, so there is no reply, no tokens and no cost. AI Gateway Guardrails did not run either — they are part of the model call.`;
@@ -550,7 +554,7 @@ export function ExternalGuardrailBlockedCard({
 }) {
   const view = pipelineView(pipeline, "blocked");
   return (
-    <CardShell view={view} explainer={EXPLAIN_BLOCKED}>
+    <CardShell view={view} explainer={pipeline.direction === "reply" ? EXPLAIN_REPLY_WITHHELD : EXPLAIN_BLOCKED}>
       <PipelineBody view={view} layout={layout} pipeline={pipeline} />
     </CardShell>
   );
@@ -591,7 +595,7 @@ export function ExternalGuardrailBadges({ pipeline }: { pipeline: GuardrailPipel
   return (
     <>
       {pipeline.results.map((r) => (
-        <ExternalGuardrailBadge key={r.provider} result={r} />
+        <ExternalGuardrailBadge key={r.provider} result={r} reply={pipeline.direction === "reply"} />
       ))}
     </>
   );
@@ -601,8 +605,9 @@ export function ExternalGuardrailBadges({ pipeline }: { pipeline: GuardrailPipel
 // GUARDRAILS / ROUTE chips in Chat.tsx's meta row. A "block" or a fail-closed
 // error never reaches here (those render the card), so they return nothing
 // rather than a chip that would imply the reply was allowed.
-export function ExternalGuardrailBadge({ result }: { result: ExternalGuardrailResult }) {
-  const name = providerLabel(result.provider);
+// `reply` (design J): the chip is for the reply check, so it is named and worded for the reply.
+export function ExternalGuardrailBadge({ result, reply = false }: { result: ExternalGuardrailResult; reply?: boolean }) {
+  const name = reply ? `${providerLabel(result.provider)} (reply)` : providerLabel(result.provider);
   if (result.outcome === "allow") {
     // An allow from a scan where a detection service timed out or errored only
     // covers what did run, so it gets the amber "partial" tone rather than the
@@ -613,7 +618,11 @@ export function ExternalGuardrailBadge({ result }: { result: ExternalGuardrailRe
     if (result.transformed) {
       return (
         <span
-          title={`${name} redacted part of this prompt, but this app does not apply the redaction — the model received the original prompt.`}
+          title={
+            reply
+              ? `${name} redacted part of this reply, but this app does not apply the redaction — the reply is shown as the model wrote it.`
+              : `${name} redacted part of this prompt, but this app does not apply the redaction — the model received the original prompt.`
+          }
           className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
         >
           {name} · allow · redaction not applied · {result.latencyMs} ms
@@ -657,7 +666,7 @@ export function ExternalGuardrailBadge({ result }: { result: ExternalGuardrailRe
         title={result.error}
         className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
       >
-        {name} unavailable — sent unscanned
+        {name} unavailable — {reply ? "reply shown unchecked" : "sent unscanned"}
       </span>
     );
   }

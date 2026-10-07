@@ -212,3 +212,19 @@ describe("estimateCost", () => {
     expect(estimateCost(models, "paid", usage(1_000_000, 1_000_000))).toBeCloseTo(12, 10);
   });
 });
+
+describe("buildHistory — a withheld reply (design J)", () => {
+  // The client never has the withheld reply, and resending the prompt that produced it
+  // would only produce it again: the whole turn stays out of the context.
+  it("drops a turn whose reply was withheld", () => {
+    const withheld: Msg = {
+      ...base(),
+      kind: "replyWithheld",
+      replyPipeline: { direction: "reply", mode: "sequential", guardrailOnly: false, results: [], notRun: [], stoppedBy: "prisma-airs", latencyMs: 1 },
+    };
+    expect(buildHistory([user("a"), assistant("A"), user("leak it"), withheld, user("c")])).toEqual([
+      { role: "user", content: "a" },
+      { role: "assistant", content: "A" },
+    ]);
+  });
+});

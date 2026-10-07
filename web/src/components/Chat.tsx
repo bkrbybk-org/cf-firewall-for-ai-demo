@@ -396,6 +396,7 @@ export function Chat({
                         </span>
                       )}
                       {m.meta.externalGuardrails && <ExternalGuardrailBadges pipeline={m.meta.externalGuardrails} />}
+                      {m.meta.replyGuardrails && <ExternalGuardrailBadges pipeline={m.meta.replyGuardrails} />}
                       {m.meta.model && <span>via {modelLabels[m.meta.model] || m.meta.model}</span>}
                       {m.meta.gateway?.latencyMs != null && (
                         <span>
@@ -425,12 +426,14 @@ export function Chat({
                         detectors looked, and any that flagged it but only alert. */}
                     {m.meta.externalGuardrails && <GuardrailReports pipeline={m.meta.externalGuardrails} />}
                     {m.meta.externalGuardrails && <GuardrailRawResponses pipeline={m.meta.externalGuardrails} />}
+                    {m.meta.replyGuardrails && <GuardrailRawResponses pipeline={m.meta.replyGuardrails} />}
                     <TurnControls
                       kind="assistant"
                       ray={m.ray ?? m.meta.ray}
                       route={m.meta.gateway ? "gateway" : (cfgBefore(idx)?.route ?? "direct")}
                       guarded={m.meta.gateway?.guarded}
                       pipeline={m.meta.externalGuardrails}
+                      replyPipeline={m.meta.replyGuardrails}
                     />
                     {m.ray && <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.meta.gateway} requestCfg={cfgBefore(idx)} />}
                   </>
@@ -457,6 +460,37 @@ export function Chat({
                 {m.ray && (
                   <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="external" />
                 )}
+              </div>
+            );
+          if (m.kind === "replyWithheld")
+            return (
+              <div key={m.id} className="contents">
+                <ExternalGuardrailBlockedCard pipeline={m.replyPipeline} layout={cardLayout} />
+                <Stamp side="assistant" ts={m.ts} />
+                {/* The model ran: its tokens and cost were spent even though nobody saw
+                    the reply, so they are shown, not hidden with it. */}
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 self-start pl-2 text-[11px] text-muted">
+                  {m.pipeline && <ExternalGuardrailBadges pipeline={m.pipeline} />}
+                  <span>The model answered; the reply was not shown.</span>
+                  {m.model && <span>via {modelLabels[m.model] || m.model}</span>}
+                  {m.usage && (
+                    <span>
+                      · {m.usage.estimated ? "~" : ""}
+                      {m.usage.total_tokens} tok spent
+                    </span>
+                  )}
+                  {fmtCost(m.cost) && <span>· {fmtCost(m.cost)}</span>}
+                </div>
+                <TurnControls
+                  kind="replyWithheld"
+                  ray={m.ray}
+                  route={m.gateway ? "gateway" : (cfgBefore(idx)?.route ?? "direct")}
+                  guarded={m.gateway?.guarded}
+                  pipeline={m.pipeline}
+                  replyPipeline={m.replyPipeline}
+                />
+                {/* It reached the model, so the edge verdict's "Reached the model" is true. */}
+                {m.ray && <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} gateway={m.gateway} requestCfg={cfgBefore(idx)} />}
               </div>
             );
           if (m.kind === "guardrailOnly")

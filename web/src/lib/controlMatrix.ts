@@ -15,7 +15,8 @@ import { noVerdictReason, providerLabel } from "./guardrailView";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 import type { Outcome } from "./verdict";
 
-export type MatrixLayer = "edge" | "external" | "gatewayGuardrails" | "model";
+// "replyCheck" (design J): the external guardrails again, on the model's reply — after the model.
+export type MatrixLayer = "edge" | "external" | "gatewayGuardrails" | "model" | "replyCheck";
 
 export type CellState =
   | "stopped" // this layer ended the turn
@@ -43,12 +44,14 @@ export type EdgeKnowledge = Outcome | "pending" | "unavailable";
 
 export interface ControlMatrixInput {
   // Which chat message ended the turn.
-  kind: "assistant" | "blocked" | "guardrails" | "external" | "guardrailOnly";
+  // "replyWithheld" (design J): the model answered and the reply check withheld the reply.
+  kind: "assistant" | "blocked" | "guardrails" | "external" | "guardrailOnly" | "replyWithheld";
   route: "direct" | "gateway";
   // The edge verdict for this ray, when the lookup has finished; "pending" while it
   // runs; "unavailable" when it cannot be had (no ray, analytics off, expired).
   edge: EdgeKnowledge;
   pipeline?: GuardrailPipelineResult;
+  replyPipeline?: GuardrailPipelineResult; // the reply check, when the reply was checked
   guarded?: boolean; // gateway route: this gateway has Guardrails on
   guardrailsDirection?: "prompt" | "response"; // kind "guardrails" only
 }
@@ -105,35 +108,40 @@ function edgeCell(i: ControlMatrixInput): MatrixCell {
 }
 
 function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, multiBlock: boolean): MatrixCell {
-  const name = providerLabel(r.provider);
-  const key = `ext:${r.provider}`;
+  // The same rules for the reply check, worded for what it looked at: a reply
+  // verdict is never shown as one on the prompt.
+  const reply = p.direction === "reply";
+  const what = reply ? "the reply" : "the prompt";
+  const layer: MatrixLayer = reply ? "replyCheck" : "external";
+  const name = reply ? `${providerLabel(r.provider)} (reply)` : providerLabel(r.provider);
+  const key = `${reply ? "reply" : "ext"}:${r.provider}`;
   if (r.outcome === "block") {
     const why = r.detected?.length ? ` (${r.detected.join(", ")})` : "";
     const decisive = multiBlock || p.stoppedBy === r.provider;
-    return cell(key, "external", name, "stopped", `${name} blocked the prompt${why}.`, decisive, "blocked");
+    return cell(key, layer, name, "stopped", `${name} blocked ${what}${why}.`, decisive, "blocked");
   }
   if (r.outcome === "allow") {
     if (r.detectOnly) {
       // Lakera's Detect mode, or Cato's null required_action — named generically here.
-      return cell(key, "external", name, "flagged", `${name} detected ${r.detected?.join(", ") || "something"} but only alerted — it did not block.`, false, "alerts only");
+      return cell(key, layer, name, "flagged", `${name} detected ${r.detected?.join(", ") || "something"} but only alerted — it did not block.`, false, "alerts only");
     }
     if (r.incomplete || r.transformed) {
-      return cell(key, "external", name, "passed", `${name} allowed it, but ${r.incomplete ? "not every detection service ran" : "its redaction was not applied"}.`, false, "passed · partial");
+      return cell(key, layer, name, "passed", `${name} allowed it, but ${r.incomplete ? "not every detection service ran" : "its redaction was not applied"}.`, false, "passed · partial");
     }
-    return cell(key, "external", name, "passed", `${name} allowed the prompt.`);
+    return cell(key, layer, name, "passed", `${name} allowed ${what}.`);
   }
   // An error is never a verdict.
   if (r.failedOpen) {
     const why = noVerdictReason(r);
-    return cell(key, "external", name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail open, so the prompt went on without its verdict.`, false, "no verdict · fail open");
+    return cell(key, layer, name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail open, so ${what} went on without its verdict.`, false, "no verdict · fail open");
   }
   const why = noVerdictReason(r);
   return cell(
     key,
-    "external",
+    layer,
     name,
     "unavailable",
-    `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed${p.stoppedBy === r.provider ? ", so the turn stopped here" : ""}. Not a verdict.`,
+    `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed${p.stoppedBy === r.provider ? `, so ${reply ? "the reply was withheld" : "the turn stopped"} here` : ""}. Not a verdict.`,
     p.stoppedBy === r.provider,
     "no verdict · fail closed",
   );
@@ -166,7 +174,7 @@ function gatewayGuardrailsCell(i: ControlMatrixInput): MatrixCell {
       ? cell("aig", "gatewayGuardrails", L, "stopped", "Guardrails blocked the model's response (2017).", true, "blocked reply")
       : cell("aig", "gatewayGuardrails", L, "stopped", "Guardrails blocked the prompt before the model (2016).", true, "blocked prompt");
   }
-  if (i.kind !== "assistant") {
+  if (i.kind !== "assistant" && i.kind !== "replyWithheld") {
     const why = i.kind === "guardrailOnly" ? "Guardrail-only mode skips the model call, and Guardrails with it." : "The model call never started.";
     return cell("aig", "gatewayGuardrails", L, "notReached", why);
   }
@@ -177,6 +185,9 @@ function gatewayGuardrailsCell(i: ControlMatrixInput): MatrixCell {
 function modelCell(i: ControlMatrixInput): MatrixCell {
   const L = "Model";
   if (i.kind === "assistant") return cell("model", "model", L, "reached", "The model answered.");
+  if (i.kind === "replyWithheld") {
+    return cell("model", "model", L, "reached", "The model answered, but an external guardrail withheld the reply.", false, "answered · withheld");
+  }
   if (i.kind === "guardrailOnly") return cell("model", "model", L, "off", "Guardrail-only mode: the model was deliberately not called.", false, "skipped");
   if (i.kind === "guardrails" && i.guardrailsDirection === "response") {
     return cell("model", "model", L, "reached", "The model answered, but Guardrails withheld the reply.", false, "answered · withheld");
@@ -184,6 +195,20 @@ function modelCell(i: ControlMatrixInput): MatrixCell {
   return cell("model", "model", L, "notReached", "The prompt was stopped before the model.");
 }
 
+// Design J: the reply check, after the model. Nothing when the reply was not checked —
+// an absent check is not shown as a pass.
+function replyCells(i: ControlMatrixInput): MatrixCell[] {
+  const p = i.replyPipeline;
+  if (!p) return [];
+  const multiBlock = p.mode === "parallel" && p.results.filter((r) => r.outcome === "block").length >= 2;
+  return [
+    ...p.results.map((r) => vendorCell(r, p, multiBlock)),
+    ...p.notRun.map((n) =>
+      cell(`reply:${n.provider}`, "replyCheck", `${providerLabel(n.provider)} (reply)`, "notReached", `Did not check the reply: ${n.reason}.`, false, "did not run"),
+    ),
+  ];
+}
+
 export function controlMatrix(i: ControlMatrixInput): MatrixCell[] {
-  return [edgeCell(i), ...externalCells(i), gatewayGuardrailsCell(i), modelCell(i)];
+  return [edgeCell(i), ...externalCells(i), gatewayGuardrailsCell(i), modelCell(i), ...replyCells(i)];
 }

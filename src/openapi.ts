@@ -148,7 +148,7 @@ export const openapi = {
             },
             content: {
               "application/json": {
-                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked"), ref("GuardrailOnlyResult")] },
+                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked"), ref("ExternalReplyBlocked"), ref("GuardrailOnlyResult")] },
               },
               "text/event-stream": {
                 schema: {
@@ -279,7 +279,7 @@ export const openapi = {
           {
             name: "outcome",
             in: "query",
-            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `skipped`, `error`. Unknown values are ignored.",
+            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `external_reply`, `skipped`, `error`. Unknown values are ignored.",
             schema: { type: "string" },
             example: "guardrails,error",
           },
@@ -427,7 +427,7 @@ export const openapi = {
               schema: obj(
                 {
                   provider: ref("ExternalGuardrailProvider"),
-                  sample: { type: "string", enum: ["benign", "attack", "pii"], description: "Which FIXED prompt to scan (`pii` carries the example SSN from Cato's API docs); anything else is `benign`. No prompt text is accepted." },
+                  sample: { type: "string", enum: ["benign", "attack", "pii", "reply-benign", "reply-pii"], description: "Which FIXED prompt to scan (`pii` carries the example SSN from Cato's API docs); anything else is `benign`. No prompt text is accepted. `reply-benign` and `reply-pii` send a fixed prompt WITH a fixed model reply, as the reply check does (design J); `reply-pii`'s reply carries the void sample SSN 078-05-1120. A provider with `replyCheck: false` refuses them (400)." },
                 },
                 ["provider"],
               ),
@@ -441,8 +441,9 @@ export const openapi = {
               {
                 ok: bool(),
                 result: ref("ExternalGuardrailResult"),
-                sample: { type: "string", enum: ["benign", "attack", "pii"] },
+                sample: { type: "string", enum: ["benign", "attack", "pii", "reply-benign", "reply-pii"] },
                 verified: bool("This provider's parser has been checked against a real payload."),
+                replyCheck: bool("The vendor documents checking a model reply and this client sends one (not yet verified)."),
                 responseShape: {
                   type: ["object", "null"],
                   description: "The vendor response's field names, types and booleans — never a string's or number's value (src/responseShape.ts), except a string verdict field the provider names (Cato's `required_action.action_type`), shown as `string = <value>` only when the value is a bare lowercase token. Evidence for verifying an unverified parser.",
@@ -591,6 +592,7 @@ export const openapi = {
           gateway: ref("GatewayMeta"),
           dynamicRoute: str("Echoed when the reply came from a Dynamic Route."),
           externalGuardrails: ref("GuardrailPipelineResult"),
+          replyGuardrails: ref("GuardrailPipelineResult"),
           notStreamed: ref("NotStreamedReason"),
         },
         ["reply", "model", "ray", "usage", "cost"],
@@ -717,18 +719,21 @@ export const openapi = {
           mode: ref("GuardrailPipelineMode"),
           guardrailOnly: bool("Never call the model (chat and red-team runs)."),
           order: arr(ref("ExternalGuardrailProvider")),
+          scanReplies: bool("Also check the model's reply (design J). Turns are then never streamed, and each guardrail that can check a reply is called a second time."),
         },
-        ["mode", "guardrailOnly", "order"],
+        ["mode", "guardrailOnly", "order", "scanReplies"],
       ),
       GuardrailPipelineUpdate: obj(
         {
           mode: ref("GuardrailPipelineMode"),
           guardrailOnly: bool(),
           order: { ...arr(ref("ExternalGuardrailProvider")), description: "Every provider exactly once." },
+          scanReplies: bool(),
         },
       ),
       GuardrailPipelineResult: obj(
         {
+          direction: { type: "string", enum: ["prompt", "reply"], description: "Absent = the prompt check. `reply` = the reply check after the model (design J)." },
           mode: ref("GuardrailPipelineMode"),
           guardrailOnly: bool(),
           results: arr(ref("ExternalGuardrailResult")),
@@ -749,6 +754,21 @@ export const openapi = {
         ["externalGuardrailBlocked", "externalGuardrails", "model", "ray"],
         "The turn was stopped by an external guardrail: its verdict was `block`, or it could not be consulted and its fail mode is `block`. The deciding result is the one whose `provider` equals `externalGuardrails.stoppedBy`; tell the two cases apart by its `outcome`. HTTP status is **200**.",
       ),
+      ExternalReplyBlocked: obj(
+        {
+          externalReplyBlocked: { const: true },
+          replyGuardrails: ref("GuardrailPipelineResult"),
+          externalGuardrails: ref("GuardrailPipelineResult"),
+          model: str(),
+          ray: nullable("string"),
+          usage: obj({ prompt_tokens: int(), completion_tokens: int(), total_tokens: int(), estimated: bool() }),
+          cost: nullable("number"),
+          gateway: ref("GatewayMeta"),
+          notStreamed: ref("NotStreamedReason"),
+        },
+        ["externalReplyBlocked", "replyGuardrails", "model", "ray", "usage", "cost"],
+        "The model answered and the reply check (design J) stopped the reply: a `block`, or a fail-closed error. **No part of the reply is returned**, and the prompt log stores none of it (`external_reply`). Usage and cost are reported because the model ran. HTTP status is **200**.",
+      ),
       GuardrailOnlyResult: obj(
         {
           guardrailOnly: { const: true },
@@ -765,6 +785,7 @@ export const openapi = {
           label: str(),
           supported: bool("False → listed for context, cannot be configured yet."),
           verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard, Cato AI Security until verified)."),
+          replyCheck: bool("Design J: the vendor documents checking a model reply (Prisma AIRS, CrowdStrike AIDR, Lakera Guard). Documented, not verified."),
           enabled: bool(),
           region: str(),
           endpoint: str("Full scan URL derived from `region` (read-only)."),
@@ -996,7 +1017,7 @@ export const openapi = {
           model: str(),
           gatewayId: nullable("string", "Null on the direct route."),
           guarded: flag("Gateway has Guardrails."),
-          outcome: { type: "string", enum: ["reply", "guardrails", "external", "skipped", "error"], description: "`external` = an external guardrail blocked the turn; `skipped` = guardrail-only mode let it through and no model was called. In both, no model ran, so `latencyMs` is null." },
+          outcome: { type: "string", enum: ["reply", "guardrails", "external", "external_reply", "skipped", "error"], description: "`external` = an external guardrail blocked the prompt; `skipped` = guardrail-only mode let it through and no model was called. In both, no model ran, so `latencyMs` is null. `external_reply` = the model answered and the reply check withheld the reply: `reply` is null, `latencyMs` is the model's time." },
           prompt: str("PII-redacted at write time."),
           reply: nullable("string", "PII-redacted. Null for a blocked turn, or a streamed turn whose stream has not finished (or was never captured)."),
           redactions: int("PII spans masked across prompt + reply."),

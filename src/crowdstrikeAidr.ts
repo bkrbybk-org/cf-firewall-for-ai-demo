@@ -45,6 +45,9 @@ export interface AidrScanInput {
   baseUrl: string;
   token: string;
   prompt: string;
+  // The model's reply, for a reply check (design J): the spec's `event_type: "output"`
+  // selects the output policy; the reply goes in as the assistant turn after its prompt.
+  response?: string;
   model?: string;
   spanId?: string; // the Cloudflare ray, so the two consoles can be joined
   timeoutMs?: number;
@@ -52,8 +55,13 @@ export interface AidrScanInput {
 
 export function buildAidrRequest(input: AidrScanInput): { url: string; init: RequestInit } {
   const body = {
-    guard_input: { messages: [{ role: "user", content: input.prompt }] },
-    event_type: "input",
+    guard_input: {
+      messages: [
+        { role: "user", content: input.prompt },
+        ...(input.response != null ? [{ role: "assistant", content: input.response }] : []),
+      ],
+    },
+    event_type: input.response != null ? "output" : "input",
     // Only identifying metadata about the APP. Deliberately no `user_id` and no
     // `source_ip`: the prompt already leaves Cloudflare for a third party, and
     // the person behind it does not need to as well.

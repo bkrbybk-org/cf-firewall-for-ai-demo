@@ -15,12 +15,15 @@ const STOPPED: Record<MatrixLayer, string> = {
   external: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber",
   gatewayGuardrails: "border-cf-purple/60 bg-cf-purple/10 text-cf-purple",
   model: "border-line bg-surface-2 text-text",
+  // The reply check is the same external guardrails, so the same amber.
+  replyCheck: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber",
 };
 const STOPPED_RING: Record<MatrixLayer, string> = {
   edge: "border-cf-red ring-1 ring-cf-red/40",
   external: "border-cf-amber ring-1 ring-cf-amber/40",
   gatewayGuardrails: "border-cf-purple ring-1 ring-cf-purple/40",
   model: "",
+  replyCheck: "border-cf-amber ring-1 ring-cf-amber/40",
 };
 // Detected, not blocked: dashed and unfilled so it cannot be mistaken for a block.
 const FLAGGED: Record<MatrixLayer, string> = {
@@ -28,6 +31,7 @@ const FLAGGED: Record<MatrixLayer, string> = {
   external: "border-dashed border-cf-amber/60 text-cf-amber",
   gatewayGuardrails: "border-dashed border-cf-purple/60 text-cf-purple",
   model: "border-dashed border-line text-text",
+  replyCheck: "border-dashed border-cf-amber/60 text-cf-amber",
 };
 
 function cellClass(c: MatrixCell): string {
