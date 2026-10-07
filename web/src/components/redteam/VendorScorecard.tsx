@@ -8,10 +8,13 @@ import { Card } from "../analytics/primitives";
 import type { RedTeamAttack, RtRunResult } from "../../lib/redteam";
 import {
   balancedAccuracy,
+  headToHead,
+  type HeadToHead,
   type ControlScore,
   type FalseBlockScore,
   type VendorScorecard as VendorScorecardData,
 } from "../../lib/vendorScorecard";
+import { fmtInterval, wilson } from "../../lib/stats";
 import { fmtMs, stageLatency, vendorLatency, type LatencyStat } from "../../lib/vendorLatency";
 import { VendorBenchmark } from "./VendorBenchmark";
 
@@ -28,13 +31,74 @@ function CatchRate({ c }: { c: ControlScore }) {
     );
   }
   const fill = c.control === "edge" ? "bg-cf-red/70" : "bg-cf-amber/70";
+  // The margin of error under the rate (open item F): at this demo's sample sizes the
+  // interval is wide, and showing it is what keeps "60% vs 40%" from reading as a win.
+  const ci = wilson(c.caught, c.scanned);
   return (
-    <span className="inline-flex items-center justify-end gap-2" title={`${c.caught} of ${c.scanned} scanned`}>
-      <span className="h-1.5 w-14 overflow-hidden rounded-full bg-surface-2">
-        <span className={`block h-full rounded-full ${fill}`} style={{ width: `${c.catchPct}%` }} />
+    <span
+      className="inline-flex flex-col items-end"
+      title={`${c.caught} of ${c.scanned} scanned · 95% interval ${fmtInterval(ci)} (Wilson)`}
+    >
+      <span className="inline-flex items-center justify-end gap-2">
+        <span className="h-1.5 w-14 overflow-hidden rounded-full bg-surface-2">
+          <span className={`block h-full rounded-full ${fill}`} style={{ width: `${c.catchPct}%` }} />
+        </span>
+        <span className="w-9 text-text">{c.catchPct}%</span>
       </span>
-      <span className="w-9 text-text">{c.catchPct}%</span>
+      <span className="text-[10px] text-subtle">±95%: {fmtInterval(ci)}</span>
     </span>
+  );
+}
+
+// Open item E: each pair of guardrails on the attacks BOTH scanned (lib/vendorScorecard.ts).
+function HeadToHeadTable({ pairs }: { pairs: HeadToHead[] }) {
+  if (pairs.length === 0) return null;
+  const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
+  const num = "px-2 py-1.5 text-right font-mono text-[11.5px] tabular-nums";
+  return (
+    <div className="mt-4 border-t border-line pt-3">
+      <h3 className="text-[12.5px] font-bold text-text">Head to head</h3>
+      <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">
+        Each pair of guardrails on the attacks both scanned. Two equal catch rates can hide different catches — "only A"
+        and "only B" are what each adds that the other misses; "neither" is the shared gap. An alert is not a catch.
+      </p>
+      {/* relative: scroll box (CLAUDE.md, scroll containers). */}
+      <div className="relative mt-2 overflow-x-auto">
+        <table className="w-full min-w-[520px] border-collapse">
+          <thead>
+            <tr>
+              <th className={`${th} text-left`}>Pair</th>
+              <th className={th}>Both scanned</th>
+              <th className={th}>Both caught</th>
+              <th className={th}>Only first</th>
+              <th className={th}>Only second</th>
+              <th className={th}>Neither</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.map((p) => (
+              <tr key={`${p.a}|${p.b}`} className="border-t border-line">
+                <td className="py-1.5 pr-2 pl-2 text-[12px] text-text">
+                  <span className="font-semibold">{p.aLabel}</span> <span className="text-subtle">vs</span>{" "}
+                  <span className="font-semibold">{p.bLabel}</span>
+                </td>
+                <td className={`${num} text-muted`}>{p.n}</td>
+                <td className={`${num} text-text`}>{p.both}</td>
+                <td className={`${num} text-text`} title={`caught by ${p.aLabel}, missed by ${p.bLabel}`}>
+                  {p.onlyA}
+                </td>
+                <td className={`${num} text-text`} title={`caught by ${p.bLabel}, missed by ${p.aLabel}`}>
+                  {p.onlyB}
+                </td>
+                <td className={`${num} ${p.neither > 0 ? "font-semibold text-text" : "text-muted"}`} title="missed by both">
+                  {p.neither}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -175,6 +239,13 @@ export function VendorScorecard({
   const all = [...results.values()];
   const latOf = (control: string) => (control === "edge" ? undefined : vendorLatency(all, control));
   const stages = stageLatency(all);
+  // Attack rows only: a harmless prompt "caught" is a false block, not a catch.
+  const attackIds = new Set(corpus.map((a) => a.id));
+  const pairs = headToHead(
+    all.filter((r) => attackIds.has(r.id)),
+    card.controls.filter((c) => c.control !== "edge").map((c) => c.control),
+    labels,
+  );
 
   const sequential = card.modes.includes("sequential");
   const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
@@ -273,6 +344,8 @@ export function VendorScorecard({
           (harmless prompts) to measure false blocks too.
         </p>
       )}
+
+      <HeadToHeadTable pairs={pairs} />
 
       <VendorBenchmark
         corpus={corpus}

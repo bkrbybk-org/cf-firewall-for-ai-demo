@@ -241,3 +241,46 @@ export function balancedAccuracy(attack: ControlScore | undefined, benign: False
   const passRate = (benign.checked - benign.blocked) / benign.checked;
   return Math.round(((catchRate + passRate) / 2) * 100);
 }
+
+// ── Head to head (open item E) ──────────────────────────────────────────────
+// Two guardrails' catch rates can match while they catch DIFFERENT attacks — and
+// that overlap is the buying question ("do I need both?"). Each pair is compared on
+// the attacks BOTH scanned, so neither is charged with prompts it never saw. A
+// Detect-mode alert is not a catch, as everywhere else. The edge is left out: on the
+// attacks a guardrail scanned, the edge has by definition let them all through, so
+// "only the guardrail caught it" would be every row — true, and not a comparison.
+export interface HeadToHead {
+  a: string;
+  b: string;
+  aLabel: string;
+  bLabel: string;
+  n: number; // attacks both scanned
+  both: number;
+  onlyA: number;
+  onlyB: number;
+  neither: number;
+}
+
+export function headToHead(results: RtRunResult[], providers: string[], labels: Record<string, string> = {}): HeadToHead[] {
+  const out: HeadToHead[] = [];
+  for (let i = 0; i < providers.length; i++) {
+    for (let j = i + 1; j < providers.length; j++) {
+      const [a, b] = [providers[i], providers[j]];
+      const h: HeadToHead = { a, b, aLabel: labels[a] ?? a, bLabel: labels[b] ?? b, n: 0, both: 0, onlyA: 0, onlyB: 0, neither: 0 };
+      for (const r of results) {
+        const va = verdictOf(r, a);
+        const vb = verdictOf(r, b);
+        if (!isScannedVerdict(va) || !isScannedVerdict(vb)) continue;
+        h.n++;
+        const ca = va === "caught";
+        const cb = vb === "caught";
+        if (ca && cb) h.both++;
+        else if (ca) h.onlyA++;
+        else if (cb) h.onlyB++;
+        else h.neither++;
+      }
+      if (h.n > 0) out.push(h);
+    }
+  }
+  return out;
+}

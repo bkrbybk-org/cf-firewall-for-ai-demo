@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **672 across 44 files** (measured 2026-10-07; README's Tests table has the
+**Tests** — `npm test`, **680 across 45 files** (measured 2026-10-07; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,47 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-07 — Benchmark D–F: cell drill-down, head to head, margins of error
+
+**Asked for:** "do #22, then D-G" — this entry is D–F, and G follows separately. Deploy
+`aa3a6434-e09e-4aa8-89b1-a3e5a4d38db3`.
+
+- **D — drill-down:**
+  - Every grid cell is a button. It opens the row's prompts with each control's verdict (caught / missed /
+    alerted / error / not seen / not run, coloured good/bad per metric), the selected control's misses first.
+  - `rowAttacks` shares `groupKeyOf` with the grid, so the list can never disagree with the cell.
+  - A saved run lists its redacted previews.
+- **E — head to head:**
+  - `headToHead` pairs every two guardrails on the attacks **both** scanned: both / only first / only second /
+    neither.
+  - Alerts are not catches, and harmless rows are excluded.
+  - The edge is not paired: it let every prompt a guardrail scanned through, so "only the guardrail" would be every
+    row.
+- **F — margins:**
+  - `lib/stats.ts` gives a 95% Wilson interval. It was chosen over the textbook interval because that one is
+    zero-width at 0/n and n/n.
+  - Best/lowest now also require the leader's interval to clear **every** other ranked control's. Ties never mark.
+  - The headline says when a ranked row has no clear lead.
+  - Intervals appear in cell tooltips and as "±95%: lo–hi%" under each catch rate.
+  - **This changes earlier semantics:** a 3-prompt "winner" no longer gets a trophy. The tests that pinned small-n
+    trophies were rewritten with 20-prompt samples, and an overlap test was added.
+- **Verified:**
+  - **Gates:** 680 across 45 files.
+  - **Mutations,** all caught:
+    - best/worst without the margin check;
+    - alert counted as a catch in head to head;
+    - drill-down ignoring the row;
+    - the textbook interval instead of Wilson.
+  - **Browser** (`wrangler dev`, stubbed: topic "Clear" 20 prompts with AIRS blocking all and AIDR none; topic
+    "Close" A, A, B, N). Every number matched a hand count:
+    - Clear: AIRS 20/20 trophy, edge and AIDR tied 0/20 so no lowest.
+    - Close: 75% vs 25% with no markers (overlap).
+    - Head to head AIRS vs AIDR: 24 scanned · both 1 · only AIRS 22 · only AIDR 0 · neither 1.
+    - Catch rates: AIRS 96% ±95% 79–100%, AIDR 4% 0–21%, edge 0% 0–14%.
+    - Clicking Close/AIDR listed "3 missed · 1 caught", misses first; a second click closed it.
+  - **Prod:** smoke all pass. The bundle `index-ygPn3uWo.js` contains "Head to head", "click to see the prompts",
+    "±95%" and "margin of error".
 
 ### 2026-10-07 — #22 fixed: Compliance "blocked" counts AI Security rules only
 

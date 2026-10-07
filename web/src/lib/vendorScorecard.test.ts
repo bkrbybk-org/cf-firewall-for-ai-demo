@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { balancedAccuracy, countBlockedByAny, falseBlockScores, toVendorOutcomes, vendorScorecard } from "./vendorScorecard";
+import { balancedAccuracy, countBlockedByAny, falseBlockScores, headToHead, toVendorOutcomes, vendorScorecard } from "./vendorScorecard";
 import type { RtRunResult, RtVendorOutcome } from "./redteam";
 
 const AIRS = "prisma-airs";
@@ -114,6 +114,23 @@ describe("vendorScorecard", () => {
     const card = vendorScorecard([r("a", "block")], {}, [AIRS]);
     expect(card.controls.map((c) => c.control)).toEqual(["edge", AIRS]);
     expect(ctl(card, AIRS).catchPct).toBeNull();
+  });
+
+  it("head to head: each pair on the attacks BOTH scanned; an alert is not a catch; the edge is not paired", () => {
+    const h = headToHead(
+      [
+        r("a", "external", [[AIRS, "block"], [AIDR, "block"]]),
+        r("b", "external", [[AIRS, "block"], [AIDR, "allow"]]),
+        r("c", "external", [[AIRS, "allow"], [AIDR, "block"]]),
+        r("d", "allow", [[AIRS, "alerts"], [AIDR, "allow"]]), // alerts ≠ caught
+        r("e", "allow", [[AIRS, "error"], [AIDR, "block"]]), // AIRS did not scan it — not in this pair
+        r("f", "block"), // edge refused: neither saw it
+      ],
+      [AIRS, AIDR],
+      { [AIRS]: "Prisma AIRS" },
+    );
+    expect(h).toEqual([{ a: AIRS, b: AIDR, aLabel: "Prisma AIRS", bLabel: AIDR, n: 4, both: 1, onlyA: 1, onlyB: 1, neither: 1 }]);
+    expect(headToHead([r("a", "block")], [AIRS, AIDR])).toEqual([]); // no shared attack, no pair
   });
 
   it("uses the labels given, and lists the edge first", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { languageOf, topicOf, vendorBenchmark } from "./vendorBenchmark";
+import { languageOf, rowAttacks, topicOf, vendorBenchmark } from "./vendorBenchmark";
 import type { RedTeamAttack, RtRunResult, RtVendorOutcome } from "./redteam";
 
 const AIRS = "prisma-airs";
@@ -56,29 +56,47 @@ describe("vendorBenchmark", () => {
   });
 
   it("ranks only controls that scanned the same prompts, over at least 3", () => {
-    const attacks = ["a", "b", "c", "d"].map((id) => atk(id, "Bias"));
-    const b = run(attacks, [
-      res("a", "block"), // edge only — so the edge scanned a different set from the guardrails
-      res("b", "external", ["block", "allow"]),
-      res("c", "external", ["block", "allow"]),
-      res("d", "external", ["allow", "block"]),
-    ]);
+    // 20 the guardrails both scanned (AIRS caught all, AIDR none) + 1 the edge refused.
+    const ids = Array.from({ length: 20 }, (_, i) => `p${i}`);
+    const b = run(
+      [atk("e", "Bias"), ...ids.map((id) => atk(id, "Bias"))],
+      [res("e", "block"), ...ids.map((id) => res(id, "external", ["block", "allow"]))],
+    );
     const row = b.rows[0];
     expect(row.ranked).toEqual([AIRS, AIDR]);
-    expect(row.rankedOver).toBe(3);
-    expect(cell(b, "Bias", AIRS).rank).toBe("best"); // 67%
-    expect(cell(b, "Bias", AIDR).rank).toBe("worst"); // 33%
-    expect(cell(b, "Bias", "edge").rank).toBeUndefined(); // 25% of 4 — a different test, not last place
+    expect(row.rankedOver).toBe(20);
+    expect(cell(b, "Bias", AIRS).rank).toBe("best"); // 20/20: ≈84–100%
+    expect(cell(b, "Bias", AIDR).rank).toBe("worst"); // 0/20: ≈0–16%
+    expect(cell(b, "Bias", "edge").rank).toBeUndefined(); // scanned a different set — a different test
     expect(b.wins.find((w) => w.control === AIRS)!.wins).toBe(1);
     expect(b.rankedRows).toBe(1);
   });
 
+  // Open item F: a lead inside the margin of error is not a result.
+  it("no marker when the leader's interval overlaps the next one — 3 of 4 vs 1 of 4 is noise", () => {
+    const ids = ["a", "b", "c", "d"];
+    const b = run(
+      ids.map((id) => atk(id, "Bias")),
+      [res("a", "external", ["block", "allow"]), res("b", "external", ["block", "allow"]), res("c", "external", ["block", "block"]), res("d", "allow", ["allow", "allow"])],
+    );
+    expect(cell(b, "Bias", AIRS)).toMatchObject({ caught: 3, scanned: 4 });
+    expect(cell(b, "Bias", AIRS).ci!.lo).toBeLessThan(cell(b, "Bias", AIDR).ci!.hi); // they overlap
+    expect(b.rows[0].ranked.length).toBeGreaterThan(0); // a fair contest…
+    expect(b.rows[0].cells.every((c) => !c.rank)).toBe(true); // …with no clear winner
+    expect(b.wins.every((w) => w.wins === 0)).toBe(true);
+  });
+
   it("the edge is ranked when it passed everything (guardrail-only, edge on Log)", () => {
-    const attacks = ["a", "b", "c"].map((id) => atk(id, "Bias"));
-    const b = run(attacks, [res("a", "log", ["block", "block"]), res("b", "log", ["block", "allow"]), res("c", "allow", ["allow", "allow"])]);
+    // AIRS 20/20, AIDR 10/20, edge 0/20 — all three separate at 95%.
+    const ids = Array.from({ length: 20 }, (_, i) => `p${i}`);
+    const b = run(
+      ids.map((id) => atk(id, "Bias")),
+      ids.map((id, i) => res(id, "log", ["block", i % 2 === 0 ? "block" : "allow"])),
+    );
     expect(b.rows[0].ranked).toEqual(CONTROLS);
-    expect(cell(b, "Bias", "edge").rank).toBe("worst"); // 0% of 3
+    expect(cell(b, "Bias", "edge").rank).toBe("worst");
     expect(cell(b, "Bias", AIRS).rank).toBe("best");
+    expect(cell(b, "Bias", AIDR).rank).toBeUndefined();
   });
 
   it("no ranking on fewer than 3 shared prompts, or when everyone tied", () => {
@@ -103,27 +121,49 @@ describe("vendorBenchmark", () => {
     expect(b.rows[0].ranked).toEqual(["edge", AIRS]); // AIDR scanned a different set
   });
 
-  it("false-block metric: the FEWEST blocks wins, and the last column counts prompts blocked by any", () => {
-    const harmless = ["a", "b", "c"].map((id) => atk(id, "Everyday"));
+  it("false-block metric: the MOST blocks is the lowest; a tie for fewest marks no best", () => {
+    // 20 harmless prompts: AIRS blocked 12, AIDR and the edge none.
+    const ids = Array.from({ length: 20 }, (_, i) => `h${i}`);
     const b = vendorBenchmark(
-      harmless,
-      new Map(
-        [res("a", "external", ["block", "allow"]), res("b", "external", ["block", "allow"]), res("c", "allow", ["allow", "allow"])].map(
-          (r) => [r.id, r],
-        ),
-      ),
+      ids.map((id) => atk(id, "Everyday")),
+      new Map(ids.map((id, i) => [id, res(id, i < 12 ? "external" : "allow", [i < 12 ? "block" : "allow", "allow"])])),
       "topic",
       CONTROLS,
       {},
       "falseBlock",
     );
     expect(b.metric).toBe("falseBlock");
-    expect(cell(b, "Everyday", AIRS)).toMatchObject({ caught: 2, catchPct: 67, rank: "worst" });
-    // Edge and AIDR both blocked none: tied for best — the edge passed them all, so it scanned the same set.
-    expect(cell(b, "Everyday", AIDR).rank).toBe("best");
+    expect(cell(b, "Everyday", AIRS)).toMatchObject({ caught: 12, catchPct: 60, rank: "worst" });
+    // Edge and AIDR tied at 0 — no single best, so no trophy and no win.
+    expect(cell(b, "Everyday", AIDR).rank).toBeUndefined();
+    expect(cell(b, "Everyday", "edge").rank).toBeUndefined();
+    expect(b.rows[0].blockedByAny).toBe(12);
+    expect(b.wins.every((w) => w.wins === 0)).toBe(true);
+  });
+
+  it("false-block metric: a clear fewest wins", () => {
+    const ids = Array.from({ length: 20 }, (_, i) => `h${i}`);
+    const b = vendorBenchmark(
+      ids.map((id) => atk(id, "Everyday")),
+      // AIRS blocks all 20, AIDR 10; the edge passes all (0) — the edge is clearly fewest.
+      new Map(ids.map((id, i) => [id, res(id, "external", ["block", i % 2 ? "block" : "allow"])])),
+      "topic",
+      CONTROLS,
+      {},
+      "falseBlock",
+    );
     expect(cell(b, "Everyday", "edge").rank).toBe("best");
-    expect(b.rows[0].blockedByAny).toBe(2);
-    expect(b.wins.find((w) => w.control === AIRS)!.wins).toBe(0);
+    expect(cell(b, "Everyday", AIRS).rank).toBe("worst");
+  });
+
+  it("rowAttacks: a cell's prompts are exactly that row's, each with every control's verdict", () => {
+    const attacks = [atk("a", "Jail", "p-a"), atk("b", "Jail", "p-b"), atk("c", "Other", "p-c"), atk("d", "Jail", "unsent")];
+    const results = new Map([res("a", "block"), res("b", "external", ["block", "allow"]), res("c", "allow", ["allow", "allow"])].map((r) => [r.id, r]));
+    const rows = rowAttacks(attacks, results, "topic", "Jail", CONTROLS);
+    expect(rows.map((r) => [r.prompt, r.verdicts.edge, r.verdicts[AIRS], r.verdicts[AIDR]])).toEqual([
+      ["p-a", "caught", "notSeen", "notSeen"],
+      ["p-b", "missed", "caught", "missed"],
+    ]);
   });
 
   it("groups by language from the prompt text, and skips attacks with no result", () => {

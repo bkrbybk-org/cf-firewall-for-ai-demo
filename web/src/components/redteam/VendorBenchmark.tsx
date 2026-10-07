@@ -11,13 +11,16 @@ import { ArrowDown, Trophy } from "lucide-react";
 import type { RedTeamAttack, RtRunResult } from "../../lib/redteam";
 import {
   BENCHMARK_MIN_N,
+  rowAttacks,
   vendorBenchmark,
   type BenchmarkCell,
   type BenchmarkGroupBy,
   type BenchmarkMetric,
   type BenchmarkRow,
+  type RowAttack,
 } from "../../lib/vendorBenchmark";
-import type { ControlScore } from "../../lib/vendorScorecard";
+import { fmtInterval } from "../../lib/stats";
+import type { ControlScore, Verdict } from "../../lib/vendorScorecard";
 
 // Enough rows to read at a glance; a ThaiSafetyBench sample has ~20 topics.
 const ROWS_COLLAPSED = 10;
@@ -62,7 +65,19 @@ function Toggle<T extends string>({
   );
 }
 
-function Cell({ c, ranked, fb }: { c: BenchmarkCell; ranked: boolean; fb: boolean }) {
+function Cell({
+  c,
+  ranked,
+  fb,
+  selected,
+  onSelect,
+}: {
+  c: BenchmarkCell;
+  ranked: boolean;
+  fb: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   const base = "px-2 py-1.5 text-right font-mono text-[11.5px] tabular-nums";
   if (c.catchPct === null) {
     // Scanned none of this row — a dash, never 0% (same rule as the table above).
@@ -79,7 +94,9 @@ function Cell({ c, ranked, fb }: { c: BenchmarkCell; ranked: boolean; fb: boolea
     (c.alerts ? ` · ${c.alerts} alerted only` : "") +
     (c.errors ? ` · ${c.errors} could not be consulted` : "") +
     (c.notSeen ? ` · ${c.notSeen} never reached it` : "") +
-    (small ? ` · fewer than ${BENCHMARK_MIN_N} scanned — too few to rank` : !ranked ? " · scanned different prompts from the ranked controls — not ranked" : "");
+    (c.ci ? ` · 95% interval ${fmtInterval(c.ci)}` : "") +
+    (small ? ` · fewer than ${BENCHMARK_MIN_N} scanned — too few to rank` : !ranked ? " · scanned different prompts from the ranked controls — not ranked" : "") +
+    " · click to see the prompts";
   // Heat is a single green ramp, and greener is better in both metrics: on harmless
   // rows it follows the PASS rate (100 − false blocks). The number carries the
   // meaning; the tint only makes strengths and gaps visible at a glance. A sample
@@ -95,21 +112,42 @@ function Cell({ c, ranked, fb }: { c: BenchmarkCell; ranked: boolean; fb: boolea
         ? "(most false blocks in this row)"
         : "(lowest in this row)";
   return (
-    <td className={base} style={{ backgroundColor: tint }} title={title}>
-      <span className="inline-flex items-center justify-end gap-1">
-        {c.rank === "best" && <Trophy size={11} aria-hidden className="shrink-0 text-cf-green" />}
-        {c.rank === "worst" && <ArrowDown size={11} aria-hidden className="shrink-0 text-muted" />}
-        <span className={c.rank === "best" ? "font-bold text-text" : small ? "text-subtle" : "text-text"}>{c.catchPct}%</span>
-        {c.rank && <span className="sr-only">{srRank}</span>}
-      </span>
-      <span className={`block text-[10px] ${small ? "text-subtle" : "text-muted"}`}>
-        {c.caught}/{c.scanned}
-      </span>
+    <td className={`${base} p-0`} style={{ backgroundColor: tint }}>
+      {/* A button: the cell opens the prompts behind it (open item D). */}
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-pressed={selected}
+        title={title}
+        className={`block w-full px-2 py-1.5 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset ${
+          selected ? "ring-2 ring-accent ring-inset" : "hover:bg-surface-2/60"
+        }`}
+      >
+        <span className="inline-flex items-center justify-end gap-1">
+          {c.rank === "best" && <Trophy size={11} aria-hidden className="shrink-0 text-cf-green" />}
+          {c.rank === "worst" && <ArrowDown size={11} aria-hidden className="shrink-0 text-muted" />}
+          <span className={c.rank === "best" ? "font-bold text-text" : small ? "text-subtle" : "text-text"}>{c.catchPct}%</span>
+          {c.rank && <span className="sr-only">{srRank}</span>}
+        </span>
+        <span className={`block text-[10px] ${small ? "text-subtle" : "text-muted"}`}>
+          {c.caught}/{c.scanned}
+        </span>
+      </button>
     </td>
   );
 }
 
-function Row({ row, fb }: { row: BenchmarkRow; fb: boolean }) {
+function Row({
+  row,
+  fb,
+  selected,
+  onSelect,
+}: {
+  row: BenchmarkRow;
+  fb: boolean;
+  selected: string | null; // the selected control in THIS row, if any
+  onSelect: (control: string) => void;
+}) {
   // Last column: attacks no control caught, or harmless prompts some control blocked.
   const tail = fb ? row.blockedByAny : row.missedByAll;
   return (
@@ -121,7 +159,14 @@ function Row({ row, fb }: { row: BenchmarkRow; fb: boolean }) {
       </td>
       <td className="px-2 py-1.5 text-right font-mono text-[11.5px] text-muted tabular-nums">{row.attacks}</td>
       {row.cells.map((c) => (
-        <Cell key={c.control} c={c} ranked={row.ranked.includes(c.control)} fb={fb} />
+        <Cell
+          key={c.control}
+          c={c}
+          ranked={row.ranked.includes(c.control)}
+          fb={fb}
+          selected={selected === c.control}
+          onSelect={() => onSelect(c.control)}
+        />
       ))}
       <td
         className={`px-2 py-1.5 text-right font-mono text-[11.5px] tabular-nums ${tail > 0 ? "font-semibold text-text" : "text-muted"}`}
@@ -134,6 +179,110 @@ function Row({ row, fb }: { row: BenchmarkRow; fb: boolean }) {
         {tail}
       </td>
     </tr>
+  );
+}
+
+// The prompts behind one cell (open item D), every control's verdict on each, the
+// selected control's misses first — "what slipped through" is the question a cell
+// raises. On harmless rows the order flips: its false blocks first.
+const VERDICT_TEXT = (v: Verdict, fb: boolean) =>
+  ({
+    caught: fb ? "blocked" : "caught",
+    missed: fb ? "passed" : "missed",
+    alerts: "alerted",
+    error: "error",
+    notSeen: "not seen",
+    notRun: "not run",
+  })[v];
+
+function verdictTone(v: Verdict, fb: boolean): string {
+  const good = fb ? v === "missed" : v === "caught";
+  const bad = fb ? v === "caught" : v === "missed";
+  if (good) return "border-cf-green/60 text-cf-green";
+  if (bad) return "border-cf-red/50 text-cf-red";
+  if (v === "alerts") return "border-line-strong text-text";
+  return "border-dashed border-line-strong text-subtle"; // error / not seen / not run: not a verdict
+}
+
+function CellPrompts({
+  sel,
+  rows,
+  controls,
+  fb,
+  onClose,
+}: {
+  sel: { key: string; control: string };
+  rows: RowAttack[];
+  controls: ControlScore[];
+  fb: boolean;
+  onClose: () => void;
+}) {
+  const order: Record<Verdict, number> = fb
+    ? { caught: 0, alerts: 1, missed: 2, error: 3, notRun: 4, notSeen: 5 }
+    : { missed: 0, alerts: 1, caught: 2, error: 3, notRun: 4, notSeen: 5 };
+  const sorted = [...rows].sort((a, b) => order[a.verdicts[sel.control]] - order[b.verdicts[sel.control]]);
+  const label = controls.find((c) => c.control === sel.control)?.label ?? sel.control;
+  const counts = new Map<Verdict, number>();
+  for (const r of rows) counts.set(r.verdicts[sel.control], (counts.get(r.verdicts[sel.control]) ?? 0) + 1);
+  return (
+    <div className="mt-3 rounded-xl border border-line bg-surface-2/50 p-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="text-[12px] text-text">
+          <span className="font-semibold">{sel.key}</span> · {label}:{" "}
+          <span className="text-muted">
+            {[...counts.entries()]
+              .sort((a, b) => order[a[0]] - order[b[0]])
+              .map(([v, n]) => `${n} ${VERDICT_TEXT(v, fb)}`)
+              .join(" · ")}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-[11.5px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          Close
+        </button>
+      </div>
+      {/* relative: this scroll box contains its sr-only text (CLAUDE.md, scroll containers). */}
+      <div className="relative mt-2 max-h-80 overflow-auto">
+        <table className="w-full min-w-[520px] border-collapse text-[11.5px]">
+          <thead>
+            <tr className="text-[10px] tracking-wide text-subtle uppercase">
+              <th className="px-2 pb-1 text-left font-semibold">Prompt</th>
+              {controls.map((c) => (
+                <th
+                  key={c.control}
+                  className={`px-2 pb-1 text-right font-semibold whitespace-nowrap ${c.control === sel.control ? "text-accent" : ""}`}
+                >
+                  {c.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <tr key={r.id} className="border-t border-line align-top">
+                <td className="max-w-0 px-2 py-1 text-text">
+                  <div className="truncate" title={r.prompt}>
+                    {r.prompt || <span className="text-subtle">(no preview)</span>}
+                  </div>
+                </td>
+                {controls.map((c) => (
+                  <td key={c.control} className="px-2 py-1 text-right whitespace-nowrap">
+                    <span
+                      className={`inline-block rounded-full border px-1.5 py-px text-[10px] font-semibold ${verdictTone(r.verdicts[c.control], fb)}`}
+                    >
+                      {VERDICT_TEXT(r.verdicts[c.control], fb)}
+                    </span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -153,6 +302,9 @@ export function VendorBenchmark({
   const [groupBy, setGroupBy] = useState<BenchmarkGroupBy>("topic");
   const [chosenMetric, setMetric] = useState<BenchmarkMetric>("catch");
   const [expanded, setExpanded] = useState(false);
+  // The cell whose prompts are open below the grid (open item D); cleared whenever
+  // the grid's rows change meaning (grouping or metric).
+  const [sel, setSel] = useState<{ key: string; control: string } | null>(null);
   // Falls back to catch rate when a later run has no harmless rows, rather than
   // showing an empty false-block grid behind a switch that is no longer offered.
   const hasBenign = benignCorpus.length > 0;
@@ -179,6 +331,7 @@ export function VendorBenchmark({
           value={groupBy}
           onChange={(v) => {
             setGroupBy(v);
+            setSel(null);
             setExpanded(false);
           }}
         />
@@ -189,6 +342,7 @@ export function VendorBenchmark({
             value={metric}
             onChange={(v) => {
               setMetric(v);
+              setSel(null);
               setExpanded(false);
             }}
           />
@@ -211,8 +365,9 @@ export function VendorBenchmark({
           </>
         ) : winners.length === 0 ? (
           <>
-            Every control tied in {bench.rankedRows === 1 ? `the one ${noun}` : `all ${bench.rankedRows} ${nouns}`} that could
-            be compared.
+            No control led by more than the margin of error in{" "}
+            {bench.rankedRows === 1 ? `the one ${noun}` : `any of the ${bench.rankedRows} ${nouns}`} that could be compared
+            — run more prompts to separate them.
           </>
         ) : (
           <>
@@ -254,11 +409,28 @@ export function VendorBenchmark({
             </thead>
             <tbody>
               {shown.map((row) => (
-                <Row key={row.key} row={row} fb={fb} />
+                <Row
+                  key={row.key}
+                  row={row}
+                  fb={fb}
+                  selected={sel?.key === row.key ? sel.control : null}
+                  onSelect={(control) =>
+                    setSel((s) => (s?.key === row.key && s.control === control ? null : { key: row.key, control }))
+                  }
+                />
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {sel && (
+        <CellPrompts
+          sel={sel}
+          rows={rowAttacks(fb ? benignCorpus : corpus, results, groupBy, sel.key, ids)}
+          controls={controls}
+          fb={fb}
+          onClose={() => setSel(null)}
+        />
       )}
       {bench.rows.length > ROWS_COLLAPSED && (
         <button
@@ -275,7 +447,8 @@ export function VendorBenchmark({
         <ArrowDown size={10} aria-hidden className="mr-0.5 inline" /> {fb ? "most false blocks" : "lowest"} are marked only
         between controls that scanned the same prompts in that row, and only over {BENCHMARK_MIN_N}+ of them — the edge sees
         every prompt while a guardrail sees only what the edge let through, so those are different tests. Untinted numbers
-        are too few to rank.{" "}
+        are too few to rank. A marker also needs a clear lead: its 95% interval (in each cell's tooltip) must not overlap
+        any other ranked control's, so a gap that could be chance marks nothing. Click a cell to see its prompts.{" "}
         {groupBy === "topic"
           ? "Topic is the scan category, or the goal column of an uploaded CSV."
           : "Language is read from the prompt's writing system, not declared: Thai script is Thai, but Latin letters could be English or any Latin-script language. Prompts under 80% one script count as mixed."}

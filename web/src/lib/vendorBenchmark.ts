@@ -18,7 +18,16 @@
 //   - A row where every ranked control scored the same has no best or worst.
 // Unranked cells still show their numbers; they just carry no marker.
 import type { RedTeamAttack, RtRunResult } from "./redteam";
-import { countBlockedByAny, countMissedByAll, isScannedVerdict, scoreControl, verdictOf, type ControlScore } from "./vendorScorecard";
+import { wilson, type Interval } from "./stats";
+import {
+  countBlockedByAny,
+  countMissedByAll,
+  isScannedVerdict,
+  scoreControl,
+  verdictOf,
+  type ControlScore,
+  type Verdict,
+} from "./vendorScorecard";
 
 export type BenchmarkGroupBy = "topic" | "language";
 export const BENCHMARK_MIN_N = 3;
@@ -111,6 +120,7 @@ export function languageOf(text: string): string {
 // ── The benchmark ───────────────────────────────────────────────────────────
 export interface BenchmarkCell extends ControlScore {
   rank?: "best" | "worst"; // by the metric: on harmless rows "best" is the FEWEST false blocks
+  ci?: Interval | null; // 95% Wilson interval on this cell's rate (lib/stats.ts); null when it scanned none
 }
 
 export interface BenchmarkRow {
@@ -159,6 +169,36 @@ function rankedGroup(results: RtRunResult[], controls: string[]): { members: str
   return best;
 }
 
+// The row an attack belongs to. One function for the grid and its drill-down, so a
+// cell's prompt list can never disagree with the cell's numbers.
+export function groupKeyOf(a: RedTeamAttack, groupBy: BenchmarkGroupBy): string {
+  return groupBy === "topic" ? topicOf(a) : (a.lang ?? languageOf(a.prompt));
+}
+
+// Open item D: the prompts behind a row, each with every control's verdict — the
+// evidence under a percentage ("which ones did AIRS catch that AIDR missed?").
+export interface RowAttack {
+  id: string;
+  prompt: string; // the full prompt live; the redacted preview for a saved run
+  verdicts: Record<string, Verdict>;
+}
+
+export function rowAttacks(
+  corpus: RedTeamAttack[],
+  results: Map<string, RtRunResult>,
+  groupBy: BenchmarkGroupBy,
+  key: string,
+  controls: string[],
+): RowAttack[] {
+  const out: RowAttack[] = [];
+  for (const a of corpus) {
+    const r = results.get(a.id);
+    if (!r || groupKeyOf(a, groupBy) !== key) continue;
+    out.push({ id: a.id, prompt: a.prompt, verdicts: Object.fromEntries(controls.map((c) => [c, verdictOf(r, c)])) });
+  }
+  return out;
+}
+
 export function vendorBenchmark(
   corpus: RedTeamAttack[],
   results: Map<string, RtRunResult>,
@@ -173,7 +213,7 @@ export function vendorBenchmark(
   for (const a of corpus) {
     const r = results.get(a.id);
     if (!r) continue;
-    const key = groupBy === "topic" ? topicOf(a) : (a.lang ?? languageOf(a.prompt));
+    const key = groupKeyOf(a, groupBy);
     const list = groups.get(key) ?? [];
     list.push(r);
     groups.set(key, list);
@@ -185,18 +225,25 @@ export function vendorBenchmark(
     const cells: BenchmarkCell[] = controls.map((c) => scoreControl(rs, c, controls, labels));
     const g = rankedGroup(rs, controls);
     const ranked = g.members.length >= 2 && g.size >= BENCHMARK_MIN_N ? g.members : [];
+    for (const c of cells) c.ci = wilson(c.caught, c.scanned);
     if (ranked.length > 0) {
-      const pcts = cells.filter((c) => ranked.includes(c.control)).map((c) => c.catchPct as number);
-      const hi = pcts.reduce((x, y) => (better(x, y) ? x : y));
-      const lo = pcts.reduce((x, y) => (better(x, y) ? y : x));
-      if (hi !== lo) {
-        for (const c of cells) {
-          if (!ranked.includes(c.control)) continue;
-          if (c.catchPct === hi) {
-            c.rank = "best";
-            wins.set(c.control, (wins.get(c.control) ?? 0) + 1);
-          } else if (c.catchPct === lo) c.rank = "worst";
-        }
+      // Best / lowest only when the lead is bigger than the margin of error: the
+      // leader's 95% interval must clear EVERY other ranked control's (open item F).
+      // "3 of 4 vs 1 of 4" overlaps (≈30–95% vs ≈5–70%) and is not a result; a
+      // marker there would turn noise into a verdict. Ties never mark anything.
+      const r = cells.filter((c) => ranked.includes(c.control));
+      const sorted = [...r].sort((x, y) => (better(x.catchPct as number, y.catchPct as number) ? -1 : 1));
+      const [top, second] = sorted;
+      const [bottom, aboveBottom] = [...sorted].reverse();
+      // "Clears" in the direction that is better for this metric.
+      const clears = (a: BenchmarkCell, b: BenchmarkCell) =>
+        metric === "falseBlock" ? a.ci!.hi < b.ci!.lo : a.ci!.lo > b.ci!.hi;
+      if (top.catchPct !== second.catchPct && r.every((c) => c === top || clears(top, c))) {
+        top.rank = "best";
+        wins.set(top.control, (wins.get(top.control) ?? 0) + 1);
+      }
+      if (bottom.catchPct !== aboveBottom.catchPct && r.every((c) => c === bottom || clears(c, bottom))) {
+        bottom.rank = "worst";
       }
     }
     rows.push({
