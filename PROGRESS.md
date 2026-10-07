@@ -626,6 +626,44 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-07 — Settings: providers as a collapsible list, closed by default
+
+**Asked for:** "can i have as a list with collapsible (collapsed by default)?", meaning the five provider cards.
+Deploy `d7feaf0c-4d48-4525-892f-895ce635e58f`.
+
+- **Row:** the two-column card grid became a `<ul>` of rows. Each row shows:
+  - a chevron, the name and the "unverified" badge;
+  - a one-line summary from the **saved** config only, so an unsaved edit in a closed row never reads as the
+    setting in force: key `••••last4` or "no key", region, profile (when the vendor uses one), fail mode, last
+    saved;
+  - the enable switch.
+- **Accordion markup:** an `<h4>` holding a `<button aria-expanded aria-controls>`. It sits **outside** the locked
+  fieldset, so a read-only viewer can still open and read a row; the switch and the body each have their own
+  `fieldset disabled`.
+- **Collapsed body** uses the `hidden` attribute, not unmounting: a typed key, unsaved edits and the last test
+  result survive collapsing. A failed toggle shows outside the body, so it is seen with the row closed.
+- **Who decides what is open:** the page owns the open set, closed on every visit and not remembered. The in-page
+  nav and deep links (`#provider-…`) open their row, then scroll on the next frame. Expand all / Collapse all sit
+  in the Providers header.
+- **Verified** (`wrangler dev`):
+  - All 5 rows arrive `aria-expanded=false` with the body hidden.
+  - A click opens only that row.
+  - The Cato nav link opened Cato and scrolled it to 66 px from the top (a smooth scroll over about 2,600 px takes
+    about 1.5 s, so an early sample read 865).
+  - Collapse all closed 5 and Expand all opened 5. The switch is not inside the toggle button.
+  - Read-only (`wrangler-dev-guardrail-admins`, :8789): the banner shows, the row still opens, the switch fieldset
+    and Save are disabled, Your preferences stay enabled, and Deployment reads "Listed admins only".
+  - At 375 px, page scrollWidth is 375, and a reload on `#provider-cato-ai-security` opened that row.
+- **Gates:** 654. **Prod:** smoke all pass, and the bundle `index-CTDknlA4.js` contains Expand all / Collapse all and
+  the new hint.
+
+**On "unverified"** (asked in the same message): the badge means the client was built from the vendor's docs and
+its verdict parsing has not been checked against a real response. It is cleared by a real payload from *Test
+connection*:
+- **Cato:** still needs the PII-test shape (allow, block and anonymize have been seen).
+- **Cisco:** a key is saved, but no verdict shape has been sent back yet.
+- **Lakera:** no key.
+
 ### 2026-10-07 — The Guardrails page becomes Settings: your preferences vs system settings
 
 **Asked for:** "review and redesign guardrail page as setting page, separate section for user config and system

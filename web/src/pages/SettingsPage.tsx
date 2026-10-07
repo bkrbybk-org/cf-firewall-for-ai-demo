@@ -16,7 +16,7 @@
 //    save succeeds, then wiped; what the server reports back is just whether a
 //    key exists and its last four characters.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, Loader2, Lock, LockOpen, Server, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Info, Loader2, Lock, LockOpen, Server, ShieldAlert } from "lucide-react";
 import { DeploymentPanel } from "../components/settings/DeploymentPanel";
 import { PreferencesSection } from "../components/settings/PreferencesSection";
 import { Group, SectionHeader } from "../components/settings/primitives";
@@ -269,9 +269,15 @@ function ProviderCard({
   config,
   onState,
   locked = false,
+  open,
+  onOpenChange,
 }: {
   config: ExternalGuardrailConfig;
   locked?: boolean; // not a guardrail admin — read-only
+  // A row in a collapsible list, closed by default (the page owns which are open,
+  // so the in-page nav and deep links can open the one they point at).
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   // Every successful response is handed up so the page re-renders ALL providers
   // and the traffic-flow diagram from the server's view, not from this card's.
   onState: (s: ExternalGuardrailsState) => void;
@@ -380,7 +386,7 @@ function ProviderCard({
 
   if (!config.supported) {
     return (
-      <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
+      <section className="rounded-xl border border-line bg-surface px-4 py-3 shadow-sm">
         <div className="flex items-center justify-between gap-3">
           <h4 className="text-[13px] font-bold text-text">{config.label}</h4>
           <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-[11px] font-semibold text-subtle">
@@ -397,47 +403,82 @@ function ProviderCard({
       ? "Save your changes first — the test uses the saved configuration"
       : "Scans a fixed benign prompt with the saved configuration";
 
+  // The collapsed row's one-line summary: everything needed to scan five providers
+  // without opening them. Saved values only — an unsaved edit in a closed row must
+  // not read as the configuration in force.
+  const savedRegion = config.regions.find((r) => r.id === config.region);
+  const summary = [
+    config.apiKeySet ? `${keyWord(config)} ••••${config.apiKeyLast4 ?? ""}` : `no ${keyWord(config)}`,
+    savedRegion?.label ?? config.region,
+    config.requiresProfile || config.profileName ? config.profileName || `no ${config.profileLabel}` : null,
+    config.failMode === "block" ? "fail closed" : "fail open",
+  ].filter(Boolean) as string[];
+
   return (
-    <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
-      {/* Not a guardrail admin: a disabled fieldset turns off every control in the
-          card together (the page banner says why). */}
-      <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h4 className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
-            {config.label}
-            {config.verified === false && (
-              <span
-                title="Built from the vendor's documentation; its response has not yet been checked against a real one. Run both tests and send back the response shape before relying on its verdicts."
-                className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
-              >
-                unverified
+    <section className="rounded-xl border border-line bg-surface shadow-sm">
+      <div className="flex items-center gap-3 px-3 py-2.5 sm:px-4">
+        {/* Accordion pattern: a heading that holds the toggle button. It sits OUTSIDE the
+            locked fieldset, so a read-only viewer can still open a row and read it. */}
+        <h4 className="m-0 min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={`${ids}body`}
+            onClick={() => onOpenChange(!open)}
+            className="flex w-full min-w-0 items-start gap-2 rounded-lg py-0.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <ChevronRight
+              size={16}
+              aria-hidden
+              className={`mt-0.5 shrink-0 text-muted transition-transform ${open ? "rotate-90" : ""}`}
+            />
+            <span className="min-w-0">
+              <span className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
+                {config.label}
+                {config.verified === false && (
+                  <span
+                    title="Built from the vendor's documentation; its response has not yet been checked against a real one. Run both tests and send back the response shape before relying on its verdicts."
+                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
+                  >
+                    unverified
+                  </span>
+                )}
               </span>
-            )}
-          </h4>
-          {config.updatedAt != null && (
-            <div className="mt-0.5 text-[11.5px] text-muted">
-              Last saved {new Date(config.updatedAt).toLocaleString()}
-            </div>
-          )}
-        </div>
-        <Switch
-          checked={config.enabled}
-          onChange={toggle}
-          disabled={busy || saving}
-          label={config.enabled ? "Enabled" : "Disabled"}
-          title="Forward every chat prompt to this guardrail before the model runs"
-        />
+              <span className="mt-0.5 block text-[11.5px] font-normal leading-relaxed text-muted">
+                {summary.join(" · ")}
+                {config.updatedAt != null && (
+                  <span className="text-subtle"> · saved {new Date(config.updatedAt).toLocaleString()}</span>
+                )}
+              </span>
+            </span>
+          </button>
+        </h4>
+        {/* Not a guardrail admin: a disabled fieldset turns off the switch, and the body's
+            own fieldset below does the same for the form (the page banner says why). */}
+        <fieldset disabled={locked} className="m-0 shrink-0 border-0 p-0">
+          <Switch
+            checked={config.enabled}
+            onChange={toggle}
+            disabled={busy || saving}
+            label={config.enabled ? "Enabled" : "Disabled"}
+            title="Forward every chat prompt to this guardrail before the model runs"
+          />
+        </fieldset>
       </div>
-      <div aria-live="polite" className="min-h-0">
+      {/* Outside the body: a failed toggle in a closed row must still be seen. */}
+      <div aria-live="polite" className="px-4 empty:hidden">
         {toggleErr && (
-          <div className="mt-2 flex items-start gap-1.5 text-[12px] text-cf-red">
+          <div className="mb-2.5 flex items-start gap-1.5 text-[12px] text-cf-red">
             <AlertTriangle size={14} className="mt-0.5 shrink-0" />
             <span>{toggleErr}</span>
           </div>
         )}
       </div>
 
+      {/* `hidden`, not unmounted: closing a row keeps a typed key, unsaved edits and the
+          last test result, so collapsing never throws work away. */}
+      <div id={`${ids}body`} hidden={!open} className="border-t border-line px-4 pt-1 pb-4">
+      <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
         <div>
           <label htmlFor={`${ids}region`} className="mb-1 block text-[12px] font-semibold text-text">
@@ -623,6 +664,7 @@ function ProviderCard({
         )}
       </div>
       </fieldset>
+      </div>
     </section>
   );
 }
@@ -638,7 +680,7 @@ function scrollToId(main: HTMLElement | null, id: string) {
   main.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
 }
 
-function SettingsNav({ items, main }: { items: NavItem[]; main: React.RefObject<HTMLElement | null> }) {
+function SettingsNav({ items, onGo }: { items: NavItem[]; onGo: (id: string) => void }) {
   return (
     <nav aria-label="Settings sections" className="sticky top-0 hidden w-52 shrink-0 self-start pt-1 lg:block">
       <ul className="flex flex-col gap-0.5">
@@ -648,7 +690,7 @@ function SettingsNav({ items, main }: { items: NavItem[]; main: React.RefObject<
               href={`#${it.id}`}
               onClick={(e) => {
                 e.preventDefault();
-                scrollToId(main.current, it.id);
+                onGo(it.id);
                 history.replaceState(null, "", `#${it.id}`);
               }}
               className={`block rounded-lg px-2.5 py-1.5 transition hover:bg-surface-2 hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
@@ -671,6 +713,25 @@ export function SettingsPage() {
   const [models, setModels] = useState<ModelsResponse | null>(null);
   const [modelsErr, setModelsErr] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
+  // Providers are a collapsible list, all closed on arrival: five full forms made the
+  // page a long scroll to reach anything. Not remembered — every visit starts scannable.
+  const [openRows, setOpenRows] = useState<Set<ExternalGuardrailProvider>>(new Set());
+  const setRowOpen = (p: ExternalGuardrailProvider, on: boolean) =>
+    setOpenRows((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(p);
+      else next.delete(p);
+      return next;
+    });
+  // Jump to a section; a provider target opens its row first and scrolls once it has
+  // rendered open, so the jump lands on the form rather than on a row about to grow.
+  const go = (id: string) => {
+    const provider = id.startsWith("provider-") ? (id.slice("provider-".length) as ExternalGuardrailProvider) : null;
+    if (provider) {
+      setRowOpen(provider, true);
+      requestAnimationFrame(() => scrollToId(mainRef.current, id));
+    } else scrollToId(mainRef.current, id);
+  };
 
   useEffect(() => {
     getModels()
@@ -723,7 +784,8 @@ export function SettingsPage() {
   const ready = !loading;
   useEffect(() => {
     const id = window.location.hash.slice(1);
-    if (ready && id) scrollToId(mainRef.current, id);
+    if (ready && id) go(id);
+    // `go` is stable in behaviour; re-running on its identity would re-scroll on every render.
   }, [ready]);
 
   return (
@@ -737,7 +799,7 @@ export function SettingsPage() {
       {/* `relative`: the scroll box contains its sr-only/absolute descendants (CLAUDE.md, scroll containers). */}
       <main ref={mainRef} className="relative min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto flex max-w-[1600px] gap-6">
-          <SettingsNav items={nav} main={mainRef} />
+          <SettingsNav items={nav} onGo={go} />
 
           <div className="flex min-w-0 flex-1 flex-col gap-8">
             <PreferencesSection />
@@ -816,21 +878,46 @@ export function SettingsPage() {
                 <Group
                   id="providers"
                   title="Providers"
-                  hint="Each vendor's key, region and failure handling. Test connection sends a fixed prompt with the saved configuration."
+                  hint={
+                    <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                      <span>
+                        Each vendor's key, region and failure handling — open a row to edit or test it. Test connection
+                        sends a fixed prompt with the saved configuration.
+                      </span>
+                      <span className="flex gap-3">
+                        {(["Expand all", "Collapse all"] as const).map((label) => (
+                          <button
+                            key={label}
+                            type="button"
+                            onClick={() =>
+                              setOpenRows(
+                                label === "Expand all" ? new Set(providers.map((c) => c.provider)) : new Set(),
+                              )
+                            }
+                            className="text-[11.5px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </span>
+                    </span>
+                  }
                 >
-                  <div className="grid items-start gap-4 xl:grid-cols-2">
+                  <ul className="flex flex-col gap-2">
                     {state.providers.map((c) => (
-                      <div key={c.provider} id={`provider-${c.provider}`} className="min-w-0 scroll-mt-4">
+                      <li key={c.provider} id={`provider-${c.provider}`} className="min-w-0 scroll-mt-4">
                         <ProviderCard
                           // Keyed by provider only: re-keying on updatedAt would remount the
                           // card after every save and wipe its "Saved." and test result.
                           config={c}
                           onState={setState}
                           locked={state.access?.canEdit === false}
+                          open={openRows.has(c.provider)}
+                          onOpenChange={(on) => setRowOpen(c.provider, on)}
                         />
-                      </div>
+                      </li>
                     ))}
-                  </div>
+                  </ul>
                 </Group>
               )}
 
