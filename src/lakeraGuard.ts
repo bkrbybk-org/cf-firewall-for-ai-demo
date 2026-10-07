@@ -21,6 +21,16 @@
 //   - `/v2/guard/results` is a NEW screening with no decision, not a lookup of a
 //     past request, so Lakera has no report panel here.
 //
+// Re-checked 2026-10-08 (API reference + live probes):
+//   - Request and response fields unchanged. Breakdown entries also carry `result` (a
+//     confidence level, unread) and `message_id` (which message — read in a reply check).
+//   - Lakera VALIDATES THE BODY BEFORE THE KEY, and strictly: an unknown field, a wrong
+//     type or an unknown role is a 400 with no key at all. Our exact prompt body and our
+//     [user, assistant] reply body both got the 401 instead — so both shapes are accepted.
+//   - That 400 is text/plain and quotes the offending value ("invalid role: …"), so it is
+//     never shown — only the status. A fake key answers ErrInvalidToken, a missing one
+//     ErrMissingToken: a dummy-key test proves the key arrived.
+//
 // Decided with the user (2026-10-05): Detect mode with detectors that fired is
 // "allow with alerts" — outcome allow, `detectOnly: true` — never a clean pass and
 // never a block.
@@ -46,8 +56,8 @@ export interface LakeraScanInput {
   prompt: string;
   // The model's reply, for a reply check (design J). Lakera's docs: "the most recent
   // user content is screened as input and the most recent assistant content as output"
-  // — so it goes in as the assistant turn. Both are screened, and which one a flag came
-  // from is not documented: a reply-check flag may be the prompt's. Unverified.
+  // — so it goes in as the assistant turn. Both are screened; each breakdown entry's
+  // `message_id` says which (parseLakeraResponse marks the prompt's). Unverified live.
   response?: string;
   timeoutMs?: number;
 }
@@ -106,6 +116,7 @@ export function parseLakeraResponse(
   body: unknown,
   latencyMs: number,
   projectId?: string,
+  reply = false,
 ): ExternalGuardrailResult {
   const base = { provider: "lakera-guard" as const, latencyMs, httpStatus: status };
   if (status < 200 || status >= 300) return { ...base, outcome: "error", error: errorMessage(body, status) };
@@ -119,9 +130,16 @@ export function parseLakeraResponse(
   const detected = [
     ...new Set(
       breakdown.flatMap((e) => {
-        const entry = e as { detected?: unknown; detector_type?: unknown } | null;
+        const entry = e as { detected?: unknown; detector_type?: unknown; message_id?: unknown } | null;
         const type = entry?.detected === true ? str(entry.detector_type) : undefined;
-        return type ? [type] : [];
+        if (!type) return [];
+        // A reply check sends [user prompt, assistant reply], and Lakera screens both.
+        // Its API reference gives each breakdown entry a `message_id` (the message's
+        // index; documented, not yet seen live), so a detection on message 0 is the
+        // PROMPT's and is marked "prompt:" — as Prisma AIRS's is — never shown as
+        // something the model said. One with no message_id cannot be attributed and
+        // stays unmarked.
+        return [reply && entry!.message_id === 0 ? `prompt:${type}` : type];
       }),
     ),
   ];
@@ -160,7 +178,7 @@ export async function scanPromptWithLakera(
     } catch {
       body = null; // non-JSON body: errorMessage() falls back to the status
     }
-    return parseLakeraResponse(res.status, body, Date.now() - started, input.projectId);
+    return parseLakeraResponse(res.status, body, Date.now() - started, input.projectId, input.response != null);
   } catch (err) {
     const name = err instanceof Error ? err.name : "";
     const message =

@@ -626,6 +626,73 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-08 — Cisco AI Defense, Lakera Guard, Cato: docs re-reviewed and live endpoints re-probed
+
+**Asked for:** "review cisco ai defense, check point lakera, cato docs and verify them". Deploy
+`8fade5e1-472a-4a33-8915-b6e7a2344373`.
+
+**What could be verified:**
+- the docs, read again;
+- live endpoints probed with no key and with an obviously fake key, sending only a "hello" message;
+- the parsers checked against both.
+
+A verdict cannot be verified without a real key: that is still the user's step.
+
+**Cisco AI Defense** (DevNet `inspect-conversations`)
+- **Docs unchanged:** the path, the three hosts, `X-Cisco-AI-Defense-API-Key`, `messages`/`metadata`, and the response
+  fields (`is_safe`, `classifications`, `rules[]`, `severity`, `attack_technique`, `explanation`, `event_id`,
+  `client_transaction_id`).
+- **Two things the docs leave open:**
+  - Cisco's own schema marks `classification` as required but defines `classifications`; the parser reads `classifications`.
+  - When `config` is sent, it needs `enabled_rules` or `integration_*` fields. We send none, on the documented
+    basis that the key's connection carries the policy. **Unverified**: if a real key returns `is_safe: true`
+    with no rules for everything, check this first.
+- **Message roles** are still not listed, so reply checking stays off.
+- **Live probes:**
+  - no key → 401 `missing api key`, on all three regions;
+  - fake key → 401 `…invalid api key` (it differs, so a dummy key proves the key arrived);
+  - a made-up path → 404 `{code:5}`.
+  - Pinned in tests.
+
+**Lakera Guard** (API reference `screen-content`)
+- **Fields unchanged,** plus breakdown `result` (a confidence level) and `message_id` (which message).
+- **Fixed:** in a reply check, a detection with `message_id` 0 (the prompt) now shows as `prompt:<type>`, like
+  Prisma AIRS. Before, a prompt detection could read as something the model said.
+- **New live evidence:** Lakera validates the body before the key, strictly (an unknown field, a wrong type or
+  role is a 400 with no key). Our exact prompt body and `[user, assistant]` reply body both got a 401, so both
+  shapes are accepted.
+- **That 400 is text/plain** and quotes the bad value: shown only as the status, which a test pins.
+- **Keys:** a fake key answers `ErrInvalidToken` and a missing one `ErrMissingToken`. The documented error body
+  `{error, code:int, request_id}` still differs from the live one (`error` = code, `message` = text); both are parsed.
+
+**Cato AI Security**
+- **No official API reference is public** (searched Cato's site, knowledge base and support portal). The best
+  written sources are third-party: LiteLLM's open-source guardrail and TrueFoundry's docs.
+- **Both agree with every live fact we have:**
+  - `/fw/v1/analyze`, `Bearer`;
+  - `required_action` null = nothing to do;
+  - `block_action` with `detection_message`/`policy_name`;
+  - `anonymize_action` with `redacted_chat`.
+- **Two new facts, not acted on** (open questions for the user below):
+  - `monitor_action` exists (both pass it through). Here it is "unrecognised", so under fail-closed it would
+    stop a turn as "unavailable".
+  - Cato checks replies, with the reply appended as an `assistant` message.
+- **Base URL:** regional or a self-hosted Outpost; only `api.aisec.catonetworks.com` is public, and the user's
+  guard answers there.
+- **Live probes:** no key → 401 `Authorization header is required`; fake key → 401 `Invalid API token`; a
+  made-up path → 404. These match 2026-10-06.
+
+**Verified:** 734 tests, 0 type errors.
+- **Mutation-verified:** dropping the prompt mark was caught.
+- **A test gap closed:** not passing the reply flag first survived, because the parser tests called it directly.
+  A scan-level test was added, which then caught it.
+- **Prod:** smoke passes.
+
+**Open questions for the user (Cato, third-party evidence only):**
+- (a) Map `monitor_action` to allow with alerts (amber, `detectOnly`, like Lakera's Detect mode), or keep it an error?
+- (b) Turn on Cato reply checking (`replyCheck: true`, reply as the assistant turn) on integrators' evidence, or wait
+  for a real Cato reply payload?
+
 ### 2026-10-08 — Design J, part 2: reply verdicts in the Red Team, as counts only
 
 Deploy `c74474a0-dbc2-4feb-ad2b-44b48b2b6ef4`. No new migration: `0008` already added `redteam_results.reply_vendors`.

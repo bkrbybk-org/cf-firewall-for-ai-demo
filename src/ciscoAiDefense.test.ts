@@ -272,3 +272,18 @@ describe("scanPromptWithCiscoAid", () => {
     expect(seen?.init?.signal).toBeInstanceOf(AbortSignal);
   });
 });
+
+// LIVE bodies, probed 2026-10-08: a bad key answers differently from a missing one, so
+// the operator can tell which — both are errors, never verdicts.
+describe("parseCiscoAidResponse — live error bodies (2026-10-08)", () => {
+  it("shows the useful half (details) for a missing and for an invalid key", () => {
+    const missing = { code: 401, message: "Unauthorized", details: ["failed to validate request: missing api key"] };
+    const invalid = {
+      code: 401,
+      message: "Unauthorized",
+      details: ["failed to validate request: unauthenticated: rpc error: code = Unauthenticated desc = invalid api key"],
+    };
+    expect(parseCiscoAidResponse(401, missing, 1)).toMatchObject({ outcome: "error", error: "Unauthorized: failed to validate request: missing api key" });
+    expect(parseCiscoAidResponse(401, invalid, 1).error).toMatch(/invalid api key$/);
+  });
+});

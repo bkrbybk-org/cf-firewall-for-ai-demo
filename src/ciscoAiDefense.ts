@@ -23,6 +23,20 @@
 //     regions, a made-up path 404 — so the path is real (unlike PANW, whose hosts
 //     answer 403 to any path).
 //
+// Re-checked 2026-10-08 against the same DevNet page and the live hosts:
+//   - Path, hosts, header, `messages`, `metadata` and every response field above are
+//     unchanged. The page's own schema lists `classification` as required while the
+//     property it defines is `classifications` (array) — read as the latter.
+//   - `config` (optional) takes `enabled_rules[]` or `integration_profile_id` / `_version` /
+//     `_tenant_id` / `integration_type`, and "one of" them must be given IF config is sent.
+//     None is sent here: the key's connection carries the policy. Whether a connection
+//     key with no config applies its rules is UNVERIFIED — if every answer comes back
+//     is_safe with no rules, that is the first thing to check.
+//   - `messages[].role` values are not enumerated, so reply checking stays off (replyCheck).
+//   - Live, no key → 401 {code, message:"Unauthorized", details:["…missing api key"]}; an
+//     obviously fake key → 401 with "…invalid api key" in details, so a dummy-key test
+//     proves the key arrived; a made-up path → 404 {code:5, message:"Not Found"}.
+//
 // Decided with the user (2026-10-05): `severity` never overrides `is_safe`.
 
 import type { ExternalGuardrailResult } from "./types";

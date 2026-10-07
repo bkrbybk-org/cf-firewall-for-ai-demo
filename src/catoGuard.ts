@@ -35,6 +35,25 @@
 //     back with empty `detections`. A real block has not been seen yet; its shape is
 //     still the sample's `required_action.action_type: "block_action"`.
 
+//
+// Re-checked 2026-10-08. Cato publishes NO public API reference for this endpoint (searched
+// Cato's site, knowledge base and support portal). Two third-party integrations are the best
+// written sources — LiteLLM's open-source guardrail (BerriAI/litellm, guardrail_hooks/
+// cato_networks) and TrueFoundry's docs — and both agree with every live fact above:
+//   - POST {base}/fw/v1/analyze, `Authorization: Bearer`, an OpenAI `messages` body.
+//   - `required_action` null/absent = nothing to do (our live allow).
+//   - `block_action` (with `detection_message`, `policy_name`) and `anonymize_action`
+//     (with `redacted_chat.all_redacted_messages`).
+//   - NEW: `monitor_action` — both pass the request through. NOT handled here yet: it falls
+//     to "unrecognised", so the fail mode decides (PROGRESS.md, Open question for the user).
+//   - NEW: replies are checked by appending the model's reply as an `assistant` message
+//     (LiteLLM post_call, TrueFoundry output hook). `replyCheck` stays false until the user
+//     decides on third-party evidence.
+//   - Base URL is regional or a self-hosted Outpost; only api.aisec.catonetworks.com is
+//     public, and it is what the user's guard answers on.
+//   Live, 2026-10-08: no key → 401 {"detail":"Authorization header is required"}; a fake key →
+//   401 {"detail":"Invalid API token"}; a made-up path → 404.
+
 import type { ExternalGuardrailResult } from "./types";
 
 export const CATO_GUARD_PATH = "/fw/v1/analyze";

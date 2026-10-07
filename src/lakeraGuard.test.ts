@@ -245,3 +245,42 @@ describe("scanPromptWithLakera", () => {
     expect((await scanPromptWithLakera(input, fetchImpl)).outcome).toBe("error");
   });
 });
+
+// Design J + the 2026-10-08 docs review: Lakera's breakdown entries carry `message_id`
+// (documented), so in a reply check the prompt's detections are marked as the prompt's.
+describe("parseLakeraResponse — reply attribution", () => {
+  const entry = (type: string, message_id?: number) => ({ ...hit(type), ...(message_id != null ? { message_id } : {}) });
+  it("marks a detection on message 0 (the prompt) as prompt:, and leaves the reply's as is", () => {
+    const body = { flagged: true, breakdown: [entry("prompt_attack", 0), entry("pii", 1), entry("moderated_content")] };
+    expect(parseLakeraResponse(200, body, 5, "p", true).detected).toEqual(["prompt:prompt_attack", "pii", "moderated_content"]);
+    // The prompt check is unchanged: message 0 IS what it checks.
+    expect(parseLakeraResponse(200, body, 5, "p").detected).toEqual(["prompt_attack", "pii", "moderated_content"]);
+  });
+});
+
+// LIVE bodies, probed 2026-10-08 with no key / an obviously fake key.
+describe("parseLakeraResponse — live error bodies (2026-10-08)", () => {
+  it("names a bad key apart from a missing one", () => {
+    const missing = { error: "ErrMissingToken", message: "authentication token is missing", details: "", request_id: "r" };
+    const invalid = { error: "ErrInvalidToken", message: "invalid authentication token", details: "", request_id: "r" };
+    expect(parseLakeraResponse(401, missing, 1).error).toBe("authentication token is missing (ErrMissingToken)");
+    expect(parseLakeraResponse(401, invalid, 1).error).toBe("invalid authentication token (ErrInvalidToken)");
+  });
+  it("a validation 400 is plain text (it can quote the request) — never echoed, only the status", () => {
+    // The live 400 is text/plain, so the JSON read yields null.
+    expect(parseLakeraResponse(400, null, 1)).toMatchObject({ outcome: "error", error: "Lakera Guard returned HTTP 400" });
+  });
+});
+
+describe("scanPromptWithLakera — a reply check end to end", () => {
+  it("sends the reply and marks the prompt's detection in what comes back", async () => {
+    let sent: { messages: { role: string }[] } | null = null;
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      sent = JSON.parse(init!.body as string);
+      return Response.json({ flagged: true, breakdown: [{ ...hit("prompt_attack"), message_id: 0 }, { ...hit("pii"), message_id: 1 }] });
+    }) as typeof fetch;
+    const r = await scanPromptWithLakera({ ...input, response: "the reply" }, fetchImpl);
+    expect(sent!.messages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(r).toMatchObject({ outcome: "block", detected: ["prompt:prompt_attack", "pii"] });
+  });
+});

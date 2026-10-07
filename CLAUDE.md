@@ -160,6 +160,11 @@ alters what a customer sees in a demo. State it and let them choose.
   *Test connection* show such a field's value, only as a bare lowercase token — the one exception to "never text".
   Some vendors echo the matched data in their response (Cato's `detection_message` quotes the SSN): a parser
   copies out only an allowlist of names, never a vendor's message or content field.
+  Lakera validates the request body BEFORE the key, strictly (an unknown field, type or role is a 400): so a no-key
+  probe that gets a 401 proves a body shape is accepted. Its 400 is text/plain and quotes the bad value — never shown.
+  Cato publishes no public API reference for `/fw/v1/analyze`; the best written sources are LiteLLM's open-source
+  Cato guardrail (`BerriAI/litellm`, `guardrail_hooks/cato_networks`) and TrueFoundry's docs — third-party, so a fact
+  from them is "documented by an integrator", below a real payload.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,
