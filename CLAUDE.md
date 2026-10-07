@@ -197,7 +197,7 @@ alters what a customer sees in a demo. State it and let them choose.
 - The guardrail admin gate (`src/accessAuth.ts`) is off unless the `GUARDRAIL_ADMIN_EMAILS` secret is set (prod:
   SET since 2026-10-06 to the user's own Access login — only they can change guardrails there; the service token
   in `.env` can read but every write is a 403). To see it enforcing locally, start **`wrangler-dev-guardrail-admins`**
-  (port 8789): local requests carry no Access JWT, so every guardrail write is a 403 and the page is read-only.
+  (port 8789): local requests carry no Access JWT, so every guardrail write is a 403 and Settings → System is read-only (Your preferences still work — they never touch the server).
   Setting that secret on prod changes who can edit a live demo's guardrails — ask first.
   **Consequence for you:** prod guardrail writes — saving a key, *Test connection*, toggling guardrail-only — can
   no longer be done with the service token. They need the user in their browser (or the user adding an admin).

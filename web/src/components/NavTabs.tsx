@@ -7,7 +7,7 @@ import {
   ClipboardCheck,
   ExternalLink,
   FileCode2,
-  ShieldPlus,
+  Settings,
   ShieldCheck,
   Swords,
   type LucideIcon,
@@ -18,7 +18,7 @@ const TABS: { to: string; label: string; icon: LucideIcon; end?: boolean }[] = [
   { to: '/analytics', label: 'Analytics', icon: BarChart3 },
   { to: '/redteam', label: 'Red Team', icon: Swords },
   { to: '/compliance', label: 'Compliance', icon: ClipboardCheck },
-  { to: '/guardrails', label: 'Guardrails', icon: ShieldPlus },
+  { to: '/settings', label: 'Settings', icon: Settings },
 ];
 
 export function NavTabs() {

@@ -1,4 +1,4 @@
-// "Traffic flow" panel for the Guardrails page: the request path drawn FROM the
+// "Traffic flow" panel for Settings → System: the request path drawn FROM the
 // saved pipeline config, with the few controls that edit it. It is not a
 // free-form editor on purpose — two stages can never move:
 //   - the edge WAF runs at Cloudflare's edge, before the Worker is invoked, so
@@ -244,7 +244,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
 
   return (
     <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
-      <h2 className="text-[13px] font-bold text-text">Traffic flow</h2>
+      <h3 className="text-[13px] font-bold text-text">Traffic flow</h3>
       <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">
         Drawn from the saved settings. The locked stages cannot move; the guardrails between them can be switched on
         and off, run one after another or all at once, and put in a different order.

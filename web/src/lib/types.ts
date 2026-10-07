@@ -32,7 +32,7 @@ export interface ModelsResponse {
   // a prompt to go" and hide the whole feature when there isn't. Optional
   // because a cached or older Worker may not send it — treat absent as OFF,
   // matching the server's own opt-in default.
-  promptLog?: { enabled: boolean };
+  promptLog?: { enabled: boolean; maxAgeDays?: number; maxRows?: number };
 }
 
 // GET /api/zone-rules — the zone's WAF custom rules, read live from the

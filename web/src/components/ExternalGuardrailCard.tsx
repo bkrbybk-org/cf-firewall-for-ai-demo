@@ -7,7 +7,7 @@
 // and before the model. A colour of its own is what lets someone looking at a
 // blocked turn tell which layer actually stopped it.
 //
-// Three layouts, chosen per viewer on /guardrails (lib/cardLayout.ts): "columns" — a
+// Three layouts, chosen per viewer in Settings → Your preferences (lib/cardLayout.ts): "columns" — a
 // headline, then one bordered mini card per vendor — "compact", one row per vendor, and
 // "table", one column per vendor and one row per field. Every fact comes from
 // pipelineView() (lib/guardrailView.ts), so no layout re-decides what a result means.

@@ -626,6 +626,73 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-07 — The Guardrails page becomes Settings: your preferences vs system settings
+
+**Asked for:** "review and redesign guardrail page as setting page, separate section for user config and system
+config". Deploy `236b2d11-2893-4b64-ac9e-6b6475471839`.
+
+**Review — what was wrong with `/guardrails`.**
+- **Mixed scopes:** the per-browser "Chat card layout" box (three localStorage switches) sat **between** the shared
+  traffic-flow diagram and the shared provider cards. The only cue that it was not a system setting was fine print.
+- **Wrong title:** "External Guardrails" did not cover display preferences.
+- **Access note:** a thin line above the diagram, not attached to the settings it governs. The "open" variant was
+  broken: its text and `<code>` were separate flex items, so the sentence split into columns. That bug predates
+  this change.
+- **Invisible deployment config:** the prompt-log flag, retention, admin gate, encryption secret and gateway
+  config were not visible anywhere, so "why is X off" meant reading `wrangler.jsonc`.
+- **Navigation and theme:** five full provider cards with no in-page navigation. The theme was only the header
+  icon, with each `useTheme()` holding its own state.
+
+**Redesign.**
+- **Route:** `/settings`, tab "Settings" with a gear icon. `/guardrails` → `<Navigate to="/settings#system">`, so old
+  links and bookmarks land on the system half. The Red Team "traffic flow" link → `/settings#traffic-flow`.
+- **Section headers** carry a scope chip: **Your preferences** ("This browser only", blue) and **System settings**
+  ("Shared — every user", amber), each with a sentence saying what that scope means.
+- **Your preferences** (`components/settings/PreferencesSection.tsx`, replacing `CardLayoutPicker.tsx`):
+  - setting rows (label and description on the left, segmented control on the right, stacked on a phone);
+  - Appearance → Theme;
+  - Chat display → Guardrail card layout, Turn details, Raw vendor responses.
+  - The "would not save" note per row is kept.
+- **System settings:**
+  - the access note, now under the System header;
+  - the data-leaves-Cloudflare warning;
+  - traffic flow;
+  - providers, each anchorable;
+  - **Deployment**, a new read-only panel (`DeploymentPanel.tsx`) with columns Setting / Value now / Set by.
+- **The Deployment panel reads every value live:**
+  - guardrail storage (`state.configured`; `DB` + `GUARDRAIL_SECRET_KEY`);
+  - who can change system settings (`access.mode`; `GUARDRAIL_ADMIN_EMAILS` + `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD`);
+  - prompt log on/off with its retention (`/api/models` now serves `promptLog.maxAgeDays/maxRows` from the prune's
+    own constants);
+  - AI Gateways;
+  - default model.
+  - What the Worker does not report (e.g. whether `CF_AIG_TOKEN` is set) is not listed rather than guessed.
+- **A claim corrected during verification:** I first labelled the AI Gateways row "set by `CF_AI_GATEWAY_ID` /
+  `_GUARDED_ID`". The live page listed 8 gateways, because the list comes from the account
+  (`CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` with AI Gateway Read) and those vars are only the fallback. The
+  "Guardrails" badge marks only `CF_AI_GATEWAY_GUARDED_ID`, since the API does not report it. The row now says
+  so, and shows 3 gateways plus a "+N more" toggle.
+- **In-page nav:** a sticky left nav (lg+). It scrolls `main` with `scrollTo`, never `scrollIntoView`, and `main` is
+  now `relative`. Deep links (`#traffic-flow`, `#system`) scroll once loaded.
+- **Theme** is a shared store (`useSyncExternalStore` over `<html data-theme>`), so the header icon and the
+  Settings row cannot disagree.
+- **Heading levels:** h2 for sections, h3 for groups, the traffic-flow heading is h3, provider cards are h4.
+
+**Verified** (`wrangler dev`):
+- **Redirect:** `/guardrails` → `/settings#system`, scrolled with the System heading 12 px from the top and the
+  Settings tab active.
+- **Nav:** clicking "Deployment" scrolled `main` (body scroll 0), with the nav still pinned at 16 px.
+- **Theme:** Settings → Light flipped the header button to "Switch to dark"; the header button flipped the row back
+  to Dark and stored `dark`.
+- **Deployment panel:** live values (Ready / Anyone Cloudflare Access lets in / Off, 90 days, 1,000 / 8 gateways
+  with the guarded one marked).
+- **Layout and console:** 375 px has page scrollWidth 375, no element past the viewport and the nav hidden. Light
+  and dark checked; no console errors.
+- **Gates:** 654.
+- **Prod:** smoke all pass. `/api/models` `promptLog` = `{enabled:false, maxAgeDays:90, maxRows:1000}`;
+  `/settings` and `/guardrails` both 200. The bundle `index-DU94WKLj.js` contains both scope chips, "Settings
+  sections", `/settings#system` and `GUARDRAIL_SECRET_KEY`.
+
 ### 2026-10-06 — Saved runs keep the guardrail benchmark (B, migration 0007); prompt-log retention 90 days / 1,000
 
 **Asked for:** "go ahead with B, and on this database — can we have 90 data retention or 1000 records for prompt

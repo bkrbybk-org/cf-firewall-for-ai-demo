@@ -146,7 +146,7 @@ export function VendorScorecard({
             Not a like-for-like comparison: the guardrails did not all scan the same prompts
             {sequential ? " (sequential mode — a later guardrail never sees what an earlier one blocked)" : ""}. For a fair
             comparison set the{" "}
-            <Link to="/guardrails" className="font-semibold text-accent underline">
+            <Link to="/settings#traffic-flow" className="font-semibold text-accent underline">
               traffic flow
             </Link>{" "}
             to Parallel, ideally with Guardrail-only on, and re-run.

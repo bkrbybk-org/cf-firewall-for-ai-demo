@@ -823,7 +823,14 @@ export const openapi = {
           gateways: arr(ref("GatewayOption")),
           defaultGateway: str("Absent when no gateway is configured."),
           limits: obj({ maxAttempts: int(), retryDelayMs: int() }, ["maxAttempts", "retryDelayMs"], "Caps the Worker clamps the numeric gateway settings to."),
-          promptLog: obj({ enabled: bool() }, ["enabled"], "Prompt-log feature flag AND a bound D1."),
+          promptLog: obj(
+            {
+              enabled: bool("Prompt-log feature flag AND a bound D1."),
+              maxAgeDays: int("Retention: rows older than this are deleted (90)."),
+              maxRows: int("Retention: only this many newest rows are kept (1000)."),
+            },
+            ["enabled", "maxAgeDays", "maxRows"],
+          ),
         },
         ["default", "models", "defaultSystemPrompt", "maxSystemPromptLen", "gateways", "limits", "promptLog"],
       ),

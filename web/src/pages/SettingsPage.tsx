@@ -1,9 +1,13 @@
-// External guardrails page: configure forwarding of every /api/chat prompt to
-// third-party guardrails (Palo Alto Networks Prisma AIRS, CrowdStrike Falcon
-// AIDR) and how they run together. State lives in D1 behind
-// /api/external-guardrails — this page only renders and edits it.
+// Settings page (/settings; /guardrails until 2026-10-07). Two sections that must
+// never be confused:
+//  - Your preferences — saved in THIS browser only (components/settings/
+//    PreferencesSection.tsx): theme, how the chat draws guardrail turns.
+//  - System settings — shared by every user: the external guardrails (forwarding
+//    of every /api/chat prompt to third-party guardrails, and how they run
+//    together), stored in D1 behind /api/external-guardrails, plus a read-only
+//    view of the Worker's deployment config (components/settings/DeploymentPanel).
 //
-// Two honesty rules shape the code:
+// Two honesty rules shape the system half:
 //  - The toggle shows the SERVER's state, never the click. Enabling is rejected
 //    (HTTP 400) without a key (and, for Prisma AIRS, a profile), and a pipeline edit (mode, order,
 //    guardrail-only) lives beside the providers in the same state, so every
@@ -11,9 +15,11 @@
 //  - The API key is write-only. It is held in an input's state only until a
 //    save succeeds, then wiped; what the server reports back is just whether a
 //    key exists and its last four characters.
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, Loader2, Lock, LockOpen, ShieldAlert } from "lucide-react";
-import { CardLayoutPicker } from "../components/CardLayoutPicker";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, Info, Loader2, Lock, LockOpen, Server, ShieldAlert } from "lucide-react";
+import { DeploymentPanel } from "../components/settings/DeploymentPanel";
+import { PreferencesSection } from "../components/settings/PreferencesSection";
+import { Group, SectionHeader } from "../components/settings/primitives";
 import { Header } from "../components/Header";
 import { PipelineDiagram } from "../components/PipelineDiagram";
 import { Switch } from "../components/Switch";
@@ -21,6 +27,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { scanIdLabel } from "../lib/guardrailView";
 import {
   getExternalGuardrails,
+  getModels,
   saveExternalGuardrail,
   saveGuardrailPipeline,
   testExternalGuardrail,
@@ -34,6 +41,7 @@ import type {
   GuardrailAccess,
   GuardrailPipelineUpdate,
   GuardrailTestSample,
+  ModelsResponse,
 } from "../lib/types";
 
 const INPUT_CLS =
@@ -80,16 +88,23 @@ function AccessNote({ access }: { access: GuardrailAccess }) {
   }
   if (access.mode === "admin") {
     return (
-      <div className="flex items-center gap-2 px-1 text-[12px] text-muted">
-        <Lock size={13} className="shrink-0 text-cf-green" /> Signed in as {access.who}, a guardrail admin — changes are
-        restricted to the admin list.
+      <div className="flex items-start gap-2 px-1 text-[12px] leading-relaxed text-muted">
+        <Lock size={13} className="mt-0.5 shrink-0 text-cf-green" />
+        <span>
+          Signed in as {access.who}, a guardrail admin — changes are restricted to the admin list.
+        </span>
       </div>
     );
   }
   return (
-    <div className="flex items-center gap-2 px-1 text-[12px] text-muted">
-      <LockOpen size={13} className="shrink-0 text-subtle" /> Anyone Cloudflare Access lets in can change these settings,
-      service tokens included. Set the <code className="font-mono">GUARDRAIL_ADMIN_EMAILS</code> secret to restrict them.
+    // One <span> for the sentence: as bare flex children, the text runs and the <code>
+    // became separate columns and the sentence broke apart.
+    <div className="flex items-start gap-2 px-1 text-[12px] leading-relaxed text-muted">
+      <LockOpen size={13} className="mt-0.5 shrink-0 text-subtle" />
+      <span>
+        Anyone Cloudflare Access lets in can change these settings, service tokens included. Set the{" "}
+        <code className="font-mono">GUARDRAIL_ADMIN_EMAILS</code> secret to restrict them.
+      </span>
     </div>
   );
 }
@@ -367,7 +382,7 @@ function ProviderCard({
     return (
       <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="text-[13px] font-bold text-text">{config.label}</h2>
+          <h4 className="text-[13px] font-bold text-text">{config.label}</h4>
           <span className="rounded-full border border-line bg-surface-2 px-2.5 py-0.5 text-[11px] font-semibold text-subtle">
             Not yet supported
           </span>
@@ -389,7 +404,7 @@ function ProviderCard({
       <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
+          <h4 className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
             {config.label}
             {config.verified === false && (
               <span
@@ -399,7 +414,7 @@ function ProviderCard({
                 unverified
               </span>
             )}
-          </h2>
+          </h4>
           {config.updatedAt != null && (
             <div className="mt-0.5 text-[11.5px] text-muted">
               Last saved {new Date(config.updatedAt).toLocaleString()}
@@ -612,10 +627,56 @@ function ProviderCard({
   );
 }
 
-export function GuardrailsPage() {
+// In-page navigation. Scrolls the page's own scroll box with scrollTo — never
+// scrollIntoView, which also scrolls every ancestor (CLAUDE.md, scroll containers).
+type NavItem = { id: string; label: string; indent?: boolean };
+
+function scrollToId(main: HTMLElement | null, id: string) {
+  const el = document.getElementById(id);
+  if (!main || !el) return;
+  const top = el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop - 12;
+  main.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+}
+
+function SettingsNav({ items, main }: { items: NavItem[]; main: React.RefObject<HTMLElement | null> }) {
+  return (
+    <nav aria-label="Settings sections" className="sticky top-0 hidden w-52 shrink-0 self-start pt-1 lg:block">
+      <ul className="flex flex-col gap-0.5">
+        {items.map((it) => (
+          <li key={it.id}>
+            <a
+              href={`#${it.id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                scrollToId(main.current, it.id);
+                history.replaceState(null, "", `#${it.id}`);
+              }}
+              className={`block rounded-lg px-2.5 py-1.5 transition hover:bg-surface-2 hover:text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
+                it.indent ? "pl-5 text-[12px] text-muted" : "text-[12.5px] font-semibold text-text"
+              }`}
+            >
+              {it.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
+export function SettingsPage() {
   const [state, setState] = useState<ExternalGuardrailsState | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [models, setModels] = useState<ModelsResponse | null>(null);
+  const [modelsErr, setModelsErr] = useState(false);
+  const mainRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    getModels()
+      .then(setModels)
+      .catch(() => setModelsErr(true));
+  }, []);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -646,88 +707,145 @@ export function GuardrailsPage() {
     accept(await saveExternalGuardrail({ provider, enabled }));
   const savePipeline = async (update: GuardrailPipelineUpdate) => accept(await saveGuardrailPipeline(update));
 
+  const providers = state?.configured ? state.providers.filter((c) => c.supported) : [];
+  const nav: NavItem[] = [
+    { id: "prefs", label: "Your preferences" },
+    { id: "pref-appearance", label: "Appearance", indent: true },
+    { id: "pref-chat", label: "Chat display", indent: true },
+    { id: "system", label: "System settings" },
+    ...(state?.configured && state.pipeline ? [{ id: "traffic-flow", label: "Traffic flow", indent: true }] : []),
+    ...providers.map((c) => ({ id: `provider-${c.provider}`, label: c.label, indent: true })),
+    { id: "deployment", label: "Deployment", indent: true },
+  ];
+
+  // Deep links (/settings#traffic-flow, and /guardrails → #system) land on their
+  // section once the content it needs has rendered.
+  const ready = !loading;
+  useEffect(() => {
+    const id = window.location.hash.slice(1);
+    if (ready && id) scrollToId(mainRef.current, id);
+  }, [ready]);
+
   return (
     <div className="flex h-full flex-col">
       <Header
-        title="External Guardrails"
-        subtitle={<>Forward each chat prompt to a third-party guardrail before the model runs</>}
+        title="Settings"
+        subtitle={<>Your preferences for this browser, and the system configuration every user shares</>}
         actions={<ThemeToggle />}
       />
 
-      <main className="min-h-0 flex-1 overflow-y-auto p-4">
-        <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
-          <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
-            <Info size={16} className="mt-0.5 shrink-0 text-cf-amber" />
-            <p className="text-[12.5px] leading-relaxed text-muted">
-              When enabled, <b className="text-text">every prompt sent through /api/chat is forwarded to the provider
-              before the model runs</b>, on both the direct and the AI Gateway route. The Cloudflare edge WAF still
-              scans first. <b className="text-text">Prompts leave Cloudflare and are sent to the third party</b> — only
-              enable this for data you are willing to share with them. Any number of guardrails can be active; the
-              traffic flow below sets how they run.
-            </p>
+      {/* `relative`: the scroll box contains its sr-only/absolute descendants (CLAUDE.md, scroll containers). */}
+      <main ref={mainRef} className="relative min-h-0 flex-1 overflow-y-auto p-4">
+        <div className="mx-auto flex max-w-[1600px] gap-6">
+          <SettingsNav items={nav} main={mainRef} />
+
+          <div className="flex min-w-0 flex-1 flex-col gap-8">
+            <PreferencesSection />
+
+            <section aria-labelledby="system" className="flex flex-col gap-4">
+              <SectionHeader
+                id="system"
+                icon={<Server size={18} />}
+                title="System settings"
+                scope="Shared — every user"
+                scopeTone="system"
+              >
+                Stored on the server. A change here applies at once to every chat, the Red Team runner and every viewer —
+                not just this browser.
+              </SectionHeader>
+
+              {/* Who may change these settings (#26) — attached to the settings it governs,
+                  and said up front rather than discovered through a failed save. */}
+              {state?.access && <AccessNote access={state.access} />}
+
+              {loading && !state && (
+                <div className="flex items-center gap-2 text-[12.5px] text-muted" aria-live="polite">
+                  <Loader2 size={14} className="animate-spin" /> Loading…
+                </div>
+              )}
+
+              {loadErr && (
+                <div
+                  role="alert"
+                  className="flex flex-wrap items-center gap-3 rounded-2xl border border-cf-red/50 bg-cf-red/10 px-4 py-3 text-[12.5px] text-cf-red"
+                >
+                  <AlertTriangle size={16} className="shrink-0" />
+                  <span className="min-w-0 flex-1 break-words">Could not load external guardrail settings: {loadErr}</span>
+                  <button type="button" onClick={load} disabled={loading} className={BTN_CLS}>
+                    Retry
+                  </button>
+                </div>
+              )}
+
+              {state && !state.configured && (
+                // Not an error to retry: the Worker is missing its encryption secret
+                // or D1 binding, and no form can work until an operator fixes that.
+                <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/60 bg-cf-amber/10 px-4 py-3">
+                  <ShieldAlert size={18} className="mt-0.5 shrink-0 text-cf-amber" />
+                  <div>
+                    <div className="text-[13px] font-bold text-cf-amber">External guardrails are not set up</div>
+                    <p className="mt-1 text-[12.5px] leading-relaxed text-text">
+                      {state.setupHint || state.error || "The Worker is missing the configuration this feature needs."}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {state?.configured && (
+                <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/40 bg-cf-amber/[0.06] px-4 py-3">
+                  <Info size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+                  <p className="text-[12.5px] leading-relaxed text-muted">
+                    An enabled external guardrail sees <b className="text-text">every prompt sent through /api/chat</b>,
+                    before the model runs, on both the direct and the AI Gateway route. The Cloudflare edge WAF still
+                    scans first. <b className="text-text">Prompts leave Cloudflare and go to the third party</b> — only
+                    enable one for data you are willing to share with it.
+                  </p>
+                </div>
+              )}
+
+              {/* `pipeline` guard: a Worker older than this bundle sends providers
+                  without it, and the diagram would throw on the missing config. */}
+              {state?.configured && state.pipeline && (
+                // The diagram carries its own "Traffic flow" heading and explanation.
+                <div id="traffic-flow" className="scroll-mt-4">
+                  <PipelineDiagram state={state} onToggle={toggleProvider} onPipeline={savePipeline} />
+                </div>
+              )}
+
+              {state?.configured && (
+                <Group
+                  id="providers"
+                  title="Providers"
+                  hint="Each vendor's key, region and failure handling. Test connection sends a fixed prompt with the saved configuration."
+                >
+                  <div className="grid items-start gap-4 xl:grid-cols-2">
+                    {state.providers.map((c) => (
+                      <div key={c.provider} id={`provider-${c.provider}`} className="min-w-0 scroll-mt-4">
+                        <ProviderCard
+                          // Keyed by provider only: re-keying on updatedAt would remount the
+                          // card after every save and wipe its "Saved." and test result.
+                          config={c}
+                          onState={setState}
+                          locked={state.access?.canEdit === false}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </Group>
+              )}
+
+              <Group
+                id="deployment"
+                title="Deployment"
+                hint="Read-only. These are Worker variables, secrets and bindings, fixed when the Worker is deployed — change them with wrangler, not here. Values are read live from the running Worker."
+              >
+                <DeploymentPanel state={state} models={models} modelsErr={modelsErr} />
+              </Group>
+            </section>
           </div>
-
-          {loading && !state && (
-            <div className="flex items-center gap-2 text-[12.5px] text-muted" aria-live="polite">
-              <Loader2 size={14} className="animate-spin" /> Loading…
-            </div>
-          )}
-
-          {loadErr && (
-            <div
-              role="alert"
-              className="flex flex-wrap items-center gap-3 rounded-2xl border border-cf-red/50 bg-cf-red/10 px-4 py-3 text-[12.5px] text-cf-red"
-            >
-              <AlertTriangle size={16} className="shrink-0" />
-              <span className="min-w-0 flex-1 break-words">Could not load external guardrail settings: {loadErr}</span>
-              <button type="button" onClick={load} disabled={loading} className={BTN_CLS}>
-                Retry
-              </button>
-            </div>
-          )}
-
-          {state && !state.configured && (
-            // Not an error to retry: the Worker is missing its encryption secret
-            // or D1 binding, and no form can work until an operator fixes that.
-            <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/60 bg-cf-amber/10 px-4 py-3">
-              <ShieldAlert size={18} className="mt-0.5 shrink-0 text-cf-amber" />
-              <div>
-                <div className="text-[13px] font-bold text-cf-amber">External guardrails are not set up</div>
-                <p className="mt-1 text-[12.5px] leading-relaxed text-text">
-                  {state.setupHint || state.error || "The Worker is missing the configuration this feature needs."}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Who may change these settings (#26). Said up front rather than discovered
-              through a failed save; "open" is said too, so no restriction is implied. */}
-          {state?.access && <AccessNote access={state.access} />}
-
-          {/* `pipeline` guard: a Worker older than this bundle sends providers
-              without it, and the diagram would throw on the missing config. */}
-          {state?.configured && state.pipeline && (
-            <PipelineDiagram state={state} onToggle={toggleProvider} onPipeline={savePipeline} />
-          )}
-
-          {/* Shown whatever the server state: it is a browser-side preference. */}
-          <CardLayoutPicker />
-          {state?.configured && (
-            <div className="grid items-start gap-4 xl:grid-cols-2">
-              {state.providers.map((c) => (
-                <ProviderCard
-                  // Keyed by provider only: re-keying on updatedAt would remount the
-                  // card after every save and wipe its "Saved." and test result.
-                  key={c.provider}
-                  config={c}
-                  onState={setState}
-                  locked={state.access?.canEdit === false}
-                />
-              ))}
-            </div>
-          )}
         </div>
       </main>
     </div>
   );
 }
+

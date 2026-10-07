@@ -30,7 +30,7 @@ function CacheBadge({ cached }: { cached?: boolean | null }) {
 function TurnControls({ ray, ...input }: Omit<ControlMatrixInput, "edge"> & { ray?: string | null }) {
   const edge = useEdgeKnowledge(ray);
   const [show] = useShowTurnDetails();
-  // Per-viewer "Turn details: Hidden" (/guardrails). Hooks above run either way.
+  // Per-viewer "Turn details: Hidden" (Settings → Your preferences). Hooks above run either way.
   if (!show) return null;
   return (
     <div className="max-w-[min(92%,720px)] self-start pl-1">
@@ -249,7 +249,7 @@ export function Chat({
   systemPrompt: string;
 }) {
   const gateway = route === "gateway";
-  // Per-viewer choice made on /guardrails; read here so both guardrail cards follow it.
+  // Per-viewer choice made in Settings → Your preferences; read here so both guardrail cards follow it.
   const [cardLayout] = useGuardrailCardLayout();
   const listRef = useRef<HTMLDivElement>(null);
   const userMsgRefs = useRef(new Map<number, HTMLDivElement>());

@@ -1,5 +1,5 @@
 // "Raw responses": each external guardrail vendor's response body as it came back, for
-// the viewer who switched it on (/guardrails → Raw vendor responses). A debug view —
+// the viewer who switched it on (Settings → Your preferences → Raw vendor responses). A debug view —
 // what the parser read, so a verdict this app shows can be checked against what the
 // vendor actually said.
 //

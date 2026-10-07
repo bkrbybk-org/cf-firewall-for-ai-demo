@@ -56,7 +56,13 @@ import { guardrailWriteAccess } from "./accessAuth";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
 import { shapeOf, type Shape } from "./responseShape";
-import { buildPromptLogQuery, promptLogPruneStatements, promptLogRetention } from "./promptlog";
+import {
+  buildPromptLogQuery,
+  PROMPT_LOG_MAX_AGE_DAYS,
+  PROMPT_LOG_MAX_ROWS,
+  promptLogPruneStatements,
+  promptLogRetention,
+} from "./promptlog";
 import { aiErrorText, clientError } from "./publicError";
 import {
   parseRunId,
@@ -147,7 +153,13 @@ export async function handleModels(env: Env): Promise<Response> {
     // nothing. `enabled` needs BOTH the flag and a D1 binding: with the flag on
     // and DB unbound there is nowhere to write, and the tab would only ever
     // render its "not configured" hint.
-    promptLog: { enabled: promptLogEnabled(env) && !!env.DB },
+    // The retention limits ride along so Settings → Deployment states them from the
+    // constants the prune actually uses (src/promptlog.ts), never a client copy.
+    promptLog: {
+      enabled: promptLogEnabled(env) && !!env.DB,
+      maxAgeDays: PROMPT_LOG_MAX_AGE_DAYS,
+      maxRows: PROMPT_LOG_MAX_ROWS,
+    },
   });
 }
 
