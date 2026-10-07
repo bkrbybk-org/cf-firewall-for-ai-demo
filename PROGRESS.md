@@ -626,6 +626,51 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-07 — Benchmark H: a saved run's benchmark as a Markdown report and JSON
+
+**Asked for:** "do H, skip I for now, then design J". Deploy `8b53fe0c-a848-4f32-9c1c-342897e0e8df`. Front end only;
+no migration, no API change.
+
+- **Model:** `lib/benchmarkReport.ts`.
+  - `buildBenchmarkReport(run, labels)` produces the JSON (`schema: "cf-ai-redteam-benchmark/1"`).
+  - `reportToMarkdown` renders it; `reportFilename` names it `redteam-benchmark-run-<id>-<saved UTC>.md|json`.
+  - **No score of its own:** it calls `savedRunBenchmarkInput` and then `vendorScorecard`, `falseBlockScores`,
+    `vendorBenchmark`, `headToHead`, `vendorLatency` and `stageLatency`, exactly as the page does.
+- **Decisions:**
+  - **Saved runs only.** A saved run has a server id and time, and its prompts are the Worker's redacted previews. A
+    live run holds full prompts, which a CSV can fill with anything, and a report is made to leave the building.
+  - **Escaping:** prompts are hostile by construction, so `mdText` backslash-escapes every mid-line Markdown, GFM and
+    `$` math character (`:` breaks `https://`; `www.` is broken separately). Newlines become `↵`, and invisible and
+    bidi characters become `⟨U+XXXX⟩`.
+  - **Harmless rows are worded differently:** a "caught" harmless prompt prints as "blocked (false block)", and a
+    "missed" one as "passed".
+  - **Missing timings read "not recorded (N untimed)",** never a dash.
+  - **The two edge numbers are explained:** the headline (`scoreRun`) leaves out prompts a guardrail stopped, while
+    the table counts them as edge misses. The report says so when both appear.
+  - **Its first note says what is not recorded:** the rules and policies in force during the run.
+- **UI:** **Report (.md)** and **Data (.json)** buttons on a ticked saved run's *Benchmark* panel (`SavedRuns.tsx`).
+- **Verified:**
+  - **Tests:** `benchmarkReport.test.ts` (10). A hand-counted 7-row fixture checks:
+    - edge 1/5 and AIRS 2/4 (Wilson ≈15–85%); AIDR 2/3 with its error excluded;
+    - missed-by-all 1; false blocks 1/2 and 0/2; balanced accuracy 50/83/60;
+    - head to head n=3 (1/1/1/0); AIRS nearest-rank p50 100 ms;
+    - the technique grid present only with variants; no marks where the intervals overlap.
+    - Hostile prompts: a pipe, a newline-forged row, `<img onerror>`, a `javascript:` link, an autolink, `$math$`,
+      ZWSP and RLO cannot add a row or a column.
+  - **Mutation-verified, 9 of 9 caught:**
+    - pipes unescaped; invisibles not shown; raw newlines kept; `www.` not broken; the preview unescaped;
+    - harmless rows scored as attacks; head to head over harmless rows; the technique grid always on;
+    - the old-run note dropped.
+  - **Browser (`wrangler dev`, real local D1, saved run #66):** both files downloaded with the right MIME types and
+    names, and the JSON has no `raw` key.
+  - **Hand count against the real file:** AIRS 3/5, AIDR 4/5 and edge 1/6 match its own per-prompt table and the
+    page.
+  - **Display:** light mode at 375 px with no horizontal page scroll; dark mode at desktop width; no console errors.
+  - **Prod:** `npm run smoke:prod` passes all checks, and bundle `index-BLUUko5v.js` contains
+    `cf-ai-redteam-benchmark/1`.
+- **Found on prod while verifying (not caused by this change):** `/api/zone-rules` now answers `source: "live"`
+  (12 rules), so `CF_ANALYTICS_TOKEN` can read the zone's rulesets. #12's caveat is out of date; see its update.
+
 ### 2026-10-07 — Benchmark G: prompt variants (Base64, leetspeak, zero-width) and a Technique view
 
 **Asked for:** the last of "do #22, then D-G". Deploy `588c1ceb-db90-4675-a1e6-f7191008a697`. Front end only; no
@@ -2731,6 +2776,12 @@ uncommitted.
     `source:"fallback"` with `Ruleset list failed (HTTP 403)` and the UI runs on the mirror,
     labelled as such. Add the scope to the token to turn it on; the mapping itself is unit-tested,
     but the two API calls have never returned real data here.
+    **Update 2026-10-07:** on prod `/api/zone-rules` now returns `source:"live"` with 12 rules, so the token reads
+    the zone's entrypoint ruleset. It is not known when the scope was added. **New caveat:** every AI rule sits
+    *inside* an `execute` rule ("LLM Monitor Ruleset", "LLM Protection Ruleset") or in account-level rulesets, and
+    the reader lists only the top level. So no live rule has `llm: true`, and the #22 AI Security tally still
+    classifies by name (`classifiedBy: "name"`: 0 blocked, ≈58 logged in 24 h). Reading the nested custom
+    rulesets would let it classify by expression. Not started.
 13. **Row caps**: zone analytics reads the latest 500 rows/dataset; gateway logs page to 500 (API
     caps `per_page` at 50) and set `truncated`. Prompt log rows cap at 200 per fetch (see #9).
 14. **AI Gateway logs are account-scoped** and still store the **raw** prompt+response payload —
@@ -3038,18 +3089,19 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [x] ~~Port the anchored-verdict-window fix to `export.ts`~~ — done (bug #7).
 - [x] ~~De-duplicate the gateway-setting caps~~ — done via `/api/models` `limits` (bug #8).
 - [x] ~~Add server-side `OFFSET` paging to `/api/prompt-log`~~ — done, with sort and search (bug #9).
-- [ ] **Add `Zone → WAF → Read` to `CF_ANALYTICS_TOKEN`** so the live rule list actually engages —
-      the code ships and falls back cleanly, but `/api/zone-rules` returns 403 here today, so the
-      flow trace still runs on the static mirror (Open bug #12).
+- [x] ~~**Add `Zone → WAF → Read` to `CF_ANALYTICS_TOKEN`**~~ — observed working on prod 2026-10-07
+      (`/api/zone-rules` `source:"live"`). Follow-up below.
+- [ ] **Read the nested custom rulesets** (the `execute` targets such as "LLM Monitor Ruleset") in
+      `queryZoneRules`, so AI rules are recognised by their `cf.llm` expression instead of their name
+      (Open bug #12 update). Self: it changes how a customer-facing compliance count is attributed.
 - [x] ~~Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message~~ — done
       2026-10-06 (`src/gatewayErrors.ts`). Original note:
       instead of dumping the raw Cloudflare error JSON into the chat bubble — every gateway send goes
       through REST now, so a rejected token (as in bug #1, fixed 2026-09-30) surfaces on any of them.
 - [x] ~~Extend tests to the remaining pure functions (extractReply/stripThink, sanitizeHistory,
       buildHistory, cost calc)~~ — done 2026-10-06, 76 tests; found two small bugs (see Implemented).
-- [ ] **Red Team benchmark H: export a report** — one self-contained file from a saved run (scorecard,
-      grid, head to head, margins, window and corpus stated). Same rule as saved runs: named fields only,
-      never `raw` vendor responses (House style). Not started.
+- [x] ~~**Red Team benchmark H: export a report**~~ — done 2026-10-07 (deploy `8b53fe0c`): Report (.md) and
+      Data (.json) on a saved run's Benchmark panel. See Implemented.
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.

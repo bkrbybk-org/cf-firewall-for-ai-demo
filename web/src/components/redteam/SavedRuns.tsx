@@ -8,7 +8,9 @@
 // shared-attack score, the warning comes first when there is one, and differences a
 // run does not record (route, guardrail settings) are said out loud.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, BarChart3, GitCompare, Loader2, Save, Trash2 } from "lucide-react";
+import { ArrowRight, BarChart3, Download, GitCompare, Loader2, Save, Trash2 } from "lucide-react";
+import { buildBenchmarkReport, reportFilename, reportToMarkdown } from "../../lib/benchmarkReport";
+import { downloadFile } from "../../lib/export";
 import { deleteRedTeamRun, getRedTeamRun, listRedTeamRuns, saveRedTeamRun, type RedTeamRunSaveRequest } from "../../lib/api";
 import { diffRuns, isAttack, type RtRunDiff, type RtSavedRun } from "../../lib/redteam";
 import { PROVIDER_LABELS } from "../../lib/guardrailView";
@@ -278,6 +280,12 @@ export function SavedRuns({
   );
 }
 
+function downloadReport(run: RtSavedRun, ext: "md" | "json") {
+  const report = buildBenchmarkReport(run, PROVIDER_LABELS);
+  if (ext === "md") downloadFile(reportFilename(report, "md"), reportToMarkdown(report), "text/markdown");
+  else downloadFile(reportFilename(report, "json"), JSON.stringify(report, null, 2), "application/json");
+}
+
 // One saved run's "Controls compared" card, redrawn from its stored rows by the same
 // components and scoring the live run used (savedRunBenchmarkInput).
 function SavedBenchmark({ id }: { id: number }) {
@@ -324,6 +332,28 @@ function SavedBenchmark({ id }: { id: number }) {
     <div className="mt-4 rounded-xl border border-line bg-surface-2/50 p-3.5">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px] font-bold text-text">
         <BarChart3 size={14} className="text-accent" /> Benchmark {run && <RunTag run={run} />}
+        {run && (
+          // Open item H: the same numbers as a file (lib/benchmarkReport.ts). Saved runs
+          // only — their prompts are the Worker's redacted previews.
+          <span className="ml-auto flex items-center gap-1.5 font-normal">
+            <button
+              type="button"
+              onClick={() => downloadReport(run, "md")}
+              title="Download this benchmark as a Markdown report (redacted prompt previews, no vendor responses)"
+              className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:text-text"
+            >
+              <Download size={12} /> Report (.md)
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadReport(run, "json")}
+              title="Download the same numbers as JSON, to re-check or chart elsewhere"
+              className="inline-flex items-center gap-1 rounded-md border border-line px-2 py-1 text-[11.5px] text-muted hover:text-text"
+            >
+              <Download size={12} /> Data (.json)
+            </button>
+          </span>
+        )}
       </div>
       {err && <div className="text-[12px] text-cf-red">{err}</div>}
       {!err && !view && (
