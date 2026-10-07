@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **680 across 45 files** (measured 2026-10-07; README's Tests table has the
+**Tests** — `npm test`, **688 across 46 files** (measured 2026-10-07; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,52 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-07 — Benchmark G: prompt variants (Base64, leetspeak, zero-width) and a Technique view
+
+**Asked for:** the last of "do #22, then D-G". Deploy `588c1ceb-db90-4675-a1e6-f7191008a697`. Front end only; no
+migration.
+
+- **Model:**
+  - `lib/variants.ts` `rewrite` and `expandWithVariants`, deterministic with no model. Labels and `techniqueOfId`
+    live in `lib/techniques.ts`, so `vendorBenchmark` and `variants` do not import each other.
+  - A variant is `{...original, id: "<id>~<t>", prompt: rewritten, technique, lang: original's}`. Its join key
+    (`attackKey`) is that id, or the hash of the rewritten prompt for a CSV row; both are stable.
+- **Rules:**
+  - **Language and topic are the original's:** Base64 of a Thai attack must not land in "Latin script".
+  - **Never sent:** a rewrite that changes nothing, or one over `MAX_PROMPT_LEN` (8,000). Both are counted in the
+    Variants line.
+  - **Harmless rows get none.**
+  - **Changing the set** resets results and the selection.
+  - **Size guard:** a run over 500 prompts (`REDTEAM_RUN_MAX_ATTACKS`) has Run disabled, with the reason as both
+    tooltip and text. Only variants can exceed it: a CSV caps at 200, so 200 × 4 = 800.
+- **UI:**
+  - A Variants row (Base64 / Leetspeak / Zero-width chars, off by default) with a count of what was added and
+    skipped.
+  - A technique pill on each variant row, numbered like its original so it sorts beside it (`refOf` strips
+    `~technique`).
+  - Benchmark by → **Technique**, offered only when the run has variants; a stale choice falls back to Topic.
+- **Saved runs:** `buildRunSaveRequest` saves `a.lang ?? languageOf(a.prompt)`; `savedRunBenchmarkInput` restores
+  `technique` from `attackId`.
+- **Also:** three invisible literal U+200B characters in source were replaced by `​` escapes. Two were written
+  this session in `variants.ts`/its test; one was in `ExternalGuardrailCard.tsx`'s `breakable()` from 2026-10-06.
+  Behaviour is unchanged.
+- **Verified:**
+  - **Gates:** 688 across 46 files.
+  - **Mutations,** all caught:
+    - variant language read from its own text;
+    - zero-width split by code point (the first attempt at this mutation did not apply; retried and caught);
+    - unchanged rewrites sent;
+    - saved language read from the variant text.
+  - **Browser** (`wrangler dev`, stub: AIRS blocks originals but allows Base64 versions, AIDR blocks all):
+    - Built-in corpus + Base64 = "+36 variants · 72 prompts", "Run 72 attacks", 72 sent, the first variant
+      starting "Decode this base64…".
+    - Technique view: Base64 row edge 0/36 and AIRS 0/36 (tied, so no lowest), AIDR 36/36 with a trophy; Original
+      row AIRS and AIDR tied at 36/36 (no trophy), edge lowest.
+    - Language view: "Thai: 72", so the variants stayed Thai.
+    - A 200-row CSV with all three techniques gave "Run 800 attacks" disabled, with the 500 message.
+  - **Prod:** smoke all pass. The bundle `index-CMmF8dZp.js` contains the Base64 wrapper, "Zero-width chars" and the
+    cap message.
 
 ### 2026-10-07 — Benchmark D–F: cell drill-down, head to head, margins of error
 

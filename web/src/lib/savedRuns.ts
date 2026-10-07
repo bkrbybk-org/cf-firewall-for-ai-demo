@@ -24,6 +24,7 @@ import {
   type RtVendorOutcome,
 } from "./redteam";
 import type { RedTeamResultRow, RedTeamRunRow } from "./types";
+import { techniqueOfId } from "./techniques";
 import { languageOf, topicOf } from "./vendorBenchmark";
 import {
   falseBlockScores,
@@ -104,7 +105,7 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
           : null,
       expected: isAttack(a) ? null : "allow",
       topic: topicOf(a),
-      lang: languageOf(a.prompt),
+      lang: a.lang ?? languageOf(a.prompt), // a variant's own text (base64…) is not its language
     })),
   };
 }
@@ -209,6 +210,8 @@ export function savedRunBenchmarkInput(run: RtSavedRun): {
     goal: r.topic ?? undefined,
     prompt: r.promptPreview ?? "",
     lang: r.lang ?? LANG_NOT_RECORDED,
+    // A variant's technique rides in its id ("rt-01~base64") — attackId is stored, so no column.
+    ...(techniqueOfId(r.attackId) ? { technique: techniqueOfId(r.attackId) } : {}),
     ...(r.expected === "allow" ? { expected: "allow" as const } : {}),
   }));
   const results = new Map<string, RtRunResult>(

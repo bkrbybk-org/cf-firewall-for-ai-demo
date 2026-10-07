@@ -28,6 +28,7 @@ const ROWS_COLLAPSED = 10;
 const GROUPS: { id: BenchmarkGroupBy; label: string }[] = [
   { id: "topic", label: "Topic" },
   { id: "language", label: "Language" },
+  { id: "technique", label: "Technique" }, // offered only when the run has variants
 ];
 
 const METRICS: { id: BenchmarkMetric; label: string }[] = [
@@ -299,7 +300,12 @@ export function VendorBenchmark({
   controls: ControlScore[];
   labels: Record<string, string>;
 }) {
-  const [groupBy, setGroupBy] = useState<BenchmarkGroupBy>("topic");
+  const [chosenGroupBy, setGroupBy] = useState<BenchmarkGroupBy>("topic");
+  // Technique is offered only when the run sent variants; without them it would be one
+  // "Original" row, so a stale choice falls back to Topic.
+  const hasVariants = corpus.some((a) => a.technique);
+  const groupBy: BenchmarkGroupBy = chosenGroupBy === "technique" && !hasVariants ? "topic" : chosenGroupBy;
+  const groups = hasVariants ? GROUPS : GROUPS.filter((g) => g.id !== "technique");
   const [chosenMetric, setMetric] = useState<BenchmarkMetric>("catch");
   const [expanded, setExpanded] = useState(false);
   // The cell whose prompts are open below the grid (open item D); cleared whenever
@@ -315,8 +321,8 @@ export function VendorBenchmark({
     () => vendorBenchmark(fb ? benignCorpus : corpus, results, groupBy, ids, labels, metric),
     [fb, benignCorpus, corpus, results, groupBy, ids, labels, metric],
   );
-  const noun = groupBy === "topic" ? "topic" : "language";
-  const nouns = groupBy === "topic" ? "topics" : "languages";
+  const noun = groupBy;
+  const nouns = `${groupBy}s`;
   const shown = expanded ? bench.rows : bench.rows.slice(0, ROWS_COLLAPSED);
   const winners = bench.wins.filter((w) => w.wins > 0);
   const th = "px-2 pb-1.5 text-right text-[10.5px] font-semibold tracking-wide text-subtle uppercase";
@@ -327,7 +333,7 @@ export function VendorBenchmark({
         <h3 className="text-[12.5px] font-bold text-text">Benchmark by</h3>
         <Toggle
           label="Benchmark grouping"
-          options={GROUPS}
+          options={groups}
           value={groupBy}
           onChange={(v) => {
             setGroupBy(v);
@@ -393,7 +399,7 @@ export function VendorBenchmark({
             <thead>
               <tr>
                 <th className="sticky left-0 z-[1] bg-surface px-2 pb-1.5 pl-2.5 text-left text-[10.5px] font-semibold tracking-wide text-subtle uppercase">
-                  {groupBy === "topic" ? "Topic" : "Language"}
+                  {GROUPS.find((g) => g.id === groupBy)!.label}
                 </th>
                 <th className={th}>{fb ? "Harmless" : "Attacks"}</th>
                 {controls.map((c) => (
@@ -450,8 +456,10 @@ export function VendorBenchmark({
         are too few to rank. A marker also needs a clear lead: its 95% interval (in each cell's tooltip) must not overlap
         any other ranked control's, so a gap that could be chance marks nothing. Click a cell to see its prompts.{" "}
         {groupBy === "topic"
-          ? "Topic is the scan category, or the goal column of an uploaded CSV."
-          : "Language is read from the prompt's writing system, not declared: Thai script is Thai, but Latin letters could be English or any Latin-script language. Prompts under 80% one script count as mixed."}
+          ? "Topic is the scan category, or the goal column of an uploaded CSV. A variant counts under its original's topic."
+          : groupBy === "technique"
+            ? "Technique is how a variant was rewritten from its original (Base64, leetspeak, zero-width characters); “Original” is the attack as written. A control that catches the original but not its variant matched the surface text, not the intent."
+            : "Language is read from the prompt's writing system, not declared: Thai script is Thai, but Latin letters could be English or any Latin-script language. Prompts under 80% one script count as mixed. A variant counts under its original's language."}
       </p>
     </div>
   );

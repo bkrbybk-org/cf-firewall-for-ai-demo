@@ -30,6 +30,8 @@ import { STATE_PILL } from "../components/redteam/StatePill";
 import { useRedTeam, type RtAttackState } from "../hooks/useRedTeam";
 import { getModels } from "../lib/api";
 import { CSV_TEMPLATE, parseAttackCsv } from "../lib/attackCsv";
+import { TECHNIQUE_LABEL, TECHNIQUES, type Technique } from "../lib/techniques";
+import { expandWithVariants, TECHNIQUE_HINT } from "../lib/variants";
 import { customCorpusStore } from "../lib/customCorpus";
 import { downloadFile } from "../lib/export";
 import { PROVIDER_LABELS } from "../lib/guardrailView";
@@ -50,6 +52,10 @@ import {
   type RtRunResult,
   type RtSeverity,
 } from "../lib/redteam";
+
+// src/redteamruns.ts REDTEAM_RUN_MAX_ATTACKS — duplicated, the web tree cannot import
+// the Worker's; a larger run is refused before sending (see overCap).
+const MAX_RUN_PROMPTS = 500;
 
 const SEV_PILL: Record<RtSeverity, string> = {
   critical: "border-cf-red/60 text-cf-red",
@@ -114,7 +120,8 @@ const STATE_ORDER: Record<string, number> = { allow: 0, log: 1, denied: 2, guard
 // Row label: the scan's reference number, or the CSV line the prompt came from.
 function refOf(a: RedTeamAttack, index: number): number {
   if (a.scanRef != null) return a.scanRef;
-  const n = Number(a.id.replace(/^csv-/, ""));
+  // A variant ("csv-12~base64") shows its original's number, so it sorts beside it.
+  const n = Number(a.id.replace(/^csv-/, "").replace(/~.*$/, ""));
   return Number.isFinite(n) ? n : index + 1;
 }
 
@@ -210,7 +217,19 @@ export function RedTeamPage() {
   const [useCustom, setUseCustom] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const corpus = useCustom && custom ? custom.attacks : RT_CORPUS;
+  const baseCorpus = useCustom && custom ? custom.attacks : RT_CORPUS;
+  // Open item G: rewritten variants of each attack (lib/variants.ts), none by default.
+  // Each technique multiplies the run — and the bill — so it is an explicit choice.
+  const [techniques, setTechniques] = useState<Technique[]>([]);
+  const expansion = useMemo(() => expandWithVariants(baseCorpus, techniques), [baseCorpus, techniques]);
+  const corpus = expansion.attacks;
+  // Changing the variant set changes the corpus: drop results and the selection for the
+  // same reason as switching corpora — the scorecard must never score a different set.
+  function toggleTechnique(t: Technique) {
+    reset();
+    setSelected(new Set());
+    setTechniques((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : TECHNIQUES.filter((x) => x === t || prev.includes(x))));
+  }
   const isCustom = useCustom && !!custom;
 
   // Switching corpora must drop the previous run's results — the scorecard
@@ -315,6 +334,10 @@ export function RedTeamPage() {
     () => (selected.size === 0 ? corpus : corpus.filter((a) => selected.has(a.id))),
     [corpus, selected],
   );
+  // The server stores at most this many results per saved run (src/redteamruns.ts
+  // REDTEAM_RUN_MAX_ATTACKS) — a larger run could be sent but never saved, so it is
+  // refused up front. Only variants can push a corpus past it (a CSV caps at 200).
+  const overCap = toRun.length > MAX_RUN_PROMPTS;
   const toggleOne = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -453,7 +476,12 @@ export function RedTeamPage() {
               <button
                 type="button"
                 onClick={startRun}
-                disabled={toRun.length === 0}
+                disabled={toRun.length === 0 || overCap}
+                title={
+                  overCap
+                    ? `${toRun.length} prompts — a saved run holds at most ${MAX_RUN_PROMPTS}. Pick fewer variants or tick a subset.`
+                    : undefined
+                }
                 className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
               >
                 <Play size={13} /> {hasResults ? "Re-run" : "Run"} {toRun.length}{" "}
@@ -629,6 +657,50 @@ export function RedTeamPage() {
             </span>
           </div>
 
+          {/* Variants (open item G): rewritten copies of every attack, to test intent over surface text. */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
+            <span className="text-[11.5px] font-bold uppercase tracking-wider text-subtle">Variants</span>
+            <div role="group" aria-label="Prompt variants" className="inline-flex flex-wrap gap-1.5">
+              {TECHNIQUES.map((t) => {
+                const on = techniques.includes(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={on}
+                    disabled={running}
+                    onClick={() => toggleTechnique(t)}
+                    title={TECHNIQUE_HINT[t]}
+                    className={`rounded-full border px-3 py-1 text-[12px] transition disabled:opacity-50 ${
+                      on ? "border-accent/60 bg-accent/15 font-semibold text-accent" : "border-line bg-surface text-muted hover:text-text"
+                    }`}
+                  >
+                    {TECHNIQUE_LABEL[t]}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[11.5px] text-muted">
+              {techniques.length === 0 ? (
+                "Off — each attack is sent as written. Turn a technique on to also send a rewritten copy of every attack."
+              ) : (
+                <>
+                  +{corpus.length - baseCorpus.length} variant{corpus.length - baseCorpus.length === 1 ? "" : "s"} ·{" "}
+                  {corpus.length} prompts in all
+                  {expansion.skipped.unchanged > 0 && ` · ${expansion.skipped.unchanged} skipped (the rewrite changed nothing)`}
+                  {expansion.skipped.tooLong > 0 && ` · ${expansion.skipped.tooLong} skipped (over the 8,000-character prompt cap)`}
+                  . Each is a real model call; harmless rows get none. Variants keep their original's topic and language —
+                  compare them under Benchmark by → Technique.
+                </>
+              )}
+            </span>
+            {overCap && (
+              <span className="text-[11.5px] font-semibold text-cf-amber">
+                {toRun.length} prompts — a saved run holds {MAX_RUN_PROMPTS} at most. Pick fewer techniques or tick a subset.
+              </span>
+            )}
+          </div>
+
           {csvError && (
             <div className="flex items-start gap-2.5 rounded-xl border border-cf-red/40 bg-cf-red/[0.06] px-3.5 py-2.5 text-[12px] text-cf-red">
               <CircleAlert size={15} className="mt-px shrink-0" />
@@ -787,7 +859,19 @@ export function RedTeamPage() {
                               harmless
                             </span>
                           )}
-                          <div className="truncate text-text" title={a.prompt} lang={isCustom ? undefined : "th"}>
+                          {a.technique && (
+                            <span
+                              className="shrink-0 rounded-full border border-line-strong px-1.5 py-px text-[10px] font-semibold text-muted"
+                              title={`Variant of #${refOf(a, i)} — ${TECHNIQUE_HINT[a.technique]}`}
+                            >
+                              {TECHNIQUE_LABEL[a.technique]}
+                            </span>
+                          )}
+                          <div
+                            className="truncate text-text"
+                            title={a.prompt}
+                            lang={isCustom || a.technique ? undefined : "th"}
+                          >
                             {a.prompt}
                           </div>
                         </div>

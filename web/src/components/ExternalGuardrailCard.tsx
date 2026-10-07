@@ -309,7 +309,7 @@ function CompactDetails({ vendors }: { vendors: VendorView[] }) {
 // opportunity after each `/` and `_` lets them wrap at a separator instead of mid-word.
 // Display only — ids (reference, policy) are never touched, since they get copied into
 // a vendor's console search.
-const breakable = (s: string) => s.replace(/([/_])/g, "$1​");
+const breakable = (s: string) => s.replace(/([/_])/g, "$1\u200b");
 
 // How many vendor columns are out of view on each side, and whether anything at all is
 // clipped — re-measured on scroll and on resize. A column counts as "more" only when

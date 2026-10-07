@@ -19,6 +19,7 @@
 // Unranked cells still show their numbers; they just carry no marker.
 import type { RedTeamAttack, RtRunResult } from "./redteam";
 import { wilson, type Interval } from "./stats";
+import { ORIGINAL_LABEL, TECHNIQUE_LABEL } from "./techniques";
 import {
   countBlockedByAny,
   countMissedByAll,
@@ -29,7 +30,7 @@ import {
   type Verdict,
 } from "./vendorScorecard";
 
-export type BenchmarkGroupBy = "topic" | "language";
+export type BenchmarkGroupBy = "topic" | "language" | "technique";
 export const BENCHMARK_MIN_N = 3;
 // "catch": attack rows, higher is better. "falseBlock": harmless rows (expected=allow), where a
 // "caught" prompt is a false block and lower is better.
@@ -172,6 +173,7 @@ function rankedGroup(results: RtRunResult[], controls: string[]): { members: str
 // The row an attack belongs to. One function for the grid and its drill-down, so a
 // cell's prompt list can never disagree with the cell's numbers.
 export function groupKeyOf(a: RedTeamAttack, groupBy: BenchmarkGroupBy): string {
+  if (groupBy === "technique") return a.technique ? TECHNIQUE_LABEL[a.technique] : ORIGINAL_LABEL;
   return groupBy === "topic" ? topicOf(a) : (a.lang ?? languageOf(a.prompt));
 }
 

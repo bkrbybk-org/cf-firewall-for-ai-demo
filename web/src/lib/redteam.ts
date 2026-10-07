@@ -54,9 +54,13 @@ export interface RedTeamAttack {
   // alone rewards a control that blocks everything. Harmless rows are kept out of
   // every attack score (isAttack) and scored only as false blocks.
   expected?: "block" | "allow";
-  // Saved runs only: the language label computed from the FULL prompt when the run
-  // was saved. A saved run keeps only a redacted preview, whose "[email]"-style
-  // tokens would turn a Thai prompt into "mixed" if re-read (vendorBenchmark.ts).
+  // A rewritten variant of another attack (lib/variants.ts): base64, leetspeak or
+  // zero-width. Undefined for an original. The id carries it too ("rt-01~base64").
+  technique?: "base64" | "leetspeak" | "zero-width";
+  // The language label of the ORIGINAL prompt, when the text in `prompt` is not it:
+  //  - a saved run keeps only a redacted preview, whose "[email]"-style tokens would
+  //    turn a Thai prompt into "mixed" if re-read (vendorBenchmark.ts);
+  //  - a variant's text (base64, leetspeak…) is not its language.
   lang?: string;
 }
 
