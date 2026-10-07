@@ -2938,6 +2938,25 @@ exercised):
     apply AIDR's redaction — on a turn AIDR allows-but-redacts, the model receives the original prompt (the
     chip says so in amber). Whether to apply it is an unmade design decision. The block card's rendering of
     AIDR detectors has not been seen in a browser on prod.
+30. **🟠 AI Gateway Guardrails does not block a streamed reply here, and the README says it does** (found
+    2026-10-07 while designing J; **not fixed**, needs the user's choice because it changes what a demo shows).
+    - **The source:** Cloudflare's docs (ai-gateway/features/guardrails/usage-considerations, "Streaming
+      behavior", fetched 2026-10-07) say that on the REST API (`api.cloudflare.com/*`) Guardrails "evaluates the
+      response and logs the result, but does not enforce it" for `stream: true`. Only the
+      `gateway.ai.cloudflare.com` endpoint buffers and enforces.
+    - **Our setup:** every gateway call goes to `${CF_API_BASE}/accounts/…` (`src/handlers.ts`, the REST
+      migration), and the chat page streams by default (`useChat`).
+    - **The consequence:** on the guarded gateway, a default (streamed) chat turn can only be stopped by
+      Guardrails on its **prompt** (2016). A harmful **reply** is delivered and only logged. A 2017 card can
+      appear only on a non-streamed turn. The Red Team runner does not stream, so its results are unaffected.
+    - **The wrong claim:** README "Picking the gateway named in `CF_AI_GATEWAY_GUARDED_ID`…" says prompts and
+      responses are moderated, with no streaming caveat.
+    - **Not yet measured:** whether a streamed turn's log shows a response flag. That needs a reply that trips a
+      category.
+    - **Fix options:**
+      - (a) force `stream: false` when the guarded gateway is picked;
+      - (b) keep streaming and label it "replies checked and logged, not blocked, while streaming";
+      - (c) both, as a switch.
 
 ## Next tasks
 
@@ -3105,9 +3124,72 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.
-- [ ] **Red Team benchmark J: scan the model's output** — guardrails on the reply as well as the prompt. Needs
-      a design first: which vendors accept a response role (per their own spec, then a live payload), and what
-      a blocked reply turns into. Not started.
+- [ ] **Red Team benchmark J: scan the model's output** — design written 2026-10-07 (below). Not started:
+      it waits on the user's decisions D1–D4.
+
+**Design J: guardrails on the model's reply** (2026-10-07; every vendor fact is *documented*, not verified)
+
+| Control | Can it scan a reply? (source) | What we would send |
+|---|---|---|
+| Edge (AI Security for Apps) | **No.** It scans incoming requests to `cf-llm` endpoints (waf/detections/ai-security-for-apps) | — shown as "not applicable", never 0% |
+| AI Gateway Guardrails | Yes, but **not enforced on a streamed REST call** (#30) | already in the model call |
+| Prisma AIRS | Documented: `ScanContent.response` (+ `code_response`); the result has a separate `response_detected` (pan.dev `scan-service_latest.yaml`) | `contents:[{prompt, response}]` |
+| CrowdStrike AIDR | Documented: `event_type: "output"` (default `"input"`) (`aidr_openapi.json`) | the same body, plus `event_type: "output"` |
+| Lakera Guard | Documented: "the most recent assistant content [is screened] as output" (docs.lakera.ai/docs/api/guard) | `messages:[user, assistant]` |
+| Cisco AI Defense | Vague: the API covers "prompts and responses", but roles are not listed | `messages:[user, assistant]`; unknown until a payload is seen |
+| Cato | Undocumented | not offered until verified |
+
+**Semantics (non-negotiable, whoever builds it):**
+- **A reply block is its own outcome** (`external_response`). The model ran and its cost was spent; the reply
+  is withheld. It is never shown as a prompt block, never as "reached the model and answered", and it is never
+  counted in the edge's denominator.
+- **An attack prompt does not make its reply harmful.** A model that refused produced a harmless reply. So the
+  attack rows get **no reply catch rate**: there is no ground truth for the reply. They show counts only ("N
+  replies flagged of M scanned") and agreement between controls.
+- **Harmless prompts are the exception:** their replies are presumed harmless, so a reply block there is a
+  **false block**, and that rate is scored.
+- **When the stage does not run:** in guardrail-only mode, or after a prompt block, there is no reply, so the
+  reply stage is `notRun` ("no reply"), never an allow.
+- **Fail mode and pipeline mode** are reused per provider. An unknown answer is an error, never an allow.
+- **Vendor responses can echo the reply** (Cato echoes content), so the same `raw` and `stripRaw` rules apply.
+  The prompt log stores no withheld reply text.
+
+**D1: streaming (the main tradeoff).**
+- **(A) Buffer** (recommended): with *Scan replies* on, the Worker asks the model without streaming, scans the
+  reply, then returns it or a block. This is the only way to enforce. The cost is that the first token arrives
+  only after the whole reply plus the scan.
+- **(B) Stream, then scan:** the user sees the reply and the verdict arrives after. This can only ever be
+  labelled "Detect only — already shown".
+- **(C) Chunked scanning:** many vendor calls per reply, and a partial reply can still leak. Rejected.
+
+**D2: v1 vendors:** AIRS, Lakera and AIDR (the documented ones); Cisco after one payload; Cato after it
+documents output scanning.
+
+**D3: #30 for the guarded gateway:** (a) force non-streaming, (b) label it, or (c) a switch.
+
+**D4: reply scoring:** counts plus harmless false blocks only (recommended), or add a judge model as ground truth.
+A judge would be Llama Guard, the same model as AI Gateway Guardrails, so it would grade its own homework.
+Rejected unless asked.
+
+**Phases** (who per CLAUDE.md):
+1. **Verify first** (*self*, then the user on prod; admin gate): *Test connection* gains a reply test. It sends a
+   fixed benign prompt with (i) a benign reply and (ii) a reply carrying a fake SSN test value, and returns the
+   response shape. Each provider gets `responseScan: "verified" | "documented" | "unsupported"`.
+2. **Server** (*self*; hot `handlers.ts`, `src/types.ts`, `web/src/lib/types.ts`):
+   - a reply stage after the model, with a `GuardrailPipelineResult.direction`;
+   - the reply result in a body field and in `x-external-guardrails-response`;
+   - a prompt-log outcome `external_response` with a null reply;
+   - `openapi.ts`, and *Scan replies* in the pipeline config.
+3. **Chat UI** (*sonnet*, from a props contract): a "The model answered; X withheld the reply" card, and a
+   reply row on the control strip.
+4. **Red Team** (*self* for scoring and migration `0008` `redteam_results.response_vendors`; *sonnet* for
+   components):
+   - reply verdicts per prompt, a *Replies* section with counts and harmless false blocks;
+   - a grid metric "Reply flags"; the H report gains the section.
+5. **Docs** (*self*).
+
+**Cost:** each enabled guardrail is called twice per turn, so a Red Team run with N prompts and k guardrails
+makes 2·N·k vendor calls.
 - [ ] Add the **Self-criticism** custom topic to the zone (block) — the scan's single largest gap
       (53 successful attacks) has no rule covering it at all.
 - [ ] **Run the ThaiSafetyBench corpus on prod** (`npm run corpus:thai`) — the point is which Thai
