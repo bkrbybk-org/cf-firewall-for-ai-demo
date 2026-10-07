@@ -2,6 +2,7 @@
 
 import type { SeriesBucket } from "./config";
 import type { PromptLogRetention } from "./promptlog";
+import type { AiSecurityTally, RuleGroup } from "./aiSecurityTally";
 
 export interface Env {
   AI: Ai;
@@ -184,6 +185,12 @@ export interface AnalyticsSummary {
   customTopics: { label: string; count: number; avgStrength: number }[];
   scannedRequests: number; // /api/chat rows seen in the window
   labeledRequests: number; // …of those, rows carrying the cf-llm managed label
+  // AI Security rules' own events (src/aiSecurityTally.ts) — from grouped GraphQL, so
+  // not capped at 500 rows, but estimates when Cloudflare sampled (`sampled`). What
+  // any "AI Security blocked N" claim must use; `actions` above is zone-wide.
+  aiSecurity?: AiSecurityTally;
+  ruleGroups?: RuleGroup[]; // internal hand-off to the handler; never sent to the client
+  ruleGroupsCapped?: boolean; // internal: the group query hit its limit (smallest groups dropped)
   error?: string;
 }
 

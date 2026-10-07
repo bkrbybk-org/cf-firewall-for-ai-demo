@@ -117,6 +117,8 @@ function EvidenceChip({
       <span>
         <b className="font-semibold">{r.headline}</b> · {r.windowLabel}
         {r.floor && " · floor (row cap reached)"}
+        {/* How the numbers were obtained, when it changes what they claim (bug #22). */}
+        {r.note && <span className="mt-0.5 block text-[10.5px] text-muted">{r.note}</span>}
       </span>
     </div>
   );

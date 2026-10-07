@@ -927,6 +927,29 @@ export const openapi = {
           customTopics: arr(obj({ label: str(), count: int(), avgStrength: num("Mean of (100 − score); higher = stronger match.") }, ["label", "count", "avgStrength"])),
           scannedRequests: int("`/api/chat` rows seen in the window."),
           labeledRequests: int("…of those, rows carrying the `cf-llm` label."),
+          aiSecurity: obj(
+            {
+              blocked: int("AI Security rule events that blocked."),
+              logged: int("…that matched but only logged (rule in Log mode)."),
+              other: int("…any other action."),
+              rules: arr(
+                obj(
+                  { name: str(), action: str(), count: int(), via: { type: "string", enum: ["expression", "name"] } },
+                  ["name", "action", "count", "via"],
+                ),
+              ),
+              classifiedBy: {
+                type: "string",
+                enum: ["expression", "name", "mixed"],
+                description: "`expression`: the zone's live rules use `cf.llm.*`. `name`: the description matches `\\bLLM\\b` (no Zone WAF Read, or an account-level rule).",
+              },
+              sampled: bool("Cloudflare sampled the counted groups — every count is an estimate."),
+              capped: bool("The group query hit its limit — counts are floors."),
+              zoneBlocked: int("Every block in the zone, for context only — never AI Security's."),
+            },
+            ["blocked", "logged", "other", "rules", "classifiedBy", "sampled", "capped", "zoneBlocked"],
+            "AI Security rules' own events, from grouped GraphQL (`firewallEventsAdaptiveGroups`) — not capped at the 500 rows the rest of this payload reads. `actions` is zone-wide; any \"AI Security blocked N\" claim must use this (open bug #22).",
+          ),
         },
         ["configured", "rangeHours", "since", "until", "totalEvents", "actions", "topRules", "series", "bucket", "aiScored", "scoreBuckets", "piiRequests", "unsafeTopics", "piiCategories", "customTopics", "scannedRequests", "labeledRequests"],
       ),

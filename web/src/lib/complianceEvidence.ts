@@ -37,6 +37,9 @@ export interface EvidenceResult {
   // True when headline's numbers are a floor (Analytics.truncated) rather
   // than an exact total.
   floor?: boolean;
+  // How the headline's numbers were obtained, when that changes what they claim —
+  // e.g. AI Security rules told apart by name, or Cloudflare-sampled estimates.
+  note?: string;
 }
 
 const fmt = (n: number): string => n.toLocaleString("en-US");
@@ -50,15 +53,8 @@ function windowLabel(hours: number): string {
   return `last ${hours}h`;
 }
 
-// Same block/drop classification EdgeTab and GatewayTab use (see
-// components/analytics/EdgeTab.tsx classifyAction) — re-declared locally
-// rather than imported, since lib/ has no dependency on the analytics
-// components and this is a two-line regex, not shared state.
-function blockedCount(actions: Record<string, number> | undefined): number {
-  return Object.entries(actions ?? {})
-    .filter(([name]) => /block|drop/i.test(name))
-    .reduce((n, [, c]) => n + c, 0);
-}
+// (A zone-wide block tally used to live here; it is gone on purpose — bug #22. Any
+// "blocked" claim under an AI control reads Analytics.aiSecurity, server-classified.)
 
 function unconfigured(win: string): EvidenceResult {
   return { status: "unconfigured", windowLabel: win };
@@ -85,12 +81,32 @@ export function resolveEvidence(
       if (scored === 0) return noData(win);
       const floor = analytics.truncated === true;
       const at = floor ? "at least " : "";
-      const blocked = blockedCount(analytics.actions);
+      // Open bug #22: "blocked" here used to be every block in the ZONE — Sensitive
+      // Paths, geography, crawler and CVE rules — under an AI Security control. Only
+      // AI Security rules' own events count now (server: src/aiSecurityTally.ts). A
+      // Worker too old to send the tally gets no "blocked" half at all, not the
+      // zone-wide number.
+      const ai = analytics.aiSecurity;
+      if (!ai) {
+        return { status: "ok", windowLabel: win, headline: `${at}${plural(scored, "prompt")} scored`, floor };
+      }
+      // "≈" on a non-zero estimate only: "≈0" reads as noise, and the note says sampled.
+      const est = (n: number) => (ai.capped ? "at least " : ai.sampled && n > 0 ? "≈" : "");
+      const blocked = `${est(ai.blocked)}${fmt(ai.blocked)} blocked by AI Security rules`;
+      // Zero blocks with matches is a rule-mode fact (rules on Log), not "nothing found".
+      const logged = ai.blocked === 0 && ai.logged > 0 ? ` (${est(ai.logged)}${fmt(ai.logged)} matched in Log mode)` : "";
+      const how =
+        ai.classifiedBy === "expression"
+          ? "AI Security rules identified by their cf.llm.* expression."
+          : ai.classifiedBy === "mixed"
+            ? "AI Security rules identified by expression where the zone's rules are readable, by an “LLM” rule name otherwise (account-level rules)."
+            : "AI Security rules identified by an “LLM” rule name — the token cannot read the zone's rule expressions.";
       return {
         status: "ok",
         windowLabel: win,
-        headline: `${at}${plural(scored, "prompt")} scored · ${at}${fmt(blocked)} blocked`,
-        floor,
+        headline: `${at}${plural(scored, "prompt")} scored · ${blocked}${logged}`,
+        floor: floor || ai.capped,
+        note: ai.sampled ? `${how} Counts are Cloudflare's sampled estimates.` : how,
       };
     }
 
@@ -156,7 +172,14 @@ export function resolveEvidence(
       if (total === 0) return noData(win);
       const floor = analytics.truncated === true;
       const at = floor ? "at least " : "";
-      return { status: "ok", windowLabel: win, headline: `${at}${plural(total, "event")} recorded`, floor };
+      // Zone-wide by design ("risks are tracked"), so it says so — the same number
+      // under an AI control was bug #22.
+      return {
+        status: "ok",
+        windowLabel: win,
+        headline: `${at}${plural(total, "security event")} recorded (all WAF rules in the zone)`,
+        floor,
+      };
     }
   }
 }

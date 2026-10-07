@@ -20,6 +20,20 @@ const analytics = (over: Partial<Analytics> = {}): Analytics => ({
   ...over,
 });
 
+// AI Security's own tally (server: src/aiSecurityTally.ts). Defaults: unsampled,
+// uncapped, classified by expression — override per case.
+const ai = (over: Partial<NonNullable<Analytics["aiSecurity"]>> = {}): NonNullable<Analytics["aiSecurity"]> => ({
+  blocked: 0,
+  logged: 0,
+  other: 0,
+  rules: [],
+  classifiedBy: "expression",
+  sampled: false,
+  capped: false,
+  zoneBlocked: 0,
+  ...over,
+});
+
 const promptAnalytics = (over: Partial<PromptAnalytics> = {}): PromptAnalytics => ({
   configured: true,
   total: 0,
@@ -108,15 +122,43 @@ describe("resolveEvidence", () => {
   // zero. Must render as "ok" with a real 0 in the headline, not fold into
   // no-data.
   describe("genuine zero (traffic happened, this count is really 0)", () => {
-    it("injection-scoring: 500 scored, 0 blocked", () => {
+    it("injection-scoring: 500 scored, 0 blocked — and matches in Log mode said as such", () => {
       const r = resolveEvidence(
         { metric: "injection-scoring" },
-        analytics({ aiScored: 500, actions: { log: 500 } }),
+        analytics({ aiScored: 500, actions: { log: 500 }, aiSecurity: ai({ logged: 450 }) }),
         null,
         24,
       );
       expect(r.status).toBe("ok");
-      expect(r.headline).toBe("500 prompts scored · 0 blocked");
+      expect(r.headline).toBe("500 prompts scored · 0 blocked by AI Security rules (450 matched in Log mode)");
+    });
+
+    // Open bug #22: the zone's other blocks (Sensitive Paths, geography, CVE rules) were
+    // reported under this AI control. They must never reach the headline.
+    it("injection-scoring: zone-wide blocks are never AI Security's", () => {
+      const r = resolveEvidence(
+        { metric: "injection-scoring" },
+        analytics({ aiScored: 500, actions: { block: 8318 }, aiSecurity: ai({ blocked: 2608, zoneBlocked: 8318 }) }),
+        null,
+        24,
+      );
+      expect(r.headline).toBe("500 prompts scored · 2,608 blocked by AI Security rules");
+      expect(r.headline).not.toContain("8,318");
+      // A Worker too old to send the tally: no "blocked" half at all, not the zone number.
+      const old = resolveEvidence({ metric: "injection-scoring" }, analytics({ aiScored: 5, actions: { block: 8318 } }), null, 24);
+      expect(old.headline).toBe("5 prompts scored");
+    });
+
+    it("injection-scoring: says how AI Security rules were identified, and when counts are estimates", () => {
+      const r = resolveEvidence(
+        { metric: "injection-scoring" },
+        analytics({ aiScored: 5, aiSecurity: ai({ blocked: 40, classifiedBy: "name", sampled: true }) }),
+        null,
+        24,
+      );
+      expect(r.headline).toBe("5 prompts scored · ≈40 blocked by AI Security rules");
+      expect(r.note).toContain("“LLM” rule name");
+      expect(r.note).toContain("sampled estimates");
     });
 
     it("unsafe-topics: scored traffic, no topics matched", () => {
@@ -168,13 +210,13 @@ describe("resolveEvidence", () => {
     it("injection-scoring marks the result as a floor and prefixes counts", () => {
       const r = resolveEvidence(
         { metric: "injection-scoring" },
-        analytics({ aiScored: 500, actions: { block: 38 }, truncated: true }),
+        analytics({ aiScored: 500, actions: { block: 38 }, truncated: true, aiSecurity: ai({ blocked: 38, capped: true }) }),
         null,
         24,
       );
       expect(r.status).toBe("ok");
       expect(r.floor).toBe(true);
-      expect(r.headline).toBe("at least 500 prompts scored · at least 38 blocked");
+      expect(r.headline).toBe("at least 500 prompts scored · at least 38 blocked by AI Security rules");
     });
 
     it("unsafe-topics marks the result as a floor", () => {
@@ -196,7 +238,7 @@ describe("resolveEvidence", () => {
         24,
       );
       expect(r.floor).toBe(true);
-      expect(r.headline).toBe("at least 500 events recorded");
+      expect(r.headline).toBe("at least 500 security events recorded (all WAF rules in the zone)");
     });
 
     it("pii-detection floor covers only the edge side — PromptAnalytics has no truncated field", () => {
@@ -215,12 +257,12 @@ describe("resolveEvidence", () => {
     it("not truncated leaves floor falsy and counts bare", () => {
       const r = resolveEvidence(
         { metric: "injection-scoring" },
-        analytics({ aiScored: 12, actions: { block: 1 }, truncated: false }),
+        analytics({ aiScored: 12, actions: { block: 1 }, truncated: false, aiSecurity: ai({ blocked: 1 }) }),
         null,
         24,
       );
       expect(r.floor).toBeFalsy();
-      expect(r.headline).toBe("12 prompts scored · 1 blocked");
+      expect(r.headline).toBe("12 prompts scored · 1 blocked by AI Security rules");
     });
   });
 

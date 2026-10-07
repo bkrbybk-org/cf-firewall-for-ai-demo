@@ -1,5 +1,6 @@
 // Route handlers, one per endpoint. Each returns a Response.
 
+import { tallyAiSecurity } from "./aiSecurityTally";
 import {
   bucketFor,
   CF_API_BASE,
@@ -897,7 +898,18 @@ export async function handleAnalytics(url: URL, env: Env): Promise<Response> {
   }
   const hours = Math.min(168, Math.max(1, parseInt(url.searchParams.get("hours") || "24", 10) || 24));
   try {
-    const summary = await queryAnalytics(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, hours);
+    // The zone's live rules let AI Security events be told apart by expression; without
+    // "Zone → WAF → Read" this fails and the tally falls back to rule names — and says so
+    // (src/aiSecurityTally.ts). Fetched alongside, never blocking the analytics.
+    const [summary, liveRules] = await Promise.all([
+      queryAnalytics(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, hours),
+      queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN).catch(() => null),
+    ]);
+    if (summary.ruleGroups) {
+      summary.aiSecurity = tallyAiSecurity(summary.ruleGroups, liveRules, summary.ruleGroupsCapped === true);
+      delete summary.ruleGroups; // internal: the client gets the tally, not the raw groups
+      delete summary.ruleGroupsCapped;
+    }
     if (summary.error) {
       return Response.json({ configured: true, error: summary.error }, { status: 502 });
     }

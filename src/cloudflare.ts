@@ -313,6 +313,7 @@ type AnalyticsData = {
       fw?: { datetime: string; action: string; ruleId: string; description: string }[];
       fwPrev?: { action: string }[];
       httpPrev?: { firewallForAiPiiCategories: string[] | null }[];
+      ruleGroups?: { count: number; avg?: { sampleInterval?: number }; dimensions?: { action?: string; description?: string; ruleId?: string } }[];
       http?: {
         datetime: string;
         firewallForAiInjectionScore: number | null;
@@ -326,6 +327,9 @@ type AnalyticsData = {
 };
 
 const EVENT_LIMIT = 500;
+// One group per (action, rule) pair — a busy zone shows ~50 in 24 h; 1,000 is headroom,
+// and hitting it is reported (ruleGroupsCapped) rather than silently undercounting.
+const RULE_GROUP_LIMIT = 1000;
 
 export async function queryAnalytics(
   zoneId: string,
@@ -339,7 +343,7 @@ export async function queryAnalytics(
   // windows ride on one round trip via aliased fields. Only the action tallies
   // are needed from it, so it selects the minimum columns.
   const prevSince = new Date(now - 2 * hours * 3_600_000).toISOString();
-  const query = `query($z:String!,$s:Time!,$e:Time!,$ps:Time!,$limit:Int!){viewer{zones(filter:{zoneTag:$z}){
+  const query = `query($z:String!,$s:Time!,$e:Time!,$ps:Time!,$limit:Int!,$groupLimit:Int!){viewer{zones(filter:{zoneTag:$z}){
     fw:firewallEventsAdaptive(limit:$limit,filter:{datetime_geq:$s,datetime_leq:$e},orderBy:[datetime_DESC]){
       datetime action ruleId description
     }
@@ -355,6 +359,9 @@ export async function queryAnalytics(
     httpPrev:httpRequestsAdaptive(limit:$limit,filter:{datetime_geq:$ps,datetime_leq:$s,clientRequestPath:"/api/chat"},orderBy:[datetime_DESC]){
       firewallForAiPiiCategories
     }
+    ruleGroups:firewallEventsAdaptiveGroups(limit:$groupLimit,filter:{datetime_geq:$s,datetime_leq:$e},orderBy:[count_DESC]){
+      count avg { sampleInterval } dimensions { action description ruleId }
+    }
   }}}`;
 
   const empty: AnalyticsSummary = {
@@ -364,7 +371,7 @@ export async function queryAnalytics(
   };
 
   const j = await gqlFetch<AnalyticsData>(token, query, {
-    z: zoneId, s: since, e: until, ps: prevSince, limit: EVENT_LIMIT,
+    z: zoneId, s: since, e: until, ps: prevSince, limit: EVENT_LIMIT, groupLimit: RULE_GROUP_LIMIT,
   });
   if (j.errors?.length) return { ...empty, error: j.errors[0].message };
 
@@ -468,6 +475,16 @@ export async function queryAnalytics(
     bucket,
     aiScored,
     scoreBuckets: buckets.map(({ label, count }) => ({ label, count })),
+    // Grouped per (action, rule) — uncapped by the 500-row read, but estimates when
+    // sampled. Handed to the handler, which classifies them (src/aiSecurityTally.ts).
+    ruleGroups: (zone?.ruleGroups ?? []).map((r) => ({
+      action: String(r.dimensions?.action ?? ""),
+      description: String(r.dimensions?.description ?? ""),
+      ruleId: String(r.dimensions?.ruleId ?? ""),
+      count: Number(r.count) || 0,
+      sampleInterval: Number(r.avg?.sampleInterval) || 1,
+    })),
+    ruleGroupsCapped: (zone?.ruleGroups?.length ?? 0) >= RULE_GROUP_LIMIT,
     piiRequests,
     unsafeTopics: [...unsafeCounts.entries()].map(([code, count]) => ({ code, count })).sort(byCountDesc),
     piiCategories: [...piiCounts.entries()].map(([name, count]) => ({ name, count })).sort(byCountDesc),

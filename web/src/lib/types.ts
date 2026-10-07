@@ -371,6 +371,19 @@ export interface Analytics {
   customTopics?: { label: string; count: number; avgStrength: number }[];
   scannedRequests?: number;
   labeledRequests?: number;
+  // AI Security rules' own events (src/aiSecurityTally.ts): grouped, so not capped at
+  // 500 rows; `sampled` = Cloudflare's estimates. `actions` above is zone-wide — any
+  // "AI Security blocked N" claim must read this instead (bug #22).
+  aiSecurity?: {
+    blocked: number;
+    logged: number;
+    other: number;
+    rules: { name: string; action: string; count: number; via: "expression" | "name" }[];
+    classifiedBy: "expression" | "name" | "mixed";
+    sampled: boolean;
+    capped: boolean;
+    zoneBlocked: number;
+  };
   error?: string;
 }
 

@@ -460,7 +460,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **665 across 43 files** (measured 2026-10-07; README's Tests table has the
+**Tests** — `npm test`, **672 across 44 files** (measured 2026-10-07; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -625,6 +625,54 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-10-07 — #22 fixed: Compliance "blocked" counts AI Security rules only
+
+**Asked for:** "do #22, then D-G". Deploy `e63f171b-396e-43ba-b04f-7051afa471c3`.
+
+- **The defect:** MEASURE 2.7 read "N blocked" from `analytics.actions`, i.e. every block in the zone, from the
+  500 newest rows.
+- **The fix:** `/api/analytics` now adds a `firewallEventsAdaptiveGroups` alias to its existing GraphQL round trip,
+  grouped by action + description + ruleId with `count` and `avg { sampleInterval }`, ordered by count, limit 1,000.
+  `src/aiSecurityTally.ts` (pure) classifies each group:
+  - by the live rule's `cf.llm.*` expression when `queryZoneRules` succeeds. A live rule whose expression is not
+    `cf.llm` is **excluded even if its name says LLM**;
+  - by `\bLLM\b` in the name otherwise. This also covers account-level rules, which the zone ruleset never lists.
+  - It returns `classifiedBy` (expression / name / mixed), `sampled` (any **counted** group with interval > 1),
+    `capped` (limit hit) and `zoneBlocked` (context only).
+  - The raw groups never reach the client.
+- **Facts checked against Cloudflare's docs before relying on them:**
+  - Adaptive datasets return **estimates** when sampled (analytics/graphql-api/sampling).
+  - `avg { sampleInterval }` is the documented per-group sampling indicator (features/confidence-intervals
+    example).
+- **Measured live (24 h, 2026-10-07):**
+  - 52 groups; zone blocks ≈10,280, sampled (intervals 1.4–10 on geography/path rules).
+  - **Every AI Security group was `log`, none `block`** — the zone's AI rules are on Log (#28): Monitor LLM
+    Injection 483, [Account-Level] Detect LLM Injection 465, Block LLM Injection 450, … 2,808 in total.
+  - The token cannot read the zone's rulesets ("Authentication error"), so classification is by name on this
+    deployment.
+  - The old chip would have read "at least 277 blocked", all of them non-AI rules from the capped rows.
+- **Evidence text:**
+  - Now: "at least 500 prompts scored · 0 blocked by AI Security rules (≈2,808 matched in Log mode)", with a note
+    on how rules were identified and that the counts are sampled estimates.
+  - "≈" prefixes only non-zero estimates.
+  - A Worker without the tally renders no "blocked" half rather than the zone total.
+  - MEASURE 3.1 now says "(all WAF rules in the zone)".
+  - `EvidenceResult` gains `note`, rendered under the chip.
+  - The unused zone-wide `blockedCount` was removed.
+- **Verified:**
+  - **Gates:** 672 across 44 files. The four `complianceEvidence` tests that pinned the defect's strings were
+    rewritten, and two regression tests were added.
+  - **Mutations,** all caught:
+    - non-LLM blocks counted;
+    - name beating expression;
+    - sampling ignored;
+    - the evidence headline using `zoneBlocked`.
+  - **Local** (`wrangler dev`, real zone GraphQL): the numbers above. The Compliance page rendered the new chip and
+    note.
+  - **Prod:** smoke all pass. `aiSecurity` = `{blocked:0, logged:2808, classifiedBy:"name", sampled:true,
+    capped:false, zoneBlocked:10275}` with no `ruleGroups` leaked. The bundle contains both new strings.
+- **API docs:** `openapi.ts` documents `aiSecurity` on `AnalyticsResponse`.
 
 ### 2026-10-07 — Red Team benchmark C: latency per guardrail, and per prompt for the stage
 
@@ -2648,7 +2696,7 @@ exercised):
 
 **Found in the 2026-10-01 code review** (each measured, not inferred):
 
-22. **🔴 Compliance evidence credits AI Security with blocks it did not make — live in prod.** The MEASURE
+22. ~~**🔴 Compliance evidence credits AI Security with blocks it did not make — live in prod.**~~ **FIXED 2026-10-07** (deploy `e63f171b`; see that day's entry). Original: The MEASURE
     2.7 chip ("AI system security and resilience are evaluated" — injection scoring) reports "N blocked" as
     `blockedCount(analytics.actions)`, i.e. **every WAF block event in the zone**: Sensitive Paths,
     Geography-based rule, AI-crawler blocks, managed-ruleset CVE rules. Measured over 24 h with grouped
