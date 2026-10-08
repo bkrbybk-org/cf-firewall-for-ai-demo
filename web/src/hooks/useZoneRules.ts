@@ -14,6 +14,8 @@ import { createStore, useStore } from "../lib/sessionStore";
 // The shape both sources agree on. `detail` is the real rule expression when
 // live and the mirror's hand-written hint when not.
 export interface UiZoneRule {
+  id?: string; // live only — matching by id is exact where names repeat (Monitor vs Protection rulesets)
+  ruleset?: string; // live only — the custom ruleset it lives in
   name: string;
   action: string;
   detail?: string;
@@ -26,6 +28,7 @@ export type ZoneRuleSource = "live" | "fallback";
 export interface ZoneRulesState {
   rules: UiZoneRule[];
   source: ZoneRuleSource;
+  aiManagedNames?: string[]; // live only: AI Security managed rule names (firewall-for-ai category)
 }
 
 // Every rule in the static mirror is an AI Security rule and is assumed
@@ -55,6 +58,8 @@ function load(): Promise<void> {
       if (res.source === "live" && Array.isArray(res.rules)) {
         store.set({
           rules: res.rules.map((r) => ({
+            id: r.id,
+            ...(r.ruleset ? { ruleset: r.ruleset } : {}),
             name: r.name,
             action: r.action,
             detail: r.expression,
@@ -62,6 +67,7 @@ function load(): Promise<void> {
             llm: r.llm,
           })),
           source: "live",
+          ...(res.aiManaged ? { aiManagedNames: res.aiManaged.map((m) => m.name.toLowerCase()) } : {}),
         });
       }
     })
@@ -84,7 +90,11 @@ export function useZoneRules(): ZoneRulesState {
 // a renamed rule stays classified. Only rules absent from the list fall through
 // to the name heuristic in data.ts.
 export function classifyRule(name: string, state: ZoneRulesState): boolean {
-  const hit = state.rules.find((r) => r.name.toLowerCase() === name.trim().toLowerCase());
+  const n = name.trim().toLowerCase();
+  const hit = state.rules.find((r) => r.name.toLowerCase() === n);
   if (hit) return hit.llm;
+  // A managed rule Cloudflare tags firewall-for-ai — "Detects PII categories in the prompt"
+  // never says LLM, so the name heuristic below would misfile it.
+  if (state.aiManagedNames?.includes(n)) return true;
   return isLlmRule(name);
 }

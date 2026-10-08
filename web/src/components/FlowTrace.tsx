@@ -18,7 +18,7 @@ import {
   Sparkles,
   User,
 } from "lucide-react";
-import { useZoneRules } from "../hooks/useZoneRules";
+import { useZoneRules, type UiZoneRule } from "../hooks/useZoneRules";
 import { topicLabel } from "../lib/format";
 import { verdictOutcome } from "../lib/verdict";
 import type { GatewayMeta, Verdict as VerdictData, VerdictRule } from "../lib/types";
@@ -232,17 +232,23 @@ export function FlowTrace({
 
   const matched: VerdictRule[] = d.rules ?? [];
   const matchedNames = matched.map((r) => (r.description || r.ruleId).toLowerCase());
-  const isMatched = (name: string) => matchedNames.some((m) => m === name.toLowerCase());
+  const matchedIds = new Set(matched.map((r) => r.ruleId));
+  // By id when the rule has one (live): the Monitor and Protection rulesets share rule
+  // names, and a name match would light up both. The mirror has no ids, so by name.
+  const isMatched = (z: UiZoneRule) => (z.id ? matchedIds.has(z.id) : matchedNames.some((m) => m === z.name.toLowerCase()));
   // Matched rules not in the zone list (account-level rules etc.) still show.
-  const extraMatched = matched.filter(
-    (r) => !zoneRules.some((z) => z.name.toLowerCase() === (r.description || r.ruleId).toLowerCase()),
+  const extraMatched = matched.filter((r) =>
+    zoneRules.every((z) => (z.id ? z.id !== r.ruleId : z.name.toLowerCase() !== (r.description || r.ruleId).toLowerCase())),
   );
   // A disabled rule is not evaluated by the edge, so counting it would
   // overstate coverage. It is still listed (in the expanded misses) and marked,
-  // because "this rule exists but is off" is worth seeing.
+  // because "this rule exists but is off" is worth seeing. "Disabled" is effective:
+  // a rule inside a custom ruleset whose execute rule is off is off too.
   const activeRules = zoneRules.filter((z) => z.enabled);
   const disabledRules = zoneRules.filter((z) => !z.enabled);
-  const misses = activeRules.filter((z) => !isMatched(z.name));
+  const misses = activeRules.filter((z) => !isMatched(z));
+  const ruleKey = (z: UiZoneRule) => z.id || `${z.ruleset ?? ""}|${z.name}`;
+  const ruleTip = (z: UiZoneRule) => (z.ruleset ? `${z.ruleset} — ${z.detail ?? ""}` : z.detail);
   const hitCount = matched.length;
 
   const outcome = verdictOutcome(d);
@@ -314,9 +320,9 @@ export function FlowTrace({
         </Title>
         <div className="mt-1.5 overflow-hidden rounded-lg border border-line">
           {activeRules
-            .filter((z) => isMatched(z.name))
+            .filter((z) => isMatched(z))
             .map((z) => (
-              <RuleRow key={z.name} name={z.name} action={z.action} matched summary={z.detail} />
+              <RuleRow key={ruleKey(z)} name={z.name} action={z.action} matched summary={ruleTip(z)} />
             ))}
           {extraMatched.map((r) => (
             <RuleRow key={r.ruleId} name={r.description || r.ruleId} action={r.action} matched />
@@ -328,10 +334,10 @@ export function FlowTrace({
             (showMisses ? (
               <>
                 {misses.map((z) => (
-                  <RuleRow key={z.name} name={z.name} action={z.action} matched={false} summary={z.detail} />
+                  <RuleRow key={ruleKey(z)} name={z.name} action={z.action} matched={false} summary={ruleTip(z)} />
                 ))}
                 {disabledRules.map((z) => (
-                  <RuleRow key={z.name} name={z.name} action={z.action} matched={false} summary={z.detail} disabled />
+                  <RuleRow key={ruleKey(z)} name={z.name} action={z.action} matched={false} summary={ruleTip(z)} disabled />
                 ))}
               </>
             ) : (

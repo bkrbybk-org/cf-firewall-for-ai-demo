@@ -111,9 +111,32 @@ export type CoverageConfidence = "live-expression" | "live-name" | "fallback-nam
 export interface GapCoverage {
   exists: boolean;
   ruleName?: string;
+  // What the matched rule does right now (live only). A rule that only logs, or is off
+  // (itself or the execute rule running its ruleset), cannot be why attacks were
+  // stopped — and "raise its threshold" is the wrong advice for it.
+  ruleState?: "block" | "other" | "log" | "disabled";
   confidence: CoverageConfidence;
   note: string;
 }
+
+function stateOf(r: UiZoneRule): NonNullable<GapCoverage["ruleState"]> {
+  if (!r.enabled) return "disabled";
+  if (/block|drop/i.test(r.action)) return "block";
+  if (/log/i.test(r.action)) return "log";
+  return "other";
+}
+// When several rules match, the one that does the most is the one to talk about: a
+// blocking rule over a challenge, over a log-only one, over a disabled one.
+const STATE_RANK = { block: 0, other: 1, log: 2, disabled: 3 } as const;
+function strongest(rules: UiZoneRule[]): UiZoneRule | undefined {
+  return [...rules].sort((a, b) => STATE_RANK[stateOf(a)] - STATE_RANK[stateOf(b)])[0];
+}
+const STATE_WORDS: Record<NonNullable<GapCoverage["ruleState"]>, string> = {
+  block: "blocks",
+  other: "is on (not a block)",
+  log: "is set to Log — it records, it does not block",
+  disabled: "is disabled",
+};
 
 // fieldNeedle: a substring to look for in a LIVE rule's real expression —
 // ground truth, per useZoneRules' header comment. Pass null when no field
@@ -125,21 +148,24 @@ export interface GapCoverage {
 // from matching the real field, so we deliberately never try).
 function coverageByField(state: ZoneRulesState, fieldNeedle: string | null, nameNeedles: string[]): GapCoverage {
   if (state.source === "live" && fieldNeedle) {
-    const hit = state.rules.find((r) => r.llm && r.detail?.includes(fieldNeedle));
+    const hit = strongest(state.rules.filter((r) => r.llm && r.detail?.includes(fieldNeedle)));
     if (hit) {
+      const s = stateOf(hit);
       return {
         exists: true,
         ruleName: hit.name,
+        ruleState: s,
         confidence: "live-expression",
-        note: `Live zone: '${hit.name}' expression references ${fieldNeedle} — ground truth, not a name guess.`,
+        note: `Live zone: '${hit.name}'${hit.ruleset ? ` (in ${hit.ruleset})` : ""} expression references ${fieldNeedle} — ground truth, not a name guess. It ${STATE_WORDS[s]}.`,
       };
     }
   }
-  const hitName = state.rules.find((r) => nameNeedles.some((n) => r.name.toLowerCase().includes(n)));
+  const hitName = strongest(state.rules.filter((r) => nameNeedles.some((n) => r.name.toLowerCase().includes(n))));
   if (hitName) {
     return {
       exists: true,
       ruleName: hitName.name,
+      ...(state.source === "live" ? { ruleState: stateOf(hitName) } : {}),
       confidence: state.source === "live" ? "live-name" : "fallback-name",
       note:
         state.source === "live"
@@ -350,6 +376,18 @@ export function computeGapControls(
     const spec = specFor(row.key);
     const coverage = coverageFor(spec, zoneRules);
     const built = spec.build(row, coverage);
+    // A matched rule that only logs or is off is the plain reason these attacks got
+    // through — said first, before any threshold advice. Logging can be the point (the
+    // demo's AI rules are on Log on purpose, so test prompts reach the external
+    // guardrails), so it is offered as a choice, never as a fault.
+    if (coverage.exists && (coverage.ruleState === "log" || coverage.ruleState === "disabled")) {
+      const log = coverage.ruleState === "log";
+      built.recommendation =
+        `'${coverage.ruleName}' ${log ? "is set to Log — it records these prompts but does not block them" : "is disabled"}. ` +
+        `If that is intended (for example, so prompts reach the external guardrails), this gap is by design; to close it ` +
+        `at the edge, ${log ? "switch it to Block" : "enable it"}. ` +
+        built.recommendation;
+    }
     return {
       category: row.key,
       reached: row.reached,

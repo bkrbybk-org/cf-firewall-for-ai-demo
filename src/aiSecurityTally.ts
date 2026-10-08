@@ -12,7 +12,12 @@
 //
 // Classification, strongest evidence first:
 //   - "expression": the zone's live custom rules are readable and this event's rule
-//     (by id, else by description) has an expression using cf.llm.* — a fact.
+//     (by id, else by description) has an expression using cf.llm.* — a fact. Since
+//     2026-10-08 that includes rules INSIDE the custom rulesets an execute rule runs
+//     (src/cloudflare.ts flattenCustomRules): this zone's AI rules all live there.
+//   - "category": a deployed MANAGED rule Cloudflare tags firewall-for-ai (its expression
+//     is hidden) — also a fact. Before this, "Detects PII categories in the prompt" and
+//     its siblings were not counted at all: their names never say "LLM".
 //   - "name": otherwise, the rule's description matches \bLLM\b — a heuristic. It
 //     also covers account-level rules ("[Account-Level] Detect LLM Injection"),
 //     which the zone's ruleset never lists. The method used is returned, so the
@@ -29,16 +34,21 @@ export interface RuleGroup {
 export interface LiveRuleRef {
   id: string;
   name: string;
-  llm: boolean; // expression references cf.llm.*
+  llm: boolean; // expression references cf.llm.* — or a managed rule with the firewall-for-ai category
+  // What the classification rests on: the rule's readable expression (custom rules, nested
+  // ones included), or Cloudflare's category on a managed rule whose expression is hidden.
+  via?: "expression" | "category";
 }
 
 export interface AiSecurityTally {
   blocked: number; // AI Security rule events whose action blocked the request
   logged: number; // …that matched but only logged (rule in Log mode)
   other: number; // …any other action (challenge, skip, …)
-  rules: { name: string; action: string; count: number; via: "expression" | "name" }[];
-  // How AI Security rules were told apart. "mixed": live rules covered some events,
-  // the name heuristic the rest (account-level rules are never in the zone ruleset).
+  rules: { name: string; action: string; count: number; via: "expression" | "category" | "name" }[];
+  // How AI Security rules were told apart. "expression": every counted event matched one
+  // of the zone's readable rules (a cf.llm.* expression, or a managed rule's firewall-for-ai
+  // category). "mixed": readable rules covered some, the name heuristic the rest
+  // (account-level rules are never in the zone's rulesets).
   classifiedBy: "expression" | "name" | "mixed";
   sampled: boolean; // true → every count above is Cloudflare's estimate, not exact
   // The group query hit its limit, so the smallest groups were not returned and every
@@ -76,15 +86,15 @@ export function tallyAiSecurity(groups: RuleGroup[], liveRules: LiveRuleRef[] | 
     // A live rule decides by its expression — including "not AI Security", even if its
     // name happens to say LLM. Only a rule the zone ruleset does not list falls back
     // to the name.
-    let via: "expression" | "name" | null = null;
-    if (live) via = live.llm ? "expression" : null;
+    let via: "expression" | "category" | "name" | null = null;
+    if (live) via = live.llm ? (live.via ?? "expression") : null;
     else if (LLM_NAME.test(g.description)) via = "name";
     if (!via) continue;
     // Only the groups counted decide whether the counts are estimates: the zone's
     // heavily-sampled geography and path rules say nothing about AI Security's numbers.
     if (g.sampleInterval > 1) t.sampled = true;
 
-    if (via === "expression") viaExpression += g.count;
+    if (via !== "name") viaExpression += g.count;
     else viaName += g.count;
     if (isBlock(g.action)) t.blocked += g.count;
     else if (isLog(g.action)) t.logged += g.count;

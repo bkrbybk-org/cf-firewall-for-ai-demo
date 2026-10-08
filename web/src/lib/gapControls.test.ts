@@ -281,3 +281,41 @@ function assertShape(g: GapControl) {
   void _category, _reached, _scored, _rec, _expr;
 }
 void assertShape;
+
+// 2026-10-08: with nested rulesets opened, the live list holds the zone's real AI rules —
+// including ones that only log (the demo's AI rules are on Log on purpose) and ones that
+// are off. A rule that does not block cannot be why attacks were stopped, so it is said.
+describe("computeGapControls — the matched rule's state", () => {
+  const rule = (name: string, action: string, enabled: boolean, ruleset?: string) => ({
+    id: `${ruleset}|${name}`,
+    ruleset,
+    name,
+    action,
+    detail: "(cf.llm.prompt.injection_score le 15)",
+    enabled,
+    llm: true,
+  });
+  const reached = new Map<string, RtRunResult>([["rt-02", r("rt-02", "allow")]]); // Jailbreak
+  const gapWith = (rules: ReturnType<typeof rule>[]) =>
+    computeGapControls(RT_CORPUS, reached, { source: "live", rules }).find((g) => g.category === "Jailbreak")!;
+
+  it("a log-only rule: says so first, and offers Block as a choice, not a fault", () => {
+    const g = gapWith([rule("Block LLM Injection", "log", true, "LLM Monitor Ruleset")]);
+    expect(g.coverage).toMatchObject({ exists: true, ruleState: "log" });
+    expect(g.recommendation.startsWith("'Block LLM Injection' is set to Log — it records these prompts but does not block them.")).toBe(true);
+    expect(g.recommendation).toContain("this gap is by design");
+    expect(g.coverage.note).toContain("(in LLM Monitor Ruleset)");
+  });
+
+  it("prefers the rule that does the most: an enabled block over a log-only twin", () => {
+    const g = gapWith([rule("Block LLM Injection", "log", true, "Monitor"), rule("Block LLM Injection", "block", true, "Protection")]);
+    expect(g.coverage.ruleState).toBe("block");
+    expect(g.recommendation.startsWith("'Block LLM Injection' is set to Log")).toBe(false);
+  });
+
+  it("a block rule that is off (its ruleset's execute rule disabled) reads as disabled, not as coverage that blocks", () => {
+    const g = gapWith([rule("Block LLM Injection", "block", false, "LLM Protection Ruleset")]);
+    expect(g.coverage.ruleState).toBe("disabled");
+    expect(g.recommendation).toContain("is disabled");
+  });
+});

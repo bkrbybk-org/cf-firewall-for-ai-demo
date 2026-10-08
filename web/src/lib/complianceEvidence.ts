@@ -97,10 +97,10 @@ export function resolveEvidence(
       const logged = ai.blocked === 0 && ai.logged > 0 ? ` (${est(ai.logged)}${fmt(ai.logged)} matched in Log mode)` : "";
       const how =
         ai.classifiedBy === "expression"
-          ? "AI Security rules identified by their cf.llm.* expression."
+          ? "AI Security rules identified from the zone's own rules: a cf.llm.* expression, or Cloudflare's firewall-for-ai managed category."
           : ai.classifiedBy === "mixed"
-            ? "AI Security rules identified by expression where the zone's rules are readable, by an “LLM” rule name otherwise (account-level rules)."
-            : "AI Security rules identified by an “LLM” rule name — the token cannot read the zone's rule expressions.";
+            ? "AI Security rules identified from the zone's own rules (a cf.llm.* expression, or Cloudflare's firewall-for-ai managed category), and by an “LLM” rule name for the rest — account-level rules the zone cannot read."
+            : "AI Security rules identified by an “LLM” rule name — the zone's rules could not be read.";
       return {
         status: "ok",
         windowLabel: win,

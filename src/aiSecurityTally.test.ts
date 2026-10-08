@@ -67,3 +67,33 @@ describe("tallyAiSecurity", () => {
     expect(t).toMatchObject({ blocked: 0, logged: 0, other: 7 });
   });
 });
+
+// 2026-10-08: the zone's AI rules are readable once nested rulesets are opened, and the
+// managed Firewall for AI rules are classified by Cloudflare's category.
+describe("tallyAiSecurity — nested custom rules and managed AI rules", () => {
+  const groups = [
+    g("log", "Detects PII categories in the prompt", 12, 1, "mgd-pii"), // managed: no "LLM" in its name
+    g("log", "Monitor LLM PII Categories", 12, 1, "mon-pii"),
+    g("log", "Monitor Requests Token Count", 17, 1, "mon-tok"), // cf.llm.prompt.token_count; no "LLM" in its name
+    g("log", "[Account-Level] Detect LLM Unsafe Prompt", 22, 1, "acct-1"), // not in the zone's rulesets
+    g("block", "Geography-based rule", 4737, 1, "geo"),
+  ];
+  const live = [
+    { id: "mon-pii", name: "Monitor LLM PII Categories", llm: true, via: "expression" as const },
+    { id: "mon-tok", name: "Monitor Requests Token Count", llm: true, via: "expression" as const },
+    { id: "geo", name: "Geography-based rule", llm: false, via: "expression" as const },
+    { id: "mgd-pii", name: "Detects PII categories in the prompt", llm: true, via: "category" as const },
+  ];
+
+  it("counts the managed rule by category and the nested rule by expression — names alone missed both", () => {
+    const before = tallyAiSecurity(groups, null);
+    expect(before.logged).toBe(12 + 22); // only the two with "LLM" in their names
+    const t = tallyAiSecurity(groups, live);
+    expect(t.logged).toBe(12 + 12 + 17 + 22);
+    expect(t.blocked).toBe(0);
+    expect(t.rules.find((r) => r.name === "Detects PII categories in the prompt")?.via).toBe("category");
+    expect(t.rules.find((r) => r.name === "Monitor Requests Token Count")?.via).toBe("expression");
+    expect(t.rules.find((r) => r.name.startsWith("[Account-Level]"))?.via).toBe("name");
+    expect(t.classifiedBy).toBe("mixed");
+  });
+});

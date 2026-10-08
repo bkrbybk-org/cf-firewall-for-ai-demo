@@ -47,3 +47,14 @@ describe("classifyRule", () => {
     expect(classifyRule("(P) AI Red Team", fallback)).toBe(false);
   });
 });
+
+// 2026-10-08: AI Security's MANAGED rules never say "LLM" in their names; the live
+// response lists them (firewall-for-ai category) so the edge split files them right.
+describe("classifyRule — managed AI Security rules", () => {
+  it("files a firewall-for-ai managed rule as AI Security, and only with the live list", () => {
+    const live: ZoneRulesState = { source: "live", rules: [], aiManagedNames: ["detects pii categories in the prompt"] };
+    expect(classifyRule("Detects PII categories in the prompt", live)).toBe(true);
+    expect(classifyRule("Detects PII categories in the prompt", { source: "live", rules: [] })).toBe(false);
+    expect(classifyRule("Geography-based rule", live)).toBe(false);
+  });
+});

@@ -626,6 +626,66 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-08 — Nested custom rulesets read; managed AI Security rules counted; Log mode recorded as intended
+
+**Asked for:** "do nested ruleset read, noted that i intended to set as log so cloudflare doesn't block test prompt
+before send to external guardrails". Deploy `a388efb9-1fc5-4ccc-89f7-0ac940ebf274`. #28 now records the Log intent.
+
+**Measured first** (zone Rulesets API and GraphQL, with the `.env` analytics token, 2026-10-08):
+- **Where the AI rules live:** the custom entrypoint holds 5 `execute` rules whose `action_parameters.id` names a
+  zone-level `custom` ruleset (`waf/custom-rules/custom-rulesets`). The AI rules live there:
+  - "LLM Monitor Ruleset" runs: its log rules are on and its block rules off;
+  - "LLM Protection Ruleset" holds the block rules, all on, but its `execute` rule is off.
+  - **Rule names repeat across the two.**
+- **What events carry:** a nested rule's events carry its OWN `ruleId` and the custom ruleset's `rulesetId`. For
+  example, "Monitor Requests Token Count" has rule `e8436eff…` in ruleset `e6e457e3…`.
+- **A second gap:** the managed "Cloudflare Firewall for AI Ruleset" (deployed, overridden to log) logs "Detects PII
+  categories in the prompt" and its siblings. Their names never say LLM, so the #22 tally never counted them. Their
+  expressions are hidden, but each rule carries `categories: ["firewall-for-ai"]`.
+
+**What changed:**
+- **`src/cloudflare.ts`:**
+  - `flattenCustomRules` replaces each `execute` rule with its ruleset's rules (`ruleset` tag). It is pure and tested.
+  - A nested rule's `enabled` is effective: the rule on AND its execute rule on.
+  - An execute rule whose ruleset can't be read stays listed as itself.
+  - `queryAiManagedRules` reads only the managed rulesets that the managed entrypoint executes, and of those only
+    ones whose name mentions AI; the category is what classifies a rule.
+- **Tally (`aiSecurityTally.ts`):** a new `via: "category"`. Classification is by id first, which matters because
+  the names repeat.
+- **API:** `/api/zone-rules` adds `aiManaged`, and the analytics handler passes both lists to the tally.
+- **Compliance wording:** names the real method, and no longer claims the token "cannot read" the rules.
+- **Flow trace:** matches by rule id, keys rows by id, and puts the ruleset in the tooltip.
+- **Edge tab:** `classifyRule` knows the managed AI rule names. Before, they were filed as "not AI Security".
+- **"Close the gaps":** coverage carries the matched rule's state (`block`/`other`/`log`/`disabled`) and prefers
+  the rule that does the most.
+  - A Log or disabled match is said first, as a choice: "If that is intended (for example, so prompts reach the
+    external guardrails), this gap is by design."
+  - Without this, it would have told the user to raise the threshold of a rule that only logs.
+
+**Verified:**
+- **Tests:** 744, with 0 type errors.
+- **Mutation-verified, 7 of 7 caught:**
+  - parent enabled ignored; unread container dropped;
+  - managed rules also classified by name; the category label lost;
+  - strongest rule not preferred; Log state not said; disabled read as block.
+- **Live, local and prod identical:**
+  - `/api/zone-rules` → 44 rules, 24 AI, 8 effectively on (the Monitor log rules); every Protection rule `enabled:
+    false`; 4 `aiManaged`.
+  - **24 h tally:** 0 blocked, 132 logged, `mixed`:
+    - managed rules by category: 22 + 12 + 7 = 41 (previously uncounted);
+    - nested custom rules by expression: 17 + 17 + 12 + 11 = 57;
+    - account-level rules by name: 22 + 12 = 34.
+    - These match the raw GraphQL groups exactly.
+- **Browser:**
+  - The Compliance note reads correctly.
+  - **Flow trace** on the real ray `a4704df0e9dd55a1` (one local prompt-log row, deleted afterwards): "29 evaluated ·
+    5 matched · 19 disabled".
+    - "Monitor LLM PII Categories" is matched once, by id; its Protection twin is counted as disabled.
+    - 44 − 19 = 25 active, plus 4 matched rules that are not zone custom rules = 29.
+  - **The Edge tab's split could not be seen live:** its top rules come from the latest 500 events, which held no AI
+    rule in either window. A unit test covers it.
+- **Prod:** smoke passes.
+
 ### 2026-10-08 — Cisco AI Defense, Lakera Guard, Cato: docs re-reviewed and live endpoints re-probed
 
 **Asked for:** "review cisco ai defense, check point lakera, cato docs and verify them". Deploy
@@ -2944,7 +3004,10 @@ uncommitted.
     *inside* an `execute` rule ("LLM Monitor Ruleset", "LLM Protection Ruleset") or in account-level rulesets, and
     the reader lists only the top level. So no live rule has `llm: true`, and the #22 AI Security tally still
     classifies by name (`classifiedBy: "name"`: 0 blocked, ≈58 logged in 24 h). Reading the nested custom
-    rulesets would let it classify by expression. Not started.
+    rulesets would let it classify by expression. ~~Not started.~~ **Done 2026-10-08** (deploy `a388efb9`): nested
+    custom rulesets are opened (44 rules, 24 AI, 8 of them effectively on), and the managed AI Security rules are
+    classified by Cloudflare's `firewall-for-ai` category. Only account-level rules still go by name
+    (`classifiedBy: "mixed"`).
 13. **Row caps**: zone analytics reads the latest 500 rows/dataset; gateway logs page to 500 (API
     caps `per_page` at 50) and set `truncated`. Prompt log rows cap at 200 per fetch (see #9).
 14. **AI Gateway logs are account-scoped** and still store the **raw** prompt+response payload —
@@ -3077,7 +3140,21 @@ exercised):
     benign`, `detected: []`, 419 ms, and the model answered. Not yet seen: the rendered card and chip in a
     browser, or a real `incomplete` (timeout/error flag) verdict.
 
-28. **The zone's PII rules are set to Log — on purpose, since 2026-10-01** (the user's choice, to let PII
+28. **The zone's AI Security rules are all on Log — ON PURPOSE (a design choice, not a bug to fix).**
+    **Confirmed by the user, 2026-10-08:** they are set to Log so Cloudflare's edge does not block a test prompt before it
+    reaches the external guardrails. The demo exists to compare those guardrails, and an edge block would hide every
+    attack from them.
+    - **How it is built (read live 2026-10-08, see that day's entry):** "LLM Monitor Ruleset" runs, with its log rules
+      on and its block rules off. "LLM Protection Ruleset" (the block rules) stays deployed, but its `execute` rule is
+      off.
+    - **To demo the WAF blocking,** enable the Protection ruleset's execute rule. The app reads the change live.
+    - **Consequences, all stated in the UI rather than hidden:**
+      - Compliance MEASURE 2.7 shows "0 blocked (≈N matched in Log mode)";
+      - "Close the gaps" says a matched rule "is set to Log … if that is intended, this gap is by design";
+      - the edge red card cannot be seen live while nothing blocks.
+    - **History:** first the PII rule (2026-10-01, to let PII prompts reach Prisma AIRS), then wider (measured 2026-10-05).
+    The original entry follows.
+    **The zone's PII rules are set to Log — on purpose, since 2026-10-01** (the user's choice, to let PII
     prompts reach Prisma AIRS and confirm it blocks them). Measured on ray `a439b56029e6a1c8` via
     `/api/verdict`: the edge **did** detect it (`piiCategories: ["CREDIT_CARD"]`, `scored: true`), every
     matching rule acted `log` ("[Account-Level] Detect PII in LLM", "Monitor LLM PII Categories", …), and
@@ -3255,7 +3332,10 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [x] ~~Map the prod block-response JSON keys in the client (Open bug #4)~~ — done 2026-10-05.
 - [ ] Add each other block rule's `reason_code` to `REASON_CODE_DETECTIONS` (`web/src/lib/edgeBlock.ts`)
       **from a real payload**, once the rules block again (#28). Until then those codes show their message
-      and code, with no detection label.
+      and code, with no detection label. **New option (2026-10-08):** the block rules' Custom JSON (including
+      `reason_code`) is readable in their `action_parameters.response.content`, now that the nested rulesets are
+      read. So the codes could be taken from the live rule definitions, with no block needed; that is still the
+      rule as written, not a payload the edge returned.
 - [ ] Replace the local `.env` `CF_AIG_TOKEN` so `wrangler dev` can exercise the gateway route
       again (prod is fine — Open bug #1).
 
@@ -3280,9 +3360,8 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 - [x] ~~Add server-side `OFFSET` paging to `/api/prompt-log`~~ — done, with sort and search (bug #9).
 - [x] ~~**Add `Zone → WAF → Read` to `CF_ANALYTICS_TOKEN`**~~ — observed working on prod 2026-10-07
       (`/api/zone-rules` `source:"live"`). Follow-up below.
-- [ ] **Read the nested custom rulesets** (the `execute` targets such as "LLM Monitor Ruleset") in
-      `queryZoneRules`, so AI rules are recognised by their `cf.llm` expression instead of their name
-      (Open bug #12 update). Self: it changes how a customer-facing compliance count is attributed.
+- [x] ~~**Read the nested custom rulesets**~~ — done 2026-10-08 (deploy `a388efb9`), plus the managed AI Security
+      rules by Cloudflare's `firewall-for-ai` category. See Implemented.
 - [x] ~~Map upstream AI Gateway auth failures (HTTP 401/403, `code 10000`) to an actionable message~~ — done
       2026-10-06 (`src/gatewayErrors.ts`). Original note:
       instead of dumping the raw Cloudflare error JSON into the chat bubble — every gateway send goes

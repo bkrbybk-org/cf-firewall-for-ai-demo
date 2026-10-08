@@ -1,6 +1,6 @@
 // Route handlers, one per endpoint. Each returns a Response.
 
-import { tallyAiSecurity } from "./aiSecurityTally";
+import { tallyAiSecurity, type LiveRuleRef } from "./aiSecurityTally";
 import {
   bucketFor,
   CF_API_BASE,
@@ -54,6 +54,7 @@ import {
   queryNeuronUsage,
   queryVerdict,
   queryVerdictRetention,
+  queryAiManagedRules,
   queryZoneRules,
 } from "./cloudflare";
 import { guardrailWriteAccess } from "./accessAuth";
@@ -218,8 +219,15 @@ export async function handleZoneRules(env: Env): Promise<Response> {
     return Response.json({ configured: false, source: "fallback", rules: [] });
   }
   try {
-    const rules = await queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN);
-    return Response.json({ configured: true, source: "live", rules });
+    // aiManaged: the deployed AI Security MANAGED rules (Cloudflare's firewall-for-ai
+    // category). Kept out of `rules` — those are the zone's custom rules, and the flow
+    // trace lists them as such — but the edge-analytics split must know them, or
+    // "Detects PII categories in the prompt" is filed as an unrelated rule. Best effort.
+    const [rules, aiManaged] = await Promise.all([
+      queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN),
+      queryAiManagedRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN).catch(() => null),
+    ]);
+    return Response.json({ configured: true, source: "live", rules, ...(aiManaged ? { aiManaged } : {}) });
   } catch (err) {
     return Response.json({ configured: true, source: "fallback", rules: [], error: clientError(err, "Zone rules") });
   }
@@ -966,10 +974,21 @@ export async function handleAnalytics(url: URL, env: Env): Promise<Response> {
     // The zone's live rules let AI Security events be told apart by expression; without
     // "Zone → WAF → Read" this fails and the tally falls back to rule names — and says so
     // (src/aiSecurityTally.ts). Fetched alongside, never blocking the analytics.
-    const [summary, liveRules] = await Promise.all([
+    // Custom rules (nested custom rulesets opened) classify by expression; the deployed
+    // AI Security managed rules by Cloudflare's firewall-for-ai category. Either read may
+    // fail on its own; only when both do is there nothing readable to classify by.
+    const [summary, customRules, managedAi] = await Promise.all([
       queryAnalytics(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN, hours),
       queryZoneRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN).catch(() => null),
+      queryAiManagedRules(env.CF_ZONE_ID, env.CF_ANALYTICS_TOKEN).catch(() => null),
     ]);
+    const liveRules: LiveRuleRef[] | null =
+      customRules || managedAi
+        ? [
+            ...(customRules ?? []).map((r) => ({ id: r.id, name: r.name, llm: r.llm, via: "expression" as const })),
+            ...(managedAi ?? []).map((r) => ({ id: r.id, name: r.name, llm: true, via: "category" as const })),
+          ]
+        : null;
     if (summary.ruleGroups) {
       summary.aiSecurity = tallyAiSecurity(summary.ruleGroups, liveRules, summary.ruleGroupsCapped === true);
       delete summary.ruleGroups; // internal: the client gets the tally, not the raw groups

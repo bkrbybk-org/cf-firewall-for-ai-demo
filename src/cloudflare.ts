@@ -88,21 +88,98 @@ export interface ZoneRuleLive {
   name: string; // the rule's dashboard description — what firewallEventsAdaptive returns
   action: string; // block / log / managed_challenge / skip / …
   expression: string;
+  // EFFECTIVE: the rule is on AND, for a rule inside a custom ruleset, so is the
+  // `execute` rule that runs that ruleset. A rule switched on inside a ruleset whose
+  // execute rule is off is never evaluated — counting it would overstate coverage.
   enabled: boolean;
   llm: boolean; // derived from the expression, see isLlmExpression
+  ruleset?: string; // the custom ruleset it lives in; absent for a top-level rule
 }
 
-type RulesetsListData = { result?: { id?: string; phase?: string; kind?: string }[]; success?: boolean };
+type RulesetsListData = {
+  result?: { id?: string; phase?: string; kind?: string; name?: string }[];
+  success?: boolean;
+};
+export interface RawRule {
+  id?: string;
+  description?: string;
+  action?: string;
+  expression?: string;
+  enabled?: boolean;
+  action_parameters?: { id?: string };
+  categories?: string[];
+}
 type RulesetData = {
   success?: boolean;
   errors?: { message: string }[];
-  result?: {
-    rules?: { id?: string; description?: string; action?: string; expression?: string; enabled?: boolean }[];
-  };
+  result?: { name?: string; rules?: RawRule[] };
 };
 
 // The phase whose entrypoint ruleset holds a zone's WAF custom rules.
 const CUSTOM_RULES_PHASE = "http_request_firewall_custom";
+// The phase whose entrypoint deploys managed rulesets (Cloudflare's own rules).
+const MANAGED_RULES_PHASE = "http_request_firewall_managed";
+// Cloudflare tags each rule of its AI Security managed ruleset with this category
+// (seen live 2026-10-08 on "Cloudflare Firewall for AI Ruleset": all four rules carry
+// `categories: ["firewall-for-ai"]`, and their expressions are not readable). The tag,
+// not the ruleset's name, is what classifies a rule.
+const AI_MANAGED_CATEGORY = "firewall-for-ai";
+
+function toLive(r: RawRule, parent?: { enabled: boolean; name: string }): ZoneRuleLive {
+  const expression = String(r.expression ?? "");
+  return {
+    id: String(r.id ?? ""),
+    // Matching against firewallEventsAdaptive is by id first, then description, so an
+    // unnamed rule falls back to its id rather than to an empty string.
+    name: String(r.description || r.id || ""),
+    action: String(r.action ?? ""),
+    expression,
+    // The API omits `enabled` when a rule is enabled; only false is explicit.
+    enabled: r.enabled !== false && (parent ? parent.enabled : true),
+    llm: isLlmExpression(expression),
+    ...(parent ? { ruleset: parent.name } : {}),
+  };
+}
+
+// The entrypoint's rules with every `execute` rule replaced by the rules of the custom
+// ruleset it runs (zone-level custom rulesets: developers.cloudflare.com/waf/custom-rules/
+// custom-rulesets). Pure, so the two rules that matter are tested: a nested rule is only
+// as enabled as its execute rule, and an execute rule whose ruleset could not be read is
+// kept as itself — a container we could not open is still a rule that exists, never a
+// silent gap. The container itself is not listed once opened: it never fires on its own
+// (events carry the nested rule's id — seen live 2026-10-08).
+export function flattenCustomRules(
+  entryRules: RawRule[],
+  nested: Map<string, { name: string; rules: RawRule[] }>,
+): ZoneRuleLive[] {
+  const out: ZoneRuleLive[] = [];
+  for (const r of entryRules) {
+    const target = r.action === "execute" ? r.action_parameters?.id : undefined;
+    const set = target ? nested.get(target) : undefined;
+    if (!set) {
+      out.push(toLive(r));
+      continue;
+    }
+    const parent = { enabled: r.enabled !== false, name: set.name || String(r.description || target) };
+    for (const inner of set.rules) out.push(toLive(inner, parent));
+  }
+  return out;
+}
+
+async function fetchRuleset(zoneId: string, id: string, headers: Record<string, string>): Promise<RulesetData["result"] | null> {
+  const res = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets/${id}`, { headers });
+  const j = (await res.json()) as RulesetData;
+  return j.success && j.result ? j.result : null;
+}
+
+async function listRulesets(zoneId: string, headers: Record<string, string>) {
+  const listRes = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets`, { headers });
+  const list = (await listRes.json()) as RulesetsListData;
+  if (!list.success || !Array.isArray(list.result)) {
+    throw new PublicError(`Ruleset list failed (HTTP ${listRes.status})`);
+  }
+  return list.result;
+}
 
 // Cached for the isolate's lifetime — WAF rules change at human speed, and a
 // per-request pair of API calls would add latency to every verdict card.
@@ -113,12 +190,8 @@ export async function queryZoneRules(zoneId: string, token: string): Promise<Zon
   const headers = { authorization: "Bearer " + token };
 
   // 1. Find the custom-rules entrypoint ruleset for the zone.
-  const listRes = await fetch(`${CF_API_BASE}/zones/${zoneId}/rulesets`, { headers });
-  const list = (await listRes.json()) as RulesetsListData;
-  if (!list.success || !Array.isArray(list.result)) {
-    throw new PublicError(`Ruleset list failed (HTTP ${listRes.status})`);
-  }
-  const entry = list.result.find((r) => r.phase === CUSTOM_RULES_PHASE && r.kind === "zone");
+  const list = await listRulesets(zoneId, headers);
+  const entry = list.find((r) => r.phase === CUSTOM_RULES_PHASE && r.kind === "zone");
   if (!entry?.id) {
     // No custom rules configured at all is a legitimate state, not an error.
     zoneRulesCache = [];
@@ -131,22 +204,56 @@ export async function queryZoneRules(zoneId: string, token: string): Promise<Zon
   if (!j.success || !j.result) {
     throw new PublicError(j.errors?.[0]?.message || `Ruleset fetch failed (HTTP ${res.status})`);
   }
+  const entryRules = j.result.rules ?? [];
 
-  zoneRulesCache = (j.result.rules ?? []).map((r) => {
-    const expression = String(r.expression ?? "");
-    return {
-      id: String(r.id ?? ""),
-      // Matching against firewallEventsAdaptive is by description, so an
-      // unnamed rule falls back to its id rather than to an empty string.
-      name: String(r.description || r.id || ""),
-      action: String(r.action ?? ""),
-      expression,
-      // The API omits `enabled` when a rule is enabled; only false is explicit.
-      enabled: r.enabled !== false,
-      llm: isLlmExpression(expression),
-    };
-  });
+  // 3. Open every zone-level custom ruleset an execute rule runs (Open bug #12 update:
+  //    the AI rules live in "LLM Monitor Ruleset" / "LLM Protection Ruleset"). Only ids
+  //    the list says are this zone's `custom` rulesets are fetched; one that fails to
+  //    load leaves its execute rule in place.
+  const customIds = new Set(list.filter((r) => r.kind === "custom" && r.phase === CUSTOM_RULES_PHASE && r.id).map((r) => r.id!));
+  const targets = [...new Set(entryRules.map((r) => (r.action === "execute" ? r.action_parameters?.id : undefined)))].filter(
+    (id): id is string => !!id && customIds.has(id),
+  );
+  const nested = new Map<string, { name: string; rules: RawRule[] }>();
+  await Promise.all(
+    targets.map(async (id) => {
+      const set = await fetchRuleset(zoneId, id, headers).catch(() => null);
+      if (set) nested.set(id, { name: String(set.name ?? ""), rules: set.rules ?? [] });
+    }),
+  );
+
+  zoneRulesCache = flattenCustomRules(entryRules, nested);
   return zoneRulesCache;
+}
+
+// The ids of the zone's deployed AI Security MANAGED rules — for the AI Security tally
+// only (src/aiSecurityTally.ts), never shown as custom rules. Their expressions are not
+// readable, so a rule is classified by Cloudflare's own `firewall-for-ai` category. Only
+// managed rulesets the managed entrypoint actually executes are considered, and of those
+// only ones whose name mentions AI are fetched (the big OWASP / Managed rulesets are
+// thousands of rules and cannot be AI Security's) — the name picks what to READ; the
+// category is still what decides.
+export function aiManagedRules(rules: RawRule[]): { id: string; name: string }[] {
+  return rules
+    .filter((r) => r.id && Array.isArray(r.categories) && r.categories.includes(AI_MANAGED_CATEGORY))
+    .map((r) => ({ id: String(r.id), name: String(r.description || r.id) }));
+}
+
+let aiManagedCache: { id: string; name: string }[] | null = null;
+
+export async function queryAiManagedRules(zoneId: string, token: string): Promise<{ id: string; name: string }[]> {
+  if (aiManagedCache) return aiManagedCache;
+  const headers = { authorization: "Bearer " + token };
+  const list = await listRulesets(zoneId, headers);
+  const entry = list.find((r) => r.phase === MANAGED_RULES_PHASE && r.kind === "zone");
+  if (!entry?.id) return (aiManagedCache = []);
+  const entrySet = await fetchRuleset(zoneId, entry.id, headers);
+  if (!entrySet) throw new PublicError("Managed rules entrypoint could not be read");
+  const executed = new Set((entrySet.rules ?? []).map((r) => (r.action === "execute" ? r.action_parameters?.id : undefined)));
+  const candidates = list.filter((r) => r.kind === "managed" && r.id && executed.has(r.id) && /\bai\b/i.test(r.name ?? ""));
+  const sets = await Promise.all(candidates.map((c) => fetchRuleset(zoneId, c.id!, headers).catch(() => null)));
+  aiManagedCache = sets.flatMap((s) => (s ? aiManagedRules(s.rules ?? []) : []));
+  return aiManagedCache;
 }
 
 // --- Live edge verdict ---------------------------------------------------

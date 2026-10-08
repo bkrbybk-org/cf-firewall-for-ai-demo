@@ -210,7 +210,7 @@ export function EdgeTab({
               <div className="grid gap-4 lg:grid-cols-2">
                 <Card
                   title="AI Security rules fired"
-                  subtitle={`cf.llm.* rules only · by event count${onDrill ? " · click to inspect prompts" : ""}`}
+                  subtitle={`cf.llm.* rules and Cloudflare's AI Security managed rules · by event count${onDrill ? " · click to inspect prompts" : ""}`}
                 >
                   {llmRules.length > 0 ? (
                     <BarList

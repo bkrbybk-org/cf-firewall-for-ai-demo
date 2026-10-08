@@ -154,7 +154,7 @@ To change what the demo shows (attack prompts, personas, the WAF-rule mirror), e
 | `GET /api/models` | Model menu (id, label, prices), `defaultSystemPrompt`, `maxSystemPromptLen`, the account's AI Gateways + default, the numeric gateway `limits`, and the resolved `promptLog.enabled` flag |
 | `POST /api/chat` | The one chat endpoint — direct Workers AI **or** AI Gateway routing, JSON or SSE. `prompt` is capped at 8,000 characters: longer is a 400, never cut short, since the edge scanned the full body |
 | `GET /api/verdict?ray=&ts=` | What the edge did to one request (GraphQL). `ts` anchors the lookup window |
-| `GET /api/zone-rules` | The zone's real WAF custom rules (Rulesets API), for the flow trace and the rule split |
+| `GET /api/zone-rules` | The zone's real WAF custom rules (Rulesets API), with every `execute` rule opened into the custom ruleset it runs (effective `enabled`, `ruleset` name), plus `aiManaged` (the managed AI Security rules, by Cloudflare's `firewall-for-ai` category). Used by the flow trace, the rule split and "Close the gaps" |
 | `GET /api/neurons` | Account Neuron usage today vs the free daily allocation |
 | `GET /api/analytics?hours=` | Aggregated zone security events + AI scores (edge tab) |
 | `GET /api/gateway-analytics?gatewayId=&hours=` | Aggregated AI Gateway logs (gateway tab) |
@@ -180,7 +180,7 @@ The API is described as an **OpenAPI 3.1** document at **`/api/openapi.json`**, 
 - **Try it out sends real requests.** `POST /api/chat` calls a live, billable model and is scanned by the real edge WAF; `DELETE /api/prompt-log` and `DELETE /api/redteam-runs` really delete. The page says so. In a browser you already hold the Access session; from a script use the service-token headers (the *Authorize* dialog).
 - **Self-hosted.** `swagger-ui-dist` is a devDependency; `scripts/copy-swagger-ui.mjs` copies three files (~1.8 MB, not committed) into `dist/api-docs/` after `vite build`, so the page has no runtime dependency on a CDN. The page itself (`web/public/api-docs/`) is committed. The build script runs the copy; if you build another way, run it.
 - **The spec is hand-written** (`src/openapi.ts`, with the reasoning in comments) and kept honest by `src/openapi.test.ts`: it must be valid OpenAPI (every `$ref` resolves), and it fails the build if the routes in `src/index.ts`, the fields of `ChatRequestBody`, the prompt-log `sort` whitelist or the red-team result states change without the spec changing. **When you add or change an endpoint, update `src/openapi.ts`.**
-- **What is and is not verified.** The response schemas were validated against 24 real payloads — 23 responses and one request body — captured from local `wrangler dev` and from prod through Access with a scan for keys a payload carries that the schema does not declare; the checker was control-tested (6 planted defects, all caught). **Not exercised against live data:** the `/api/zone-rules` item shape (the token lacks `Zone → WAF → Read`, so no rules come back), the Guardrails-block body (written from the handler source), SSE frame contents (described in prose, not schema-validated) and 5xx bodies. There is no handler-level contract test, so a schema and a handler can still disagree — fix whichever is wrong.
+- **What is and is not verified.** The response schemas were validated against 24 real payloads — 23 responses and one request body — captured from local `wrangler dev` and from prod through Access with a scan for keys a payload carries that the schema does not declare; the checker was control-tested (6 planted defects, all caught). **Not exercised against live data:** the Guardrails-block body (written from the handler source), SSE frame contents (described in prose, not schema-validated) and 5xx bodies. There is no handler-level contract test, so a schema and a handler can still disagree — fix whichever is wrong.
 
 ## AI Gateway routing (route selector on the chat page)
 
@@ -710,6 +710,12 @@ On the Enterprise zone (with the AI Security add-on) that hosts the demo hostnam
 
    The deployed zone currently runs these 10 rules. **The app reads them live** from the Rulesets API (`GET /api/zone-rules`) when `CF_ANALYTICS_TOKEN` carries **Zone → WAF → Read**, and classifies each as AI Security or not by whether its *expression* references `cf.llm.*` — so renaming a rule in the dashboard can no longer misfile it. Without that scope it falls back to the `ZONE_RULES` mirror in `web/src/lib/data.ts`, and the flow trace says so explicitly ("static mirror — may be stale") rather than passing hand-maintained data off as live. Keep the mirror updated as the fallback.
 
+   **Nested rulesets (since 2026-10-08).** This zone's AI rules live inside two zone-level custom rulesets that `execute` rules run. **"LLM Monitor Ruleset"** is on, with its log rules on and its block rules off. **"LLM Protection Ruleset"** (the block rules) stays deployed, but its execute rule is off. **All AI rules are on Log on purpose,** so the edge never blocks a test prompt before the external guardrails see it (Open bug #28 records the choice). To demo the WAF blocking, turn the Protection ruleset's execute rule on; the app reads it live.
+   - The app lists each nested rule with its ruleset and **effective** enabled state: a rule is only on if its execute rule is too.
+   - It matches events to rules **by rule id**, because the two rulesets share rule names.
+   - It counts Cloudflare's managed **Firewall for AI** rules ("Detects PII categories in the prompt" and its siblings) as AI Security by their `firewall-for-ai` category.
+   - Only account-level rules fall back to an "LLM" name match.
+
    | Rule | Action | Checks |
    |---|---|---|
    | Block LLM Injection | block | `injection_score ≤ 15` |
@@ -772,7 +778,7 @@ References: [OWASP LLM01](https://genai.owasp.org/llmrisk/llm01-prompt-injection
 | Step | Category (right panel) | Expected |
 |---|---|---|
 | 1 | Baseline → "Legit product question" | LLM answers. Verdict shows `cf-llm` labeled, scored, nothing flagged. |
-| 2 | PII → "Credit card + email" | 403 → red card. Verdict shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. (While the PII rules are on Log — Open bug #28 — the edge only logs it.) |
+| 2 | PII → "Credit card + email" | 403 → red card. Verdict shows `pii_categories: CREDIT_CARD, EMAIL_ADDRESS`. (The AI rules are on Log on purpose — Open bug #28 — so the edge only logs it and the external guardrails decide.) |
 | 3 | Prompt Injection → "Ignore instructions" | 403 → red card, low `injection_score`. |
 | 4 | System Prompt Leakage → "Dump the system prompt" | 403 → red card. OWASP LLM07 / ATLAS AML.T0056. |
 | 5 | Unsafe Topics → "Non-violent crime (S2)" | 403 → red card, S-category shown. |

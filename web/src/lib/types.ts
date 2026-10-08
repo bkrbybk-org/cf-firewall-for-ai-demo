@@ -43,14 +43,18 @@ export interface ZoneRuleLive {
   name: string; // the rule description, as firewallEventsAdaptive reports it
   action: string;
   expression: string;
-  enabled: boolean;
+  enabled: boolean; // effective: false when the rule, or the execute rule running its ruleset, is off
   llm: boolean; // expression references cf.llm.* — an AI Security rule
+  ruleset?: string; // the custom ruleset it lives in (opened from an execute rule); absent = top level
 }
 
 export interface ZoneRules {
   configured?: boolean;
   source: "live" | "fallback";
   rules: ZoneRuleLive[];
+  // The deployed AI Security managed rules (Cloudflare's firewall-for-ai category) — not
+  // custom rules, so not in `rules`; the edge-analytics split uses them to classify.
+  aiManaged?: { id: string; name: string }[];
   error?: string;
 }
 
@@ -394,7 +398,7 @@ export interface Analytics {
     blocked: number;
     logged: number;
     other: number;
-    rules: { name: string; action: string; count: number; via: "expression" | "name" }[];
+    rules: { name: string; action: string; count: number; via: "expression" | "category" | "name" }[];
     classifiedBy: "expression" | "name" | "mixed";
     sampled: boolean;
     capped: boolean;
