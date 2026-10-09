@@ -129,6 +129,8 @@ export const openapi = {
           "",
           "**Prompt log.** The turn is written to the D1 prompt log only when `PROMPT_LOG_ENABLED` is on *and* `excludeFromLog` is not `true`.",
           "",
+          "**Guardrail verdict log.** Each external guardrail verdict is also written to Workers Logs as one structured line of names only (`event: \"guardrail_verdict\"` — never the prompt or reply), unless `excludeFromLog` is `true`. An optional request header `x-demo-source: redteam` labels the turn as Red Team traffic there; it changes nothing else.",
+          "",
           "**External guardrails.** Enabled providers (`/api/external-guardrails`) run as a pipeline after the edge scan and before the model, on both routes — sequentially in the configured order, or in parallel. A block — or a provider error under fail-closed — is a **200** with `externalGuardrailBlocked: true`, never a 403 (403 means the edge WAF). Every response after the check carries the `GuardrailPipelineResult` in the `x-external-guardrails` header (URI-encoded JSON), because a streamed reply has no JSON body to put it in.",
           "",
           "**Guardrail-only mode.** When the pipeline's `guardrailOnly` is on, a prompt that passes every check is answered with a **200** `{guardrailOnly: true}` and **no model is called** — no reply, tokens or cost, and no AI Gateway Guardrails (they run inside the model call).",

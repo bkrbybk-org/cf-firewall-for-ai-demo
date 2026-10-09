@@ -66,15 +66,19 @@ async function sendOne(
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
     const gateway = cfg.route === "gateway";
-    const res = await postChat({
-      prompt,
-      stream: false,
-      gateway: gateway || undefined,
-      gatewayId: gateway ? cfg.gatewayId || undefined : undefined,
-      // Dropped entirely on the direct route — Workers AI has no concept of it,
-      // and sending it would imply the run went somewhere it did not.
-      dynamicRoute: gateway ? cfg.dynamicRoute || undefined : undefined,
-    });
+    const res = await postChat(
+      {
+        prompt,
+        stream: false,
+        gateway: gateway || undefined,
+        gatewayId: gateway ? cfg.gatewayId || undefined : undefined,
+        // Dropped entirely on the direct route — Workers AI has no concept of it,
+        // and sending it would imply the run went somewhere it did not.
+        dynamicRoute: gateway ? cfg.dynamicRoute || undefined : undefined,
+      },
+      undefined,
+      "redteam",
+    );
     if (res.mode === "stream") {
       // Shouldn't happen with stream:false, but treat a stream as a reply.
       return { ray: res.ray?.split("-")[0], kind: "reply" };

@@ -37,6 +37,9 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
   const requests = d.requests ?? 0;
   const cached = d.cachedRequests ?? 0;
   const hitRate = requests ? Math.round((cached / requests) * 100) : 0;
+  // No requests means no cost and no latency were MEASURED — "—", never a $0 or 0 ms that reads as a
+  // measurement (the house rule: no data is never rendered as zero).
+  const none = requests === 0;
 
   return (
     <>
@@ -48,20 +51,20 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
           tone="border-cf-blue/40 bg-cf-blue/10"
         />
         <Tile
-          label={`cache hits (${hitRate}%)`}
+          label={none ? "cache hits" : `cache hits (${hitRate}%)`}
           value={cached}
           icon={<Zap size={16} className="text-cf-green" />}
           tone="border-cf-green/40 bg-cf-green/10"
         />
         <Tile
           label="total cost"
-          value={fmtCost(d.totalCost) ?? "$0"}
+          value={none ? "—" : (fmtCost(d.totalCost) ?? "$0")}
           icon={<CircleDollarSign size={16} className="text-cf-amber" />}
           tone="border-cf-amber/40 bg-cf-amber/10"
         />
         <Tile
-          label={`avg latency · p95 ${d.p95Ms ?? 0} ms`}
-          value={`${d.avgMs ?? 0} ms`}
+          label={none || d.p95Ms == null ? "avg latency" : `avg latency · p95 ${d.p95Ms} ms`}
+          value={none || d.avgMs == null ? "—" : `${d.avgMs} ms`}
           icon={<Timer size={16} className="text-cf-purple" />}
           tone="border-cf-purple/40 bg-cf-purple/10"
         />
@@ -84,7 +87,7 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
               Nothing logged for this gateway in the last {hours}h. Switch the route toggle to{" "}
               <b>AI Gateway</b> on the{" "}
               <Link to="/" className="text-accent hover:underline">
-                Firewall page
+                AI Guardrails Demo page
               </Link>{" "}
               and send a few prompts, or pick a different gateway above.
             </p>

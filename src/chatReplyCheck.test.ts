@@ -128,6 +128,39 @@ describe("handleChat — reply check (design J)", () => {
     expect(JSON.parse(text)).toMatchObject({ externalReplyBlocked: true, notStreamed: "reply-scan", gateway: { gatewayId: "plain-gw" } });
   });
 
+  // The Analytics page's External guardrails tab reads these lines back from Workers Logs.
+  it("writes one verdict log line per check — names only, no prompt or reply — and none when excluded", async () => {
+    const { env: e } = await env({ scanReplies: true });
+    vendor("block");
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const req = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+        handleChat(
+          new Request("https://x/api/chat", {
+            method: "POST",
+            headers: { "content-type": "application/json", "cf-ray": "abc123-SIN", ...headers },
+            body: JSON.stringify({ prompt: "What SSN is on file?", ...body }),
+          }),
+          e,
+        );
+      await req({}, { "x-demo-source": "redteam" });
+      const lines = spy.mock.calls.map((c) => c[0]).filter((l) => (l as { event?: string })?.event === "guardrail_verdict");
+      expect(lines).toEqual([
+        expect.objectContaining({ dir: "prompt", provider: "prisma-airs", outcome: "allow", src: "redteam", ray: "abc123" }),
+        expect.objectContaining({ dir: "reply", provider: "prisma-airs", outcome: "block", decided: true, detected: "dlp" }),
+      ]);
+      const text = JSON.stringify(lines);
+      expect(text).not.toContain("078-05-1120");
+      expect(text).not.toContain("What SSN");
+
+      spy.mockClear();
+      await req({ excludeFromLog: true });
+      expect(spy.mock.calls.some((c) => (c[0] as { event?: string })?.event === "guardrail_verdict")).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("switch off: no reply check, no second vendor call, and nothing in the reply about one", async () => {
     const { env: e } = await env({ scanReplies: false });
     const bodies = vendor("block");

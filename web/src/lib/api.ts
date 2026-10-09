@@ -374,10 +374,13 @@ export async function testExternalGuardrail(
 export async function postChat(
   body: ChatRequest,
   onToken?: (token: string) => void,
+  // "redteam" labels the turn in the guardrail verdict log (src/guardrailLog.ts), so the Analytics page
+  // can keep benchmark traffic apart from chat. A label only: the server decides nothing else from it.
+  source?: "redteam",
 ): Promise<ChatResult> {
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...(source ? { "x-demo-source": source } : {}) },
     body: JSON.stringify(body),
   });
   const contentType = res.headers.get("content-type") || "";

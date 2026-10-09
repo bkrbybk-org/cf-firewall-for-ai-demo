@@ -626,6 +626,54 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-09 — Guardrail verdicts written to Workers Logs (the External guardrails tab's data); Gateway tab "—"
+
+**Asked for:** "review analytics page - can we have other guardrails show in this page as well?", then "can we use live
+log fetching instead of logging in database?", then "go". Deploy `52887052-a10f-4a0f-aa57-a47ca78ed816`, then `4a43d84c-e32d-4de5-96cc-395a5d566c5f` (openapi text only). **Part 1 of 2:
+the data is being written; the tab that reads it is not built yet** (below).
+
+**Why not the vendors' own logs** (checked 2026-10-09): with the keys this app holds, none can list past verdicts.
+Prisma AIRS looks a scan up only by id (`GET /v1/scan/results?scan_ids=`, pan.dev spec), CrowdStrike's logs are in
+Next-Gen SIEM behind a broader credential, Lakera's `/v2/guard/results` is a new screening, Cato has no public API,
+Datadog does not record HTTP evaluations, Cisco's management API (if any) needs another key — unchecked. Of
+Cloudflare's options, **Workers Logs** was chosen (already on, `observability.enabled`; 7-day retention, deleted by
+Cloudflare; queryable live through the Workers Observability API). Analytics Engine was rejected because it samples;
+routing vendor calls through AI Gateway custom providers because gateway logs keep raw bodies (#14) and the keys
+would pass through it.
+
+**What changed:**
+- **`src/guardrailLog.ts`** (new): `verdictLines()` builds one line per vendor that ran and per vendor not run, field
+  by field (privacy allowlist in the file header); `logVerdicts()` writes them with `console.log(object)` so Workers
+  Logs indexes each field, and never throws. Outcomes: `block`, `allow`, `error`, `failed_open`, `not_run`. The ray
+  is the bare id, so it joins the edge's `rayName`.
+- **`handleChat`**: logs the prompt check and the reply check, unless `excludeFromLog`. Test connection logs nothing.
+- **Red Team**: `postChat(…, "redteam")` sends `x-demo-source: redteam`, which only sets `src` on the line.
+- **Gateway tab**: with 0 requests, cost and latency read "—" (they were "~$0" and "0 ms", the house rule's
+  "no data is never zero"); the empty state's link says "AI Guardrails Demo page" (was the old "Firewall page").
+  The review's third point (default to the Guardrails gateway) was **dropped**: chat sends to `defaultGateway`, so
+  the current default is where the traffic is.
+
+**Verified:**
+- **Tests:** 777 (+8), 0 type errors, build clean. `src/guardrailLog.test.ts` (7) and one `handleChat` test (lines for
+  the prompt and reply checks, `src: redteam` from the header, the bare ray, no prompt or reply text, none with
+  `excludeFromLog`). **Mutation-verified, 8 of 8 caught.**
+- **Local:** the Gateway tab shows "0 · 0 · — · —" with no traffic.
+- **Prod:** smoke passes. `wrangler tail --format json` during one benign chat turn showed **10 lines**: 5 prompt
+  verdicts (all five enabled vendors `allow`, HTTP 200, latencies 84–1061 ms; CrowdStrike reported `language`), 3
+  reply verdicts (AIRS, AIDR, Lakera `allow`) and 2 `not_run` (Cato, Cisco: no reply checking). No prompt or reply
+  text in any line. **Side evidence:** Cisco AI Defense and Lakera returned allows their parsers accepted from the
+  live keys — the real allow parses; their shapes have still not been pasted, so both stay unverified.
+
+**Not done — part 2, blocked on a token:**
+- The Workers Observability query endpoint (`POST /accounts/{id}/workers/observability/telemetry/query`) accepts
+  only the **`Workers Observability Write`** permission (API reference, "Accepted Permissions"), and that token reads
+  the logs of **every Worker in the account** — so the query must filter `$metadata.service = cf-ai-waf-demo` on the
+  server, never from the browser. Wrangler's own login was tried read-only and got `10000 Authentication error`.
+- Needs from the user: a token with Workers Observability Write (account `daf82c7c…`), as `.env` and a Worker secret.
+  Then: probe the real response shape (events view and calculations; the reference shows `sampleInterval`, so check
+  whether counts are sampled before calling them exact), build `GET /api/guardrail-analytics` and the tab from that
+  shape, and check its numbers against the raw lines by hand.
+
 ### 2026-10-09 — Datadog AI Guard: guardrail #6, configurable, unverified (two keys, migration 0009)
 
 **Asked for:** "setup datadog ai guard integration setting", after the research entry below (Next tasks, "Plan: Datadog
@@ -3493,6 +3541,9 @@ Sources, strongest first:
       buildHistory, cost calc)~~ — done 2026-10-06, 76 tests; found two small bugs (see Implemented).
 - [x] ~~**Red Team benchmark H: export a report**~~ — done 2026-10-07 (deploy `8b53fe0c`): Report (.md) and
       Data (.json) on a saved run's Benchmark panel. See Implemented.
+- [ ] **External guardrails tab on Analytics, part 2** — the verdict lines are written since 2026-10-09 (Implemented).
+      Blocked on a `Workers Observability Write` token from the user; then probe the real query shape, build
+      `GET /api/guardrail-analytics` and the tab, hand-check the counts.
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.
