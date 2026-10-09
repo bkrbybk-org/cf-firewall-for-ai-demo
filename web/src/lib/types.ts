@@ -584,6 +584,52 @@ export interface RedTeamRunDeleteResult {
 
 // GET /api/gateway-analytics — aggregated AI Gateway logs, see Worker
 // GatewayAnalytics. Account-scoped: covers every app using the gateway.
+// GET /api/guardrail-analytics — hand-mirrored from src/guardrailAnalytics.ts (read the comments there).
+export interface GuardrailVendorStats {
+  provider: ExternalGuardrailProvider;
+  dir: "prompt" | "reply";
+  checked: number;
+  block: number;
+  allow: number; // every allow, alerts included
+  alerts: number; // a subset of allow
+  redaction: number; // a subset of allow
+  incomplete: number;
+  error: number; // no verdict, fail closed
+  failedOpen: number; // no verdict, fail open
+  notRun: number;
+  decided: number;
+  latencyN: number;
+  p50Ms: number | null; // null when nothing was timed — never 0
+  p95Ms: number | null;
+  topDetections: { name: string; count: number }[];
+}
+
+export interface GuardrailAnalytics {
+  configured: boolean;
+  error?: string;
+  rangeHours: number;
+  since: string;
+  until: string;
+  source: "chat" | "redteam" | "all";
+  rowsRead: number;
+  rowsDropped: number;
+  capped: boolean; // counts are a floor
+  sampled: boolean; // counts are estimates
+  totals: { turns: number; verdicts: number; block: number; alerts: number; error: number; failedOpen: number };
+  vendors: GuardrailVendorStats[];
+  bucket: "5m" | "hour" | "day";
+  series: { t: string; block: number; alerts: number; allow: number; error: number }[];
+  disagreements: {
+    count: number;
+    latest: {
+      ts: number;
+      ray: string;
+      dir: "prompt" | "reply";
+      verdicts: { provider: ExternalGuardrailProvider; outcome: "block" | "allow"; alerts: boolean }[];
+    }[];
+  };
+}
+
 export interface GatewayAnalytics {
   configured: boolean;
   gatewayId?: string;

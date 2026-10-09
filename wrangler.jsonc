@@ -70,4 +70,15 @@
   "observability": {
     "enabled": true,
   },
+  // External guardrail verdicts, one data point per vendor per check (src/guardrailLog.ts), read back by
+  // GET /api/guardrail-analytics through the Analytics Engine SQL API with CF_ANALYTICS_TOKEN (Account
+  // Analytics: Read). Chosen over Workers Logs, which this account samples on ingest (PROGRESS.md
+  // 2026-10-09); Analytics Engine samples only at very high volume and says so per row. Kept 3 months.
+  // The dataset is created on the first write. Not available under `wrangler dev` (writes are skipped).
+  "analytics_engine_datasets": [
+    {
+      "binding": "GUARDRAIL_VERDICTS",
+      "dataset": "cf_ai_waf_demo_guardrail_verdicts",
+    },
+  ],
 }

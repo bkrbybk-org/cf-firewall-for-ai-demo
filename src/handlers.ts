@@ -755,7 +755,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // One Workers Logs line per vendor verdict, for the Analytics page's External guardrails tab (names
   // only — src/guardrailLog.ts). A turn the caller asked to keep out of the log stays out of this too.
   const verdictSource = sourceOf(request);
-  if (!excludeFromLog) logVerdicts(external, verdictSource, ray);
+  if (!excludeFromLog) logVerdicts(external, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS });
   // Carried on every response from here on, so the client can show the verdicts
   // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
   // because a header value must stay within Latin-1. NEVER with raw responses:
@@ -801,7 +801,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const rc = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
       captureRaw: includeRaw,
     });
-    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray);
+    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS });
     return { rc, modelMs };
   };
   const withheld = (

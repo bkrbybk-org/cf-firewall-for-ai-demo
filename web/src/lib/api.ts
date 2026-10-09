@@ -13,6 +13,7 @@ import type {
   GuardrailTestSample,
   GatewayAnalytics,
   GatewayMeta,
+  GuardrailAnalytics,
   ModelsResponse,
   Neurons,
   PromptAnalytics,
@@ -64,6 +65,12 @@ export async function getGatewayAnalytics(gatewayId: string, hours: number): Pro
   const qs = new URLSearchParams({ hours: String(hours) });
   if (gatewayId) qs.set("gatewayId", gatewayId);
   const r = await fetch("/api/gateway-analytics?" + qs);
+  return r.json();
+}
+
+// External guardrail verdicts per vendor (Analytics Engine). `source` keeps Red Team runs apart from chat.
+export async function getGuardrailAnalytics(hours: number, source: "chat" | "redteam" | "all"): Promise<GuardrailAnalytics> {
+  const r = await fetch("/api/guardrail-analytics?" + new URLSearchParams({ hours: String(hours), source }));
   return r.json();
 }
 

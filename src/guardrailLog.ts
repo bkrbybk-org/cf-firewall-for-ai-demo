@@ -1,9 +1,9 @@
-// One structured Workers Logs line per external guardrail verdict — the record the Analytics page's
-// "External guardrails" tab reads back live (src/guardrailAnalytics.ts) instead of a D1 table.
+// The record of each external guardrail verdict: one Workers Logs line (for browsing single turns) and one
+// Analytics Engine data point (for counting — what the Analytics page's "External guardrails" tab reads back
+// through src/guardrailAnalytics.ts), instead of a D1 table.
 //
-// Decided with the user (2026-10-09): live log fetching, not a database. Workers Logs is already on
-// (`observability.enabled` in wrangler.jsonc); Cloudflare keeps each line up to 7 days on the paid plan
-// (3 on free) and deletes it itself.
+// Decided with the user (2026-10-09): no database of ours. Workers Logs came first, but this account samples it on
+// ingest (see the Analytics Engine section below), so the counted copy is Analytics Engine (kept 3 months).
 //
 // PRIVACY — what a line may hold is an allowlist, built field by field (never by spreading a result):
 //   - vendor, prompt/reply, outcome, the alert / redaction / incomplete flags, latency, HTTP status;
@@ -98,19 +98,65 @@ export function verdictLines(p: GuardrailPipelineResult, src: VerdictSource, ray
   return [...ran, ...skipped];
 }
 
-// Writes the lines. console.log of an OBJECT, not a string: Workers Logs indexes each field, so the
-// query can filter and group by them. Never throws — bookkeeping must not break a chat turn.
+// ── Analytics Engine ────────────────────────────────────────────────────────
+// The COUNTED copy. Workers Logs turned out to be sampled on ingest for this account (a turn's 10 lines
+// came back as 6, and six smoke-test turns not at all — PROGRESS.md 2026-10-09), so the analytics read
+// Analytics Engine instead, which samples only at very high volume, per index, and reports it per row
+// (`_sample_interval`). The log line stays, for looking at single turns in the dashboard.
+//
+// Column positions are the schema (AE has no names): src/guardrailAnalytics.ts reads exactly these.
+//
+// The INDEX is unique per data point (ray | check | vendor), on purpose. AE samples "based on the index … only
+// indexes that receive large numbers of events" — and with the vendor as the index, 4 turns in 15 s (7 points
+// per vendor) were already stored as 5, two of them counted x2 (measured on prod, 2026-10-09). An index that
+// never repeats never receives "many" events. Nothing queries by index; the vendor is in blob4.
+export const AE_SCHEMA = "gv1"; // blob1 — lets the reader skip rows of any other shape
+
+export function dataPointOf(l: VerdictLine, unique: () => string = () => crypto.randomUUID()): AnalyticsEngineDataPoint {
+  // At most 96 bytes (AE's index limit): a 16-char ray, "prompt"/"reply", a vendor id of 18 chars or fewer. With
+  // no ray (local dev, tests) a random id keeps it unique.
+  return {
+    indexes: [`${l.ray ?? unique()}|${l.dir}|${l.provider}`],
+    blobs: [
+      AE_SCHEMA, // blob1
+      l.src, // blob2
+      l.dir, // blob3
+      l.provider, // blob4
+      l.outcome, // blob5
+      l.detected, // blob6
+      l.ray ?? "", // blob7
+      l.scanId ?? "", // blob8
+      l.mode, // blob9
+      l.action ?? "", // blob10
+    ],
+    doubles: [
+      l.ms ?? -1, // double1 — -1: the vendor never ran (not_run), so there is no latency to count
+      l.status ?? 0, // double2 — 0: no HTTP answer
+      l.alerts ? 1 : 0, // double3
+      l.redaction ? 1 : 0, // double4
+      l.incomplete ? 1 : 0, // double5
+      l.decided ? 1 : 0, // double6
+    ],
+  };
+}
+
+// Writes the lines: to Workers Logs as an OBJECT (each field indexed, for browsing single turns) and,
+// when bound, to Analytics Engine (for counting). Never throws — bookkeeping must not break a chat turn.
 export function logVerdicts(
   p: GuardrailPipelineResult | null,
   src: VerdictSource,
   ray: string | null,
-  sink: (line: VerdictLine) => void = (line) => console.log(line),
+  opts: { ae?: AnalyticsEngineDataset; sink?: (line: VerdictLine) => void } = {},
 ): void {
   if (!p) return;
+  const sink = opts.sink ?? ((line: VerdictLine) => console.log(line));
   try {
-    for (const line of verdictLines(p, src, ray)) sink(line);
+    for (const line of verdictLines(p, src, ray)) {
+      sink(line);
+      opts.ae?.writeDataPoint(dataPointOf(line)); // non-blocking; never awaited (Cloudflare's guidance)
+    }
   } catch {
-    /* a missing log line is a gap in the analytics, never a failed turn */
+    /* a missing line is a gap in the analytics, never a failed turn */
   }
 }
 

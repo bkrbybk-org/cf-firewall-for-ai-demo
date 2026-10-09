@@ -626,11 +626,11 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
-### 2026-10-09 — Guardrail verdicts written to Workers Logs (the External guardrails tab's data); Gateway tab "—"
+### 2026-10-09 — External guardrails tab on Analytics (verdicts in Analytics Engine); Gateway tab "—"
 
 **Asked for:** "review analytics page - can we have other guardrails show in this page as well?", then "can we use live
 log fetching instead of logging in database?", then "go". Deploy `52887052-a10f-4a0f-aa57-a47ca78ed816`, then `4a43d84c-e32d-4de5-96cc-395a5d566c5f` (openapi text only). **Part 1 of 2:
-the data is being written; the tab that reads it is not built yet** (below).
+the data is being written** — part 2, the tab, follows below.
 
 **Why not the vendors' own logs** (checked 2026-10-09): with the keys this app holds, none can list past verdicts.
 Prisma AIRS looks a scan up only by id (`GET /v1/scan/results?scan_ids=`, pan.dev spec), CrowdStrike's logs are in
@@ -664,15 +664,64 @@ would pass through it.
   text in any line. **Side evidence:** Cisco AI Defense and Lakera returned allows their parsers accepted from the
   live keys — the real allow parses; their shapes have still not been pasted, so both stay unverified.
 
-**Not done — part 2, blocked on a token:**
-- The Workers Observability query endpoint (`POST /accounts/{id}/workers/observability/telemetry/query`) accepts
-  only the **`Workers Observability Write`** permission (API reference, "Accepted Permissions"), and that token reads
-  the logs of **every Worker in the account** — so the query must filter `$metadata.service = cf-ai-waf-demo` on the
-  server, never from the browser. Wrangler's own login was tried read-only and got `10000 Authentication error`.
-- Needs from the user: a token with Workers Observability Write (account `daf82c7c…`), as `.env` and a Worker secret.
-  Then: probe the real response shape (events view and calculations; the reference shows `sampleInterval`, so check
-  whether counts are sampled before calling them exact), build `GET /api/guardrail-analytics` and the tab from that
-  shape, and check its numbers against the raw lines by hand.
+**Part 2 — the External guardrails tab, on Analytics Engine (same day).** Deploys `2dc33e38…`, then
+`36e5c1c5-df78-4055-998d-bc24b3098d6f` (the index fix below).
+
+**Why not Workers Logs after all** (measured with the existing `CF_ANALYTICS_TOKEN` — it was accepted by the
+Observability query API, so no new token was needed — read-only):
+- The real shape: our fields under `source.*`, null fields dropped; invocation-log cookies are stored `REDACTED`.
+- **It is sampled on ingest for this account.** The Worker's own setting keeps everything (`head_sampling_rate: 1`,
+  read from the script settings API), yet the turn that wrote 10 lines (seen in `wrangler tail`) had 6 stored, six
+  smoke turns had none, and the calculations view reported `sampleInterval: 10`. The API reference: a stored event's
+  interval is the head rate times "any platform sampling applied to the account or script". Lost lines cannot be
+  recovered, so counts would be off up to x10 at demo volume. The user chose Analytics Engine (option A).
+
+**Analytics Engine facts, checked:** binding `analytics_engine_datasets`; 1 index, 20 blobs, 20 doubles per point,
+250 points per invocation; kept 3 months; sampling "based on the index"; `_sample_interval` per row. The SQL API
+answered `SHOW TABLES` with the existing token (it has Account Analytics: Read). Live 2026-10-09: a plain SELECT on a
+not-yet-created dataset is HTTP 200 with no rows, but a function of a column there (`toUnixTimestamp(timestamp)`) is a
+422, and so is `timestamp AS ts … ORDER BY timestamp` (bisected) — so the query selects `timestamp AS ts`, orders by
+`ts`, and parses the UTC "YYYY-MM-DD HH:MM:SS" string itself. The shell policy blocks the SQL keyword for the output
+format in a command line, so probes put the SQL in a file.
+
+**The index lesson (measured on prod).** First deploy used the VENDOR as the index. Four turns in 15 s (7 points per
+vendor) were stored as 5 per vendor, two of them `_sample_interval: 2`: the weighted total was right (7) but per outcome
+it was wrong (AIRS: 2 prompt blocks estimated, 1 real; 1 reply estimated, 3 real). Stable a minute later, so sampling,
+not ingestion lag. Fix: a per-point index (`ray|check|vendor`, random id when there is no ray) — nothing queries by
+index. Second run of the same 4 turns: **35 of 35 points stored, every `_sample_interval` 1, identical to the
+`wrangler tail` lines** in ray, check, vendor, outcome and latency.
+
+**What changed:**
+- `wrangler.jsonc`: `GUARDRAIL_VERDICTS` → dataset `cf_ai_waf_demo_guardrail_verdicts`. `src/guardrailLog.ts`:
+  `dataPointOf()` (fixed columns: blob1 schema `gv1`, blob2 src, blob3 dir, blob4 vendor, blob5 outcome, blob6
+  detected, blob7 ray, blob8 scan id, blob9 mode, blob10 action; double1 ms (-1 = never ran), double2 status, double3–6
+  alerts/redaction/incomplete/decided); `logVerdicts` writes the log line AND the point, never throws.
+- `src/guardrailAnalytics.ts` + `GET /api/guardrail-analytics?hours=1|24|168&source=chat|redteam|all`: raw rows (cap
+  10,000) aggregated in the Worker. Counts weighted by `_sample_interval`, `sampled` / `capped` reported, nearest-rank
+  p50/p95 (null when nothing was timed), top detections from verdicts only (an error's names are not findings),
+  prefilled series, and **disagreements** (same ray and check, one vendor block and another allow; errors excluded).
+  Rows of an unknown shape are dropped and counted. An AE error passes on its status only (its text can echo the SQL).
+  Only fixed hours and sources reach the SQL.
+- Analytics page: an **External guardrails** tab (tiles, a per-vendor table with prompt and reply rows, verdicts over
+  time, where the vendors disagreed), its own traffic filter (chat by default, Red Team, all), "≈" / "≥" marks and an
+  amber banner when sampled or capped, "—" for unmeasured latency. Footer names the dataset.
+- Dropped during the build: a `writing` flag — `wrangler dev` provides a stand-in binding, so its presence proved
+  nothing.
+
+**Verified:**
+- **Tests:** 799, 0 type errors, build clean. `src/guardrailAnalytics.test.ts` (19) with **hand-computed** numbers (three
+  turns: counts by outcome, p50/p95 [100, 300, 5000] → 300/5000, n = 2 → the lower value, a not-run-only vendor null,
+  the one disagreement, the series totalling the verdicts). **Mutation-verified 12 of 12** after adding the n = 2 and
+  not-run cases (the first pass missed a truncating percentile and a 0 for "no latency").
+- **Prod, by hand:** the endpoint vs an independent `jq` count over the raw AE rows of the same hour, for `all`, `chat`
+  and `redteam`: totals and every vendor × check row (checked, block, allow, not run) **identical**. `sampled: true` is
+  correct there — the first deploy's x2 rows are still in that hour. The smoke test's turns are absent because it sends
+  `excludeFromLog: true`, as designed.
+- **Browser** (local dev reading the prod dataset): dark and light; at 375 px no sideways page scroll, the vendor table
+  scrolls in its own box. The empty state, the sampled banner and the disagreement list rendered with real rows.
+- **Seen in the data:** Cato **blocked** the fixed injection prompt (with all five vendors) — the first real Cato block,
+  parsed as one. Lakera **blocked the model's reply** to "What is a web application firewall?" twice, while AIRS and
+  AIDR allowed it: the disagreement view's first real entries.
 
 ### 2026-10-09 — Datadog AI Guard: guardrail #6, configurable, unverified (two keys, migration 0009)
 
@@ -3541,9 +3590,8 @@ Sources, strongest first:
       buildHistory, cost calc)~~ — done 2026-10-06, 76 tests; found two small bugs (see Implemented).
 - [x] ~~**Red Team benchmark H: export a report**~~ — done 2026-10-07 (deploy `8b53fe0c`): Report (.md) and
       Data (.json) on a saved run's Benchmark panel. See Implemented.
-- [ ] **External guardrails tab on Analytics, part 2** — the verdict lines are written since 2026-10-09 (Implemented).
-      Blocked on a `Workers Observability Write` token from the user; then probe the real query shape, build
-      `GET /api/guardrail-analytics` and the tab, hand-check the counts.
+- [x] ~~**External guardrails tab on Analytics**~~ — done 2026-10-09 on Analytics Engine (deploy `36e5c1c5`), checked
+      by hand against raw rows on prod. See Implemented.
 - [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.

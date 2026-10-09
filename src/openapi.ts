@@ -267,6 +267,31 @@ export const openapi = {
         },
       },
     },
+    "/api/guardrail-analytics": {
+      get: {
+        tags: ["Edge analytics"],
+        operationId: "getGuardrailAnalytics",
+        summary: "External guardrail verdicts, per vendor",
+        description:
+          "Reads the verdict data points `/api/chat` writes to Workers Analytics Engine (one per vendor per check — names only, never the prompt or reply) through the AE SQL API, and aggregates them Worker-side. Counts are weighted by `_sample_interval`; `sampled: true` means Analytics Engine sampled some rows, so counts are **estimates** and latency and disagreements cover stored rows only. `capped: true` (10,000 rows read) means totals are a floor. A vendor with no timed verdicts has `p50Ms`/`p95Ms` null, never 0.",
+        parameters: [
+          { name: "hours", in: "query", required: false, schema: { type: "integer", enum: [1, 24, 168], default: 24 }, description: "Anything else reads as 24." },
+          {
+            name: "source",
+            in: "query",
+            required: false,
+            schema: { type: "string", enum: ["chat", "redteam", "all"], default: "chat" },
+            description: "`redteam` = turns the Red Team page sent; `chat` = everything else (the chat page, the API, external scanners).",
+          },
+        ],
+        responses: {
+          "200": json("Aggregates, or `configured: false`.", {
+            oneOf: [ref("GuardrailAnalyticsResponse"), notConfigured()],
+          }),
+          "502": error("The Analytics Engine query failed. Only the status is passed on."),
+        },
+      },
+    },
     "/api/prompt-log": {
       get: {
         tags: ["Prompt log"],
@@ -993,6 +1018,54 @@ export const openapi = {
           ),
         },
         ["configured", "rangeHours", "since", "until", "totalEvents", "actions", "topRules", "series", "bucket", "aiScored", "scoreBuckets", "piiRequests", "unsafeTopics", "piiCategories", "customTopics", "scannedRequests", "labeledRequests"],
+      ),
+      GuardrailAnalyticsResponse: obj(
+        {
+          configured: { const: true },
+          rangeHours: int(),
+          since: str(),
+          until: str(),
+          source: { type: "string", enum: ["chat", "redteam", "all"] },
+          rowsRead: int(),
+          rowsDropped: int("Rows of a shape this reader does not know — dropped, never guessed at."),
+          capped: bool("10,000 rows read: totals are a floor."),
+          sampled: bool("Some rows were sampled by Analytics Engine: counts are estimates."),
+          totals: obj({ turns: int("Distinct rays with a prompt verdict."), verdicts: num(), block: num(), alerts: num(), error: num(), failedOpen: num() }),
+          vendors: arr(
+            obj({
+              provider: ref("ExternalGuardrailProvider"),
+              dir: { type: "string", enum: ["prompt", "reply"] },
+              checked: num("block + allow + error + failedOpen."),
+              block: num(),
+              allow: num("Every allow, alerts included."),
+              alerts: num("Allows with alerts (detectOnly) — a subset of allow."),
+              redaction: num("Allows with a redaction requested, not applied — a subset of allow."),
+              incomplete: num(),
+              error: num("No verdict, fail closed."),
+              failedOpen: num("No verdict, fail open."),
+              notRun: num(),
+              decided: num("Times this vendor stopped the turn."),
+              latencyN: int(),
+              p50Ms: nullable("number", "Nearest rank over stored rows; null when none."),
+              p95Ms: nullable("number"),
+              topDetections: arr(obj({ name: str(), count: num() })),
+            }),
+          ),
+          bucket: { type: "string", enum: ["5m", "hour", "day"] },
+          series: arr(obj({ t: str(), block: num(), alerts: num(), allow: num("Clean allows only."), error: num("Error + failed open.") })),
+          disagreements: obj({
+            count: int(),
+            latest: arr(
+              obj({
+                ts: int(),
+                ray: str(),
+                dir: { type: "string", enum: ["prompt", "reply"] },
+                verdicts: arr(obj({ provider: ref("ExternalGuardrailProvider"), outcome: { type: "string", enum: ["block", "allow"] }, alerts: bool() })),
+              }),
+            ),
+          }),
+        },
+        ["configured", "rangeHours", "since", "until", "source", "capped", "sampled", "totals", "vendors", "series", "disagreements"],
       ),
       GatewayAnalyticsResponse: obj(
         {

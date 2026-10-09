@@ -3,7 +3,7 @@
 // is its own outcome); and the privacy allowlist — no prompt, reply, error text, raw body, summary or
 // policy can reach a line, whatever the result object carries.
 import { describe, expect, it } from "vitest";
-import { VERDICT_EVENT, logVerdicts, sourceOf, verdictLines, type VerdictLine } from "./guardrailLog";
+import { AE_SCHEMA, VERDICT_EVENT, dataPointOf, logVerdicts, sourceOf, verdictLines, type VerdictLine } from "./guardrailLog";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 
 const SECRET = "078-05-1120"; // the void sample SSN — must never appear in a line
@@ -121,17 +121,72 @@ describe("verdictLines", () => {
 describe("logVerdicts", () => {
   it("writes each line as an object, does nothing without a pipeline, and never throws", () => {
     const got: VerdictLine[] = [];
-    logVerdicts(pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" })] }), "chat", null, (l) => got.push(l));
+    logVerdicts(pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" })] }), "chat", null, { sink: (l) => got.push(l) });
     expect(got).toHaveLength(1);
     expect(typeof got[0]).toBe("object");
-    logVerdicts(null, "chat", null, () => {
-      throw new Error("must not be called");
+    logVerdicts(null, "chat", null, {
+      sink: () => {
+        throw new Error("must not be called");
+      },
     });
     expect(() =>
-      logVerdicts(pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" })] }), "chat", null, () => {
-        throw new Error("log sink down");
+      logVerdicts(pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" })] }), "chat", null, {
+        sink: () => {
+          throw new Error("log sink down");
+        },
       }),
     ).not.toThrow();
+  });
+});
+
+// The column positions ARE the schema — src/guardrailAnalytics.ts reads exactly these.
+describe("dataPointOf (Analytics Engine)", () => {
+  it("puts each field in its fixed column, a per-point index, -1 / 0 for no latency / no status", () => {
+    const [ran, skipped] = verdictLines(
+      pipe({
+        results: [res({ provider: "datadog-ai-guard", outcome: "allow", detectOnly: true, category: "abort", detected: ["jailbreak"], scanId: "e1", httpStatus: 200, latencyMs: 87 })],
+        notRun: [{ provider: "cisco-ai-defense", reason: "Not run" }],
+        stoppedBy: null,
+        direction: "reply",
+      }),
+      "redteam",
+      "abc-SIN",
+    );
+    expect(dataPointOf(ran)).toEqual({
+      indexes: ["abc|reply|datadog-ai-guard"],
+      blobs: [AE_SCHEMA, "redteam", "reply", "datadog-ai-guard", "allow", "jailbreak", "abc", "e1", "sequential", "abort"],
+      doubles: [87, 200, 1, 0, 0, 0],
+    });
+    expect(dataPointOf(skipped)).toEqual({
+      indexes: ["abc|reply|cisco-ai-defense"],
+      blobs: [AE_SCHEMA, "redteam", "reply", "cisco-ai-defense", "not_run", "", "abc", "", "sequential", ""],
+      doubles: [-1, 0, 0, 0, 0, 0],
+    });
+  });
+
+  // AE samples per index: a repeating index (the vendor) was sampled on prod after 7 points in 15 s.
+  it("the index never repeats within a turn, and stays unique with no ray", () => {
+    const lines = verdictLines(
+      pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" }), res({ provider: "lakera-guard", outcome: "allow" })] }),
+      "chat",
+      "ray1",
+    );
+    const idx = lines.map((l) => dataPointOf(l).indexes![0]);
+    expect(new Set(idx).size).toBe(idx.length);
+    const noRay = verdictLines(pipe({ results: [res({ provider: "prisma-airs", outcome: "allow" })] }), "chat", null)[0];
+    expect(dataPointOf(noRay).indexes![0]).not.toBe(dataPointOf(noRay).indexes![0]);
+    expect(dataPointOf(noRay, () => "u1").indexes).toEqual(["u1|prompt|prisma-airs"]);
+    expect(new TextEncoder().encode(dataPointOf(noRay, () => "x".repeat(36)).indexes![0] as string).length).toBeLessThanOrEqual(96);
+  });
+
+  it("logVerdicts writes one data point per line when bound, and a throwing dataset breaks nothing", () => {
+    const points: unknown[] = [];
+    const ae = { writeDataPoint: (d: unknown) => points.push(d) } as unknown as AnalyticsEngineDataset;
+    const p = pipe({ results: [res({ provider: "prisma-airs", outcome: "block" })], notRun: [{ provider: "lakera-guard", reason: "x" }] });
+    logVerdicts(p, "chat", null, { ae, sink: () => {} });
+    expect(points).toHaveLength(2);
+    const down = { writeDataPoint: () => { throw new Error("AE down"); } } as unknown as AnalyticsEngineDataset;
+    expect(() => logVerdicts(p, "chat", null, { ae: down, sink: () => {} })).not.toThrow();
   });
 });
 

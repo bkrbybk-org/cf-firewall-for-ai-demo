@@ -196,6 +196,15 @@ alters what a customer sees in a demo. State it and let them choose.
   "persistence". Use the Edit/Write tools for file edits instead. A second policy blocks any shell command
   containing the SQL keyword that empties a table — **including the word inside `truncated`** (a field
   name here). Grep for `runcated`, or build the key as `j["trunc"+"ated"]`.
+  A third blocks a command line containing the SQL output keyword (`F`+`ORMAT JSON`): put Analytics Engine SQL in a
+  file and `curl --data-binary @file.sql`.
+- **Workers Logs is sampled on ingest for this account** (platform sampling, whatever the Worker's own
+  `head_sampling_rate`): never count from it. Guardrail verdicts are counted in **Analytics Engine**
+  (`GUARDRAIL_VERDICTS`, read with `CF_ANALYTICS_TOKEN`), and AE samples *per index*: an index that repeats (the vendor)
+  was sampled after 7 points in 15 s, so every point gets its own index. AE SQL quirks seen live: a not-yet-created
+  dataset answers a plain SELECT with 200 and no rows but a function of a column with 422, and `timestamp AS ts …
+  ORDER BY timestamp` is a 422 — order by the alias. Ground truth for a check is `npx wrangler tail cf-ai-waf-demo
+  --format json` during the turns; AE rows land within about a minute.
 - **D1 enforces foreign keys.** A batch that deletes a parent row before its children fails whole with
   `SQLITE_CONSTRAINT_FOREIGNKEY`: delete children first. The red-team prune did this the other way round and
   every save failed once 50 runs existed; nothing noticed for a month because no page called it. An

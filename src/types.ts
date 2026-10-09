@@ -50,6 +50,9 @@ export interface Env {
   // verify the Cf-Access-Jwt-Assertion header. Plain vars in wrangler.jsonc.
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
+  // Analytics Engine dataset for external guardrail verdicts (wrangler.jsonc, src/guardrailLog.ts).
+  // Optional: absent under `wrangler dev` and in tests, where nothing is written.
+  GUARDRAIL_VERDICTS?: AnalyticsEngineDataset;
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.

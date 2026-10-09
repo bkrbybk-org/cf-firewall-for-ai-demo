@@ -6,11 +6,13 @@ import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";
 import { GatewayTab } from "../components/analytics/GatewayTab";
+import { GuardrailsTab, SOURCE_LABEL, type GuardrailSource } from "../components/analytics/GuardrailsTab";
 import { PromptLogTab, type PromptLogView } from "../components/analytics/PromptLogTab";
 import {
   clearPromptLog,
   getAnalytics,
   getGatewayAnalytics,
+  getGuardrailAnalytics,
   getModels,
   getPromptAnalytics,
   getPromptLog,
@@ -21,6 +23,7 @@ import type {
   Analytics,
   GatewayAnalytics as GatewayAnalyticsData,
   GatewayOption,
+  GuardrailAnalytics,
   PromptAnalytics,
   PromptLog,
 } from "../lib/types";
@@ -60,7 +63,7 @@ const OUTCOME_FILTERS = [
 const PLOG_RANGES = [...RANGES, { label: "all", hours: 0 }];
 const REFRESH_MS = 60_000;
 
-type Tab = "edge" | "gateway" | "promptlog";
+type Tab = "edge" | "gateway" | "guardrails" | "promptlog";
 
 export function AnalyticsPage() {
   const [tab, setTab] = useState<Tab>("edge");
@@ -79,6 +82,10 @@ export function AnalyticsPage() {
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
   const [gw, setGw] = useState<GatewayAnalyticsData | null>(null);
+  // External guardrails tab: per-vendor verdicts from Analytics Engine. Chat traffic by default — Red Team runs
+  // are a benchmark, and mixing them in would inflate every block count.
+  const [gr, setGr] = useState<GuardrailAnalytics | null>(null);
+  const [grSource, setGrSource] = useState<GuardrailSource>("chat");
   // Prompt-log tab: PII-redacted prompts from D1.
   const [plog, setPlog] = useState<PromptLog | null>(null);
   const [pstats, setPstats] = useState<PromptAnalytics | null>(null);
@@ -157,6 +164,18 @@ export function AnalyticsPage() {
     }
   }, []);
 
+  const loadGr = useCallback(async (h: number, source: GuardrailSource) => {
+    setLoading(true);
+    try {
+      setGr(await getGuardrailAnalytics(h, source));
+      setFetchedAt(fmtTime());
+    } catch {
+      setGr({ configured: true, error: "network error" } as GuardrailAnalytics);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Gateway list and the prompt-log flag are both served by /api/models,
   // alongside the model menu.
   useEffect(() => {
@@ -208,13 +227,14 @@ export function AnalyticsPage() {
   const refresh = useCallback(() => {
     if (tab === "edge") load(hours);
     else if (tab === "gateway") loadGw(gatewayId, hours);
+    else if (tab === "guardrails") loadGr(hours, grSource);
     else loadPlog(plogRoute, plogOutcomes, plogWindow, plogView);
     // plogWindow is a fresh object every render, so its own primitive inputs
     // — not the object itself — are the real dependencies here. plogOutcomes
     // is an array too, but it only ever changes via setPlogOutcomes (a new
     // array each time), so referential comparison here is fine. plogView is
     // likewise only replaced wholesale, so it can be depended on directly.
-  }, [tab, hours, gatewayId, plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil, plogView, load, loadGw, loadPlog]);
+  }, [tab, hours, gatewayId, grSource, plogRoute, plogOutcomes, plogCustom, plogHours, plogSince, plogUntil, plogView, load, loadGw, loadGr, loadPlog]);
 
   useEffect(() => {
     refresh();
@@ -249,6 +269,7 @@ export function AnalyticsPage() {
               [
                 { id: "edge" as const, label: "AI Security (edge)" },
                 { id: "gateway" as const, label: "AI Gateway" },
+                { id: "guardrails" as const, label: "External guardrails" },
                 // Only offered when there is a log to look at.
                 ...(promptLogEnabled ? [{ id: "promptlog" as const, label: "Prompt log" }] : []),
               ]
@@ -388,6 +409,23 @@ export function AnalyticsPage() {
                 </select>
               </label>
             )}
+            {tab === "guardrails" && (
+              <div className="flex overflow-hidden rounded-full border border-line" role="group" aria-label="Traffic">
+                {(["chat", "redteam", "all"] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    aria-pressed={grSource === s}
+                    onClick={() => setGrSource(s)}
+                    className={`px-3.5 py-1.5 transition ${
+                      grSource === s ? "bg-accent/15 font-bold text-accent" : "bg-surface hover:bg-surface-hover"
+                    }`}
+                  >
+                    {SOURCE_LABEL[s]}
+                  </button>
+                ))}
+              </div>
+            )}
             {tab === "promptlog" && (
               <>
                 <label className="flex items-center gap-1.5">
@@ -478,6 +516,8 @@ export function AnalyticsPage() {
             />
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />
+          ) : tab === "guardrails" ? (
+            <GuardrailsTab d={gr} hours={hours} />
           ) : (
             /* Withholding onDrill (rather than passing a no-op) also drops
                EdgeTab's "click to inspect prompts" affordance, so the rows
@@ -491,7 +531,9 @@ export function AnalyticsPage() {
         Sources: <code className="font-mono">firewallEventsAdaptive</code> +{" "}
         <code className="font-mono">httpRequestsAdaptive</code> (zone GraphQL, ingestion lags ~1–2 min) ·{" "}
         <code className="font-mono">ai-gateway/gateways/&#123;id&#125;/logs</code> (account REST API) · latest 500 rows
-        per query · edge data is zone-scoped, gateway data is account-scoped.
+        per query · edge data is zone-scoped, gateway data is account-scoped ·{" "}
+        <code className="font-mono">cf_ai_waf_demo_guardrail_verdicts</code> (Analytics Engine, kept 3 months) for the
+        external guardrails.
       </footer>
     </div>
   );

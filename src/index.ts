@@ -16,6 +16,7 @@ import {
   handleVerdict,
   handleZoneRules,
 } from "./handlers";
+import { handleGuardrailAnalytics } from "./guardrailAnalytics";
 import { openapi } from "./openapi";
 import { openapi30For } from "./openapi30";
 import type { Env } from "./types";
@@ -45,6 +46,8 @@ export default {
         return handleAnalytics(url, env);
       case "/api/gateway-analytics":
         return handleGatewayAnalytics(url, env);
+      case "/api/guardrail-analytics":
+        return handleGuardrailAnalytics(url, env);
       case "/api/prompt-log":
         return handlePromptLog(request, url, env);
       case "/api/prompt-analytics":
