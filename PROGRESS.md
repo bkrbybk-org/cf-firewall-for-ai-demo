@@ -753,6 +753,19 @@ A verdict cannot be verified without a real key: that is still the user's step.
 - (b) Turn on Cato reply checking (`replyCheck: true`, reply as the assistant turn) on integrators' evidence, or wait
   for a real Cato reply payload?
 
+**Deferred by the user, 2026-10-08:** "i'll not doing that for now". Neither (a) nor the proposed Thai test sample
+will be built for now. The user's Cato Guards Policy, from a screenshot that day:
+- **Anonymize & Block:** Secrets & Passwords, Sensitive Identifiers, Sensitive Business Information.
+- **Anonymize & Monitor:** Personal Identifiers.
+- **Monitor:** EU AI Act, AI Usage Regulation, Code Protection, Language Detection (Non-English, 21 hits).
+- **Block:** Safety & Security.
+
+"Anonymize & Monitor" is not publicly documented; Cato's knowledge base needs a login, which was not used. The reading
+"mask if possible, else only record" is an inference from Cato's documented "Anonymize and Block". **Known risk left
+open:** if a Monitor-only match returns `monitor_action`, `parseCatoResponse` reads it as an error, and fail-closed
+stops the turn as "Cato unavailable". The Non-English rule makes Thai prompts the likely trigger. If Cato errors
+show up on non-English prompts, suspect this first.
+
 ### 2026-10-08 — Design J, part 2: reply verdicts in the Red Team, as counts only
 
 Deploy `c74474a0-dbc2-4feb-ad2b-44b48b2b6ef4`. No new migration: `0008` already added `redteam_results.reply_vendors`.
@@ -3288,6 +3301,36 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
      set `verified: true`, deploy, and then enable in a 4-way parallel run.
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
+
+**Research: Datadog AI Guard as a possible guardrail 6** (2026-10-09; nothing built, and the user has not asked for it).
+
+Sources, strongest first:
+1. Datadog's shipping Ruby tracer (`DataDog/dd-trace-rb`, `lib/datadog/ai_guard/*`).
+2. Recorded calls in Datadog's own test suite (`DataDog/system-tests`, `utils/build/docker/vcr/cassettes/aiguard/`). Some are
+   GENERATED fixtures (`id: "redaction-fixture"`, `gen_redaction_cassettes.py`); one has a real UUID and real
+   probabilities.
+3. The docs (`docs.datadoghq.com/security/ai_guard/setup/http_api/`, `…/onboarding`), which are thinner than the client.
+4. No-key live probes, 2026-10-09.
+
+| | Datadog AI Guard |
+|---|---|
+| Call | `POST {host}/api/v2/ai-guard/evaluate` (JSON:API). The client's base is `/api/v2/ai-guard` + `/evaluate` |
+| Hosts | Per Datadog site. The client prefixes `app.` when the site has one dot: `app.datadoghq.com`, `app.datadoghq.eu`; `us3.`, `us5.`, `ap1.`, `ap2.datadoghq.com` as is. **Not** on the ddog-gov sites (docs) |
+| Auth | **Two** keys: `DD-API-KEY` and `DD-APPLICATION-KEY`. The SDK also sends `DD-AI-GUARD-SOURCE: SDK`, `-VERSION`, `-LANGUAGE` |
+| Body | `{"data":{"attributes":{"messages":[…],"meta":{"service","env"}}}}`. Roles are `system`, `user`, `assistant` (incl. `tool_calls`) and `tool`. **"AI Guard evaluates the last message"** (docs) |
+| Verdict | `data.attributes.action`: `ALLOW`, `DENY` ("should be blocked") or `ABORT` ("terminate the entire workflow") |
+| Blocking | `is_blocking_enabled` (boolean, set in Datadog's policy). The client blocks only when it is true. A real recording shows **`DENY` with `is_blocking_enabled: false`**, Datadog's detect-only mode |
+| Detail | `tags` (attack categories: `jailbreak`, `instruction-override`, `data-exfiltration`, `indirect-prompt-injection`, `destructive-tool-call`, `system-prompt-extraction`, `role-play`, `obfuscation`, `authority-override`, `security-exploit`, `denial-of-service-tool-call`); `tag_probs`; `sds_findings[]` (`rule_tag`, `category`, location); `redaction_replacements[]`; `reason` |
+| Never copied | `reason` (free text: "audit only, do not pass back to the LLM or user", per the docs), `redaction_replacements` (the user's own text, redacted), and locations. Names only: `tags` and `sds_findings[].rule_tag` |
+| Errors | `{"errors":[…]}`. Live: no key and a fake key BOTH give 401 `Unauthorized`, so a dummy-key test cannot prove a key arrived (like AIDR). A made-up path gives 404 `Not found`, so the path is real on all five public hosts probed |
+| Reply checking | Natural fit: [user, assistant] with the reply last, which is the message evaluated. It is documented by the vendor, not just by integrators |
+| Caveat | "HTTP API requests do not send traces to Datadog": REST evaluations do not show in the customer's Datadog UI (only SDK ones do) |
+
+**Decisions needed if it is built:**
+- **A second key:** add a second encrypted field, or store both keys in one.
+- **`DENY`/`ABORT` with `is_blocking_enabled: false`:** proposed as allow-with-alerts (`detectOnly`), as decided for Lakera's Detect mode.
+- **`ALLOW` with `sds_findings`:** proposed as "redaction not applied", as for AIDR.
+- **Local workerd reachability:** not yet tested.
 
 **Plan: Cato Networks AI Security as guardrail 5** (written and tasks 1–6 done 2026-10-06; see Implemented).
 - [x] 1–6. Registry, client + tests, wire-up, the response-shape value reveal, five-vendor UI check, deploy.
