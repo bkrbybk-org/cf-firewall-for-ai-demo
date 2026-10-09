@@ -631,15 +631,35 @@ export function ExternalGuardrailBadge({ result, reply = false }: { result: Exte
     }
     // Lakera Guard in Detect mode: it logged detections but its project does not
     // block. Allow with alerts — amber, never the green of a clean pass.
+    // Cato: a policy reported detections but required no action. Datadog AI Guard: a
+    // DENY/ABORT with blocking off in its policy, or sensitive data found on an allow.
     if (result.detectOnly) {
       const n = result.detected?.length ?? 0;
+      const datadogMonitor =
+        result.provider === "datadog-ai-guard" && (result.category === "deny" || result.category === "abort");
+      const why =
+        result.provider === "cato-ai-security"
+          ? "required no action"
+          : result.provider === "datadog-ai-guard"
+            ? datadogMonitor
+              ? `answered ${result.category!.toUpperCase()} with blocking off in its policy`
+              : "found sensitive data and allowed it"
+            : "is in Detect mode";
+      const mode =
+        result.provider === "cato-ai-security"
+          ? ""
+          : result.provider === "datadog-ai-guard"
+            ? datadogMonitor
+              ? " (monitor only)"
+              : ""
+            : " (Detect mode)";
       return (
         <span
-          title={`${name} ${result.provider === "cato-ai-security" ? "required no action" : "is in Detect mode"}: it logged ${n === 1 ? "a detection" : `${n} detections`} (${(result.detected ?? []).join(", ")}) but did not block.`}
+          title={`${name} ${why}: it logged ${n === 1 ? "a detection" : `${n} detections`} (${(result.detected ?? []).join(", ")}) but did not block.`}
           className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
         >
           {name} · allow · {n} alert{n === 1 ? "" : "s"}
-          {result.provider === "cato-ai-security" ? "" : " (Detect mode)"} · {result.latencyMs} ms
+          {mode} · {result.latencyMs} ms
         </span>
       );
     }

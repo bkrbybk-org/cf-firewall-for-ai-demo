@@ -57,6 +57,10 @@ function cannotEnableReason(p: ExternalGuardrailConfig): string | null {
   // "API key" keeps its acronym; "Collector token" reads lower-case mid-sentence.
   const key = /^[A-Z]{2}/.test(p.keyLabel) ? p.keyLabel : p.keyLabel.toLowerCase();
   if (!p.apiKeySet) return `Needs a saved ${key} — add it in the provider card below`;
+  // A provider that takes two keys (Datadog) cannot run on one.
+  if (p.secondKeyLabel && !p.secondKeySet) {
+    return `Needs a saved ${p.secondKeyLabel.toLowerCase()} — add it in the provider card below`;
+  }
   // Only providers that name a profile per request need one (Prisma AIRS, Lakera Guard).
   if (p.requiresProfile && !p.profileName.trim()) {
     const what = p.profileLabel === "Project ID" ? "a project ID" : "an AI security profile name";

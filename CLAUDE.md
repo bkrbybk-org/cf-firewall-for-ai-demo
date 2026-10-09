@@ -133,8 +133,9 @@ alters what a customer sees in a demo. State it and let them choose.
   `npm run check` — piping it through `tail -1` once hid the error.
 - Local `wrangler dev` Workers AI can 502 (`internal error` from miniflare's AI proxy) while prod is
   fine; take chat samples from prod when that happens.
-- Local workerd cannot fetch Palo Alto Networks' Prisma AIRS hosts, `api.crowdstrike.com` **or**
-  `api.aisec.catonetworks.com` (`internal error`, reproduced with a minimal worker; `curl` works). Locally every external guardrail
+- Local workerd cannot fetch Palo Alto Networks' Prisma AIRS hosts, `api.crowdstrike.com`,
+  `api.aisec.catonetworks.com` **or** Datadog's `*.datadoghq.com` / `app.datadoghq.eu` (`internal error`, reproduced
+  with a minimal worker; `curl` works). Locally every external guardrail
   reports unavailable — verify it on prod with *Test connection* while it is **disabled**, so live chat is
   never affected.
 - Facts about a third-party API come from its own OpenAPI spec (PANW's is in the public
@@ -165,6 +166,12 @@ alters what a customer sees in a demo. State it and let them choose.
   Cato publishes no public API reference for `/fw/v1/analyze`; the best written sources are LiteLLM's open-source
   Cato guardrail (`BerriAI/litellm`, `guardrail_hooks/cato_networks`) and TrueFoundry's docs — third-party, so a fact
   from them is "documented by an integrator", below a real payload.
+  Datadog AI Guard's docs are thinner than its own shipping client: the source of record is `DataDog/dd-trace-rb`
+  (`lib/datadog/ai_guard/`) plus the recorded calls in `DataDog/system-tests` (some cassettes are generated fixtures).
+  It takes **two keys** (`secondKeyLabel` in the registry). Its hosts answer a made-up path with 404; no keys or a
+  fake API key → 401, but a fake application key of the real 40-hex shape → 403 — so a probe proves the application
+  key arrived, never the API key. Blocking is off by default in Datadog, so expect DENY with `is_blocking_enabled:
+  false` (allow with alerts here), and REST evaluations never appear in Datadog's UI.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

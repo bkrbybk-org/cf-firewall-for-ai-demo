@@ -72,6 +72,8 @@ const POLICY_HINT: Partial<Record<ExternalGuardrailProvider, string>> = {
     "Set in AI Defense on the application connection this key belongs to — the app does not choose it.",
   "cato-ai-security":
     "Set in Cato on the API Guard this key belongs to — the app does not choose it. Either of the Guard's two keys works.",
+  "datadog-ai-guard":
+    "Set in Datadog under Security → AI Guard → Settings: blocking (off by default — then a DENY is only an alert), sensitivity and sensitive data scanning. Requests go out as service “cf-ai-waf-demo”, so a service policy can target this demo. The application key needs the ai_guard_evaluate scope.",
 };
 
 function AccessNote({ access }: { access: GuardrailAccess }) {
@@ -295,6 +297,7 @@ function ProviderCard({
   const [profileName, setProfileName] = useState(config.profileName);
   const [failMode, setFailMode] = useState(config.failMode);
   const [apiKey, setApiKey] = useState("");
+  const [secondKey, setSecondKey] = useState(""); // only used when config.secondKeyLabel is set
   const [toggleErr, setToggleErr] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveErr, setSaveErr] = useState<string | null>(null);
@@ -307,7 +310,10 @@ function ProviderCard({
     region !== config.region ||
     profileName !== config.profileName ||
     failMode !== config.failMode ||
-    apiKey !== "";
+    apiKey !== "" ||
+    secondKey !== "";
+  // Every credential the provider needs is saved — one key, or both of a pair.
+  const keysSet = config.apiKeySet && (!config.secondKeyLabel || !!config.secondKeySet);
   const saving = saveStatus === "saving";
   const regionInfo = config.regions.find((r) => r.id === region);
   const ids = `${p}:`;
@@ -341,6 +347,7 @@ function ProviderCard({
     setSaveErr(null);
     const update: ExternalGuardrailUpdate = { provider: p, region, profileName, failMode };
     if (apiKey) update.apiKey = apiKey;
+    if (secondKey) update.secondKey = secondKey;
     try {
       const e = await send(update);
       if (e) {
@@ -349,6 +356,7 @@ function ProviderCard({
         return;
       }
       setApiKey(""); // the typed key must not outlive a successful save
+      setSecondKey("");
       setTest(null);
       setTestErr(null);
       setSaveStatus("saved");
@@ -359,7 +367,10 @@ function ProviderCard({
   }
 
   async function removeKey() {
-    if (!window.confirm(`Remove the saved ${config.label} ${keyWord(config)}? This also disables the guardrail.`)) return;
+    const what = config.secondKeyLabel
+      ? `${keyWord(config)} and ${config.secondKeyLabel.toLowerCase()}`
+      : keyWord(config);
+    if (!window.confirm(`Remove the saved ${config.label} ${what}? This also disables the guardrail.`)) return;
     setBusy(true);
     setSaveErr(null);
     try {
@@ -367,6 +378,7 @@ function ProviderCard({
       if (e) setSaveErr(e);
       else {
         setApiKey("");
+        setSecondKey("");
         setTest(null);
         setSaveStatus("idle");
       }
@@ -407,7 +419,9 @@ function ProviderCard({
 
   const testDisabledReason = !config.apiKeySet
     ? `Save ${aKey(config)} first`
-    : dirty
+    : !keysSet
+      ? `Save the ${config.secondKeyLabel!.toLowerCase()} first`
+      : dirty
       ? "Save your changes first — the test uses the saved configuration"
       : "Scans a fixed benign prompt with the saved configuration";
 
@@ -417,6 +431,11 @@ function ProviderCard({
   const savedRegion = config.regions.find((r) => r.id === config.region);
   const summary = [
     config.apiKeySet ? `${keyWord(config)} ••••${config.apiKeyLast4 ?? ""}` : `no ${keyWord(config)}`,
+    config.secondKeyLabel
+      ? config.secondKeySet
+        ? `${config.secondKeyLabel.toLowerCase()} ••••${config.secondKeyLast4 ?? ""}`
+        : `no ${config.secondKeyLabel.toLowerCase()}`
+      : null,
     savedRegion?.label ?? config.region,
     config.requiresProfile || config.profileName ? config.profileName || `no ${config.profileLabel}` : null,
     config.failMode === "block" ? "fail closed" : "fail open",
@@ -511,7 +530,8 @@ function ProviderCard({
             {regionInfo && region !== config.region ? `${regionInfo.url} (after save)` : config.endpoint}
           </div>
           <Hint>
-            No free-text endpoint on purpose: the {keyWord(config)} is only ever sent to{" "}
+            No free-text endpoint on purpose:{" "}
+            {config.secondKeyLabel ? "both keys are" : `the ${keyWord(config)} is`} only ever sent to{" "}
             {config.vendor.endsWith("s") ? `${config.vendor}'` : `${config.vendor}'s`} official{" "}
             {config.regions.length === 1 ? "host" : "hosts"}.
           </Hint>
@@ -560,9 +580,14 @@ function ProviderCard({
               }
               className={`${INPUT_CLS} max-w-md`}
             />
-            {config.apiKeySet && (
+            {(config.apiKeySet || config.secondKeySet) && (
               <button type="button" onClick={removeKey} disabled={busy || saving} className={BTN_CLS}>
-                Remove {config.keyLabel === "API key" ? "key" : config.keyLabel.split(" ").pop()!.toLowerCase()}
+                Remove{" "}
+                {config.secondKeyLabel
+                  ? "keys"
+                  : config.keyLabel === "API key"
+                    ? "key"
+                    : config.keyLabel.split(" ").pop()!.toLowerCase()}
               </button>
             )}
           </div>
@@ -580,6 +605,41 @@ function ProviderCard({
             keep the saved one.
           </Hint>
         </div>
+
+        {config.secondKeyLabel ? (
+          <div className="lg:col-span-2">
+            <label htmlFor={`${ids}key2`} className="mb-1 block text-[12px] font-semibold text-text">
+              {config.secondKeyLabel}
+            </label>
+            <input
+              id={`${ids}key2`}
+              type="password"
+              autoComplete="off"
+              value={secondKey}
+              disabled={saving}
+              onChange={(e) => setSecondKey(e.target.value)}
+              placeholder={
+                config.secondKeySet
+                  ? `Enter a new ${config.secondKeyLabel.toLowerCase()} to replace the saved one`
+                  : `Paste the ${config.secondKeyLabel.toLowerCase()}`
+              }
+              className={`${INPUT_CLS} max-w-md`}
+            />
+            <div className="mt-1 text-[11.5px] text-muted">
+              {config.secondKeySet ? (
+                <>
+                  Saved — ends in <span className="font-mono">••••{config.secondKeyLast4}</span>
+                </>
+              ) : (
+                "Not set"
+              )}
+            </div>
+            <Hint>
+              {config.label} needs both keys. Write-only and encrypted at rest, like the {keyWord(config)}; leave
+              empty to keep the saved one.
+            </Hint>
+          </div>
+        ) : null}
 
         <fieldset className="lg:col-span-2" disabled={saving}>
           <legend className="mb-1 text-[12px] font-semibold text-text">
@@ -622,7 +682,7 @@ function ProviderCard({
           type="button"
           onClick={() => void runTest("benign")}
           title={testDisabledReason}
-          disabled={testing || saving || busy || dirty || !config.apiKeySet}
+          disabled={testing || saving || busy || dirty || !keysSet}
           className={BTN_CLS}
         >
           {testing ? "Testing…" : "Test connection"}
@@ -633,7 +693,7 @@ function ProviderCard({
           type="button"
           onClick={() => void runTest("attack")}
           title="Scans a fixed, well-known prompt-injection string with the saved configuration"
-          disabled={testing || saving || busy || dirty || !config.apiKeySet}
+          disabled={testing || saving || busy || dirty || !keysSet}
           className={BTN_CLS}
         >
           Test with an attack prompt
@@ -645,7 +705,7 @@ function ProviderCard({
           type="button"
           onClick={() => void runTest("pii")}
           title="Scans a fixed prompt containing a well-known example SSN (from Cato's API docs) with the saved configuration"
-          disabled={testing || saving || busy || dirty || !config.apiKeySet}
+          disabled={testing || saving || busy || dirty || !keysSet}
           className={BTN_CLS}
         >
           Test with a PII prompt
@@ -658,7 +718,7 @@ function ProviderCard({
             type="button"
             onClick={() => void runTest("reply-pii")}
             title="Sends a fixed prompt with a fixed model REPLY that contains a void sample SSN (078-05-1120), the way the reply check does"
-            disabled={testing || saving || busy || dirty || !config.apiKeySet}
+            disabled={testing || saving || busy || dirty || !keysSet}
             className={BTN_CLS}
           >
             Test a reply (PII)
@@ -669,7 +729,7 @@ function ProviderCard({
             type="button"
             onClick={() => void runTest("reply-benign")}
             title="Sends a fixed prompt with a harmless fixed model reply, the way the reply check does"
-            disabled={testing || saving || busy || dirty || !config.apiKeySet}
+            disabled={testing || saving || busy || dirty || !keysSet}
             className={BTN_CLS}
           >
             Test a reply (harmless)

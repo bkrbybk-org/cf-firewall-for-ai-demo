@@ -626,6 +626,75 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-09 — Datadog AI Guard: guardrail #6, configurable, unverified (two keys, migration 0009)
+
+**Asked for:** "setup datadog ai guard integration setting", after the research entry below (Next tasks, "Plan: Datadog
+AI Guard"). The three open decisions were taken as proposed: DENY/ABORT with blocking off = allow with alerts; sensitive
+data on an ALLOW = allow with alerts, an offered redaction = "redaction not applied"; a second encrypted key field.
+Deploy `f5bca321-08a8-4c09-805a-8bf05d7190c1`. Migration 0009 applied local and remote first (two nullable `ADD
+COLUMN`s, purely additive).
+
+**Re-checked before building** (2026-10-09):
+- **dd-trace-rb** `evaluation/response.rb`: `action`, `reason`, `tags`, `tag_probs` and `is_blocking_enabled` are
+  required; `sds_findings` and `redaction_replacements` default to `[]`. `outcome.rb`: it blocks only when
+  `is_blocking_enabled && (DENY || ABORT)`.
+- **All 40 system-tests cassettes**, summarised by shape: every 200 has `data.id` (UUID), `type: "evaluations"` and
+  `is_blocking_enabled`; findings carry `rule_tag`, `category`, `rule_display_name` and `location.path`
+  (`messages[N]…`). One real DENY has `is_blocking_enabled: false`; one ABORT and two DENYs have it true.
+- **Docs** (`…/ai_guard/setup/`): "By default, AI Guard … does not block requests"; blocking is set per org,
+  environment or service; the application key needs the `ai_guard_evaluate` scope; AI Guard is in Preview, enabled
+  per org by Datadog; sensitive data scanning covers the last message.
+- **Live probes**, all six hosts: real path 401, made-up path 404 `{"errors":["Not found"]}`.
+  - **Correction to the research entry:** a fake key does NOT always get the same 401 as no key. No keys, a fake API
+    key alone, or short dummy keys → 401 `{"errors":["Unauthorized"]}`. A fake **application key of the real shape**
+    (40 hex), with or without an API key → **403 `{"errors":["Forbidden"]}`**. The earlier probe sent no well-formed
+    application key. So a 403 proves the application key arrived well-formed, and nothing about the API key.
+
+**What changed:**
+- **`src/datadogAiGuard.ts`** (new): request = `data.attributes.messages: [{role: "user", content}]` (+ the reply
+  last, as the assistant turn, for a reply check) and `meta.service: "cf-ai-waf-demo"`, so a Datadog service policy
+  can target the demo. No ray, user or IP. Allowlist parser:
+  - `ALLOW` → allow; with sensitive data findings → `detectOnly`; with `redaction_replacements` → also `transformed`.
+  - `DENY`/`ABORT` → block with `category` `deny`/`abort`; with `is_blocking_enabled === false` → allow,
+    `detectOnly`. A missing flag stays a block (the docs' examples omit it).
+  - Anything else → error. Never copied: `reason`, `redaction_replacements`, `tag_probs`, display names, locations;
+    tags must look like identifiers with no run of 3+ digits. A finding in `messages[0]` during a reply check →
+    `prompt:<tag>`.
+  - Error text only on 401/403, with a hint about what each can mean; 404 asks whether AI Guard is enabled.
+- **A second key, generic** (`ProviderSpec.secondKeyLabel`, only Datadog has one): `StoredConfig.secondKeyEnc /
+  secondKeyLast4`, columns `second_key_enc / second_key_last4`, PUT field `secondKey` (empty keeps it; a one-key
+  provider refuses it), public `secondKeyLabel / secondKeySet / secondKeyLast4`. AAD `<provider>#second-key`, so the
+  two ciphertexts cannot be swapped. Enable and *Test connection* require both; `clearApiKey` removes both.
+  `scanWithKey` takes the decrypted second key as a trailing argument.
+- **Registry:** `datadog-ai-guard`, six site hosts (US1 default), `verified: false`, `replyCheck: true`. The stored
+  pipeline order gains it at the end (`normalizeOrder`), disabled.
+- **UI:** Settings shows an *Application key* field, both last-4s in the row summary, "Remove keys", "both keys are
+  only ever sent to Datadog's official hosts", and the policy hint (blocking off by default, the service name, the
+  scope). The traffic-flow node and the test buttons say "Needs a saved application key". The card and the view model
+  say "monitor only" for a DENY/ABORT with blocking off and "found sensitive data … but allowed it" for findings on an
+  allow, never Lakera's "Detect mode". Labels for Datadog's tags and rule tags.
+- **API docs:** provider enum, `secondKey*` fields, the `detectOnly`/`transformed` wording.
+
+**Verified:**
+- **Tests:** 769 (+25), 0 type errors, build clean. `src/datadogAiGuard.test.ts` (18) uses the cassettes' shape and the
+  live error bodies.
+- **Mutation-verified, 11 of 11 caught** (after adding one case): blocking-off read as `!flag`; digit-run check
+  dropped (first MISSED: every digit tag also failed the charset, so a `ssn_078051120` case was added); prompt
+  attribution dropped; findings not alerting; redaction flag dropped; error text shown on every status; second-key
+  AAD = provider; enable without the second key; Remove keys keeping the second; `secondKeySet` for a one-key
+  provider; a one-key provider accepting `secondKey`.
+- **Local (`wrangler dev`, real local D1 after migration 0009):** the form saved a generated test key pair (last 4
+  shown for each); with only the API key saved, enabling answered "Cannot enable: save an application key first",
+  *Test connection* 400 "No application key saved", the node and buttons said so. **Local workerd cannot reach
+  Datadog** (`internal error`, as for PANW, CrowdStrike and Cato), so no verdict could be fetched locally. Light and
+  dark checked. Test keys removed afterwards.
+- **Prod:** smoke passes. `/api/external-guardrails` lists `datadog-ai-guard` disabled, unverified, no keys, last in
+  the order (`scanReplies` on and the other five enabled — set by the user, unchanged). A PUT with the service token
+  → 403 (the admin gate holds). The bundle carries the new strings; `/api/openapi.json` lists the provider and
+  `secondKey`.
+- **Not verified:** any real Datadog verdict. Needs the user (admin gate): save both keys (disabled), run the five
+  test buttons, paste the response shapes (Next tasks, Plan: Datadog AI Guard).
+
 ### 2026-10-08 — Nested custom rulesets read; managed AI Security rules counted; Log mode recorded as intended
 
 **Asked for:** "do nested ruleset read, noted that i intended to set as log so cloudflare doesn't block test prompt
@@ -3302,7 +3371,18 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
 
-**Research: Datadog AI Guard as a possible guardrail 6** (2026-10-09; nothing built, and the user has not asked for it).
+**Plan: Datadog AI Guard as guardrail 6** (researched 2026-10-09, then built and deployed the same day when the user
+asked; see Implemented). The research is kept below; its "fake key = same 401" line was corrected by a later probe.
+
+- [x] 1–5. Client + tests, second key (migration 0009), registry, Settings UI, deploy.
+- [ ] 6. **A real payload** (needs the user, admin gate): Datadog org with the AI Guard Preview, an API key and an
+  application key with the `ai_guard_evaluate` scope, site chosen. Save both with the provider **disabled**, run
+  *Test connection*, the attack, PII and both reply tests, and paste the response shapes. Expect DENY with
+  `is_blocking_enabled: false` unless blocking is on for the org or service `cf-ai-waf-demo`. Then compare with the
+  parser, fix any difference with a test from that shape, and set `verified: true`.
+- [ ] 7. Docs after 6.
+
+The research as written:
 
 Sources, strongest first:
 1. Datadog's shipping Ruby tracer (`DataDog/dd-trace-rb`, `lib/datadog/ai_guard/*`).
@@ -3322,7 +3402,7 @@ Sources, strongest first:
 | Blocking | `is_blocking_enabled` (boolean, set in Datadog's policy). The client blocks only when it is true. A real recording shows **`DENY` with `is_blocking_enabled: false`**, Datadog's detect-only mode |
 | Detail | `tags` (attack categories: `jailbreak`, `instruction-override`, `data-exfiltration`, `indirect-prompt-injection`, `destructive-tool-call`, `system-prompt-extraction`, `role-play`, `obfuscation`, `authority-override`, `security-exploit`, `denial-of-service-tool-call`); `tag_probs`; `sds_findings[]` (`rule_tag`, `category`, location); `redaction_replacements[]`; `reason` |
 | Never copied | `reason` (free text: "audit only, do not pass back to the LLM or user", per the docs), `redaction_replacements` (the user's own text, redacted), and locations. Names only: `tags` and `sds_findings[].rule_tag` |
-| Errors | `{"errors":[…]}`. Live: no key and a fake key BOTH give 401 `Unauthorized`, so a dummy-key test cannot prove a key arrived (like AIDR). A made-up path gives 404 `Not found`, so the path is real on all five public hosts probed |
+| Errors | `{"errors":[…]}`. Live: no key and a fake key BOTH give 401 `Unauthorized`, so a dummy-key test cannot prove a key arrived (like AIDR). **Corrected 2026-10-09:** a fake application key of the real shape (40 hex) gets 403 `Forbidden` — see Implemented. A made-up path gives 404 `Not found`, so the path is real on all five public hosts probed (six, re-probed) |
 | Reply checking | Natural fit: [user, assistant] with the reply last, which is the message evaluated. It is documented by the vendor, not just by integrators |
 | Caveat | "HTTP API requests do not send traces to Datadog": REST evaluations do not show in the customer's Datadog UI (only SDK ones do) |
 

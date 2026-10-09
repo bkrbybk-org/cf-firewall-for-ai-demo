@@ -348,7 +348,7 @@ export const openapi = {
           "",
           "The endpoint is chosen by `region` from the provider's official hosts only. There is no free-text URL: the stored key travels in a request header, so a typed endpoint would let anyone who can reach this API redirect it.",
           "",
-          "`apiKey` is encrypted (AES-256-GCM) before it is stored; an empty string keeps the existing key. `clearApiKey: true` deletes it and disables the provider.",
+          "`apiKey` (and `secondKey`, for a provider that needs two) is encrypted (AES-256-GCM) before it is stored; an empty string keeps the existing key. `clearApiKey: true` deletes every key and disables the provider.",
         ].join("\n"),
         requestBody: { required: true, content: { "application/json": { schema: ref("ExternalGuardrailUpdate") } } },
         responses: {
@@ -643,8 +643,8 @@ export const openapi = {
       // ── external guardrails ─────────────────────────────────────────────
       ExternalGuardrailProvider: {
         type: "string",
-        enum: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"],
-        description: "`cisco-ai-defense`, `lakera-guard` and `cato-ai-security` are configurable but `verified: false` until their parser has been checked against a real payload.",
+        enum: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security", "datadog-ai-guard"],
+        description: "`cisco-ai-defense`, `lakera-guard`, `cato-ai-security` and `datadog-ai-guard` are configurable but `verified: false` until their parser has been checked against a real payload.",
       },
       ExternalGuardrailResult: obj(
         {
@@ -671,8 +671,8 @@ export const openapi = {
           incomplete: bool("A verdict was returned but at least one detection service timed out or errored."),
           policy: str("CrowdStrike AIDR: the policy its collector token evaluated."),
           summary: str("CrowdStrike AIDR: its own one-line summary of the result."),
-          transformed: bool("CrowdStrike AIDR redacted part of the prompt. **This app does not apply the redaction** — the model receives the original prompt."),
-          detectOnly: bool("Lakera Guard in Detect mode: detectors fired, but the project only logs them, so the outcome is `allow`. Allow with alerts — not a clean pass."),
+          transformed: bool("The vendor redacted, or offered to redact, part of the prompt (CrowdStrike AIDR, Cato `anonymize_action`, Datadog `redaction_replacements`). **This app does not apply the redaction** — the model receives the original prompt."),
+          detectOnly: bool("Allow with alerts — not a clean pass. Lakera Guard in Detect mode; Cato with detections and no required action; Datadog AI Guard answering DENY/ABORT with `is_blocking_enabled: false` (then `category` is `deny` or `abort`), or ALLOW with sensitive data findings."),
           raw: obj(
             {
               status: { type: "integer", description: "The vendor's HTTP status." },
@@ -784,8 +784,8 @@ export const openapi = {
           provider: ref("ExternalGuardrailProvider"),
           label: str(),
           supported: bool("False → listed for context, cannot be configured yet."),
-          verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard, Cato AI Security until verified)."),
-          replyCheck: bool("Design J: the vendor documents checking a model reply (Prisma AIRS, CrowdStrike AIDR, Lakera Guard). Documented, not verified."),
+          verified: bool("False → built from the vendor's docs and not yet checked against a real response (Cisco AI Defense, Lakera Guard, Cato AI Security, Datadog AI Guard until verified)."),
+          replyCheck: bool("Design J: the vendor documents checking a model reply (Prisma AIRS, CrowdStrike AIDR, Lakera Guard, Datadog AI Guard). Documented, not verified."),
           enabled: bool(),
           region: str(),
           endpoint: str("Full scan URL derived from `region` (read-only)."),
@@ -798,9 +798,12 @@ export const openapi = {
           failMode: { type: "string", enum: ["block", "allow"], description: "What happens when the provider errors or times out." },
           apiKeySet: bool(),
           apiKeyLast4: nullable("string", "The only part of the key ever returned."),
+          secondKeyLabel: nullable("string", "A second credential this provider needs (Datadog AI Guard: `Application key`); null when it takes one key."),
+          secondKeySet: bool("Always false when `secondKeyLabel` is null."),
+          secondKeyLast4: nullable("string", "The only part of the second key ever returned."),
           updatedAt: nullable("integer", "Epoch ms."),
         },
-        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "profileLabel", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "updatedAt"],
+        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "profileLabel", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "secondKeyLabel", "secondKeySet", "secondKeyLast4", "updatedAt"],
       ),
       ExternalGuardrailsState: obj(
         {
@@ -835,7 +838,12 @@ export const openapi = {
           profileName: { type: "string", maxLength: 200 },
           failMode: { type: "string", enum: ["block", "allow"] },
           apiKey: { type: "string", maxLength: 4096, description: "Replaces the stored key. Empty keeps it. Never echoed back." },
-          clearApiKey: bool("Delete the stored key (also disables the provider)."),
+          secondKey: {
+            type: "string",
+            maxLength: 4096,
+            description: "Only for a provider with `secondKeyLabel` (a 400 otherwise). Replaces the stored second key; empty keeps it. Never echoed back.",
+          },
+          clearApiKey: bool("Delete every stored key of the provider (also disables it)."),
         },
         ["provider"],
       ),

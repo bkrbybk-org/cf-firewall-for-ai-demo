@@ -127,7 +127,8 @@ export type ExternalGuardrailProvider =
   | "crowdstrike-aidr"
   | "cisco-ai-defense"
   | "lakera-guard"
-  | "cato-ai-security";
+  | "cato-ai-security"
+  | "datadog-ai-guard";
 
 // GET /api/external-guardrails/report — Prisma AIRS's own per-detection report
 // for one scan. Allowlisted on the server: names, categories, verdicts, actions
@@ -271,6 +272,11 @@ export interface ExternalGuardrailConfig {
   failMode: "block" | "allow"; // what to do when the provider errors or times out
   apiKeySet: boolean;
   apiKeyLast4: string | null; // the key itself is write-only and never returned
+  // A second credential, for a vendor that needs two (Datadog: "Application key"). null → one key only.
+  // Absent from an older Worker, which reads as null.
+  secondKeyLabel?: string | null;
+  secondKeySet?: boolean;
+  secondKeyLast4?: string | null; // write-only too: only the last 4 come back
   updatedAt: number | null; // epoch ms
 }
 
@@ -299,7 +305,8 @@ export interface ExternalGuardrailUpdate {
   profileName?: string;
   failMode?: "block" | "allow";
   apiKey?: string;
-  clearApiKey?: boolean;
+  secondKey?: string; // only for a provider with secondKeyLabel; empty = keep the saved one
+  clearApiKey?: boolean; // removes every key the provider holds
 }
 
 // Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an

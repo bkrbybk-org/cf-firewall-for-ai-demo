@@ -22,6 +22,7 @@ export const PROVIDER_LABELS: Record<ExternalGuardrailProvider, string> = {
   "cisco-ai-defense": "Cisco AI Defense",
   "lakera-guard": "Lakera Guard",
   "cato-ai-security": "Cato AI Security",
+  "datadog-ai-guard": "Datadog AI Guard",
 };
 
 // The long form for running prose; the chips and lists use the short one.
@@ -31,6 +32,7 @@ export const PROVIDER_FULL_LABELS: Record<ExternalGuardrailProvider, string> = {
   "cisco-ai-defense": "Cisco AI Defense",
   "lakera-guard": "Check Point Lakera Guard",
   "cato-ai-security": "Cato Networks AI Security",
+  "datadog-ai-guard": "Datadog AI Guard",
 };
 
 // What the provider's own reference id is called, so it can be searched for in
@@ -43,6 +45,8 @@ export const SCAN_ID_LABEL: Record<ExternalGuardrailProvider, string> = {
   // Seen live (not in Cato's sample): the id of one analysis. The Cloudflare ray goes
   // out separately as `x-cato-session-id`.
   "cato-ai-security": "invocation_id",
+  // `data.id` of the evaluation. HTTP evaluations send no trace, so it is not searchable in Datadog's UI.
+  "datadog-ai-guard": "evaluation id",
 };
 
 export const DETECTION_LABELS: Record<string, string> = {
@@ -65,6 +69,24 @@ export const DETECTION_LABELS: Record<string, string> = {
   emoji: "Emoji",
   code: "Code",
   mcp_validation: "MCP validation",
+  // Datadog AI Guard attack categories (`tags`, per dd-trace-rb and its recorded calls) and its
+  // sensitive data scanner rule tags (`sds_findings[].rule_tag`).
+  jailbreak: "Jailbreak",
+  "instruction-override": "Instruction override",
+  "data-exfiltration": "Data exfiltration",
+  "indirect-prompt-injection": "Indirect prompt injection",
+  "destructive-tool-call": "Destructive tool call",
+  "system-prompt-extraction": "System prompt extraction",
+  "role-play": "Role play",
+  obfuscation: "Obfuscation",
+  "authority-override": "Authority override",
+  "security-exploit": "Security exploit",
+  "denial-of-service-tool-call": "Denial-of-service tool call",
+  us_ssn: "US SSN",
+  credit_card: "Credit card",
+  email_address: "Email address",
+  phone_number: "Phone number",
+  bank_account: "Bank account",
   // Cato AI Security sends readable names already (`policy_drill_down` keys such as
   // "PII", entity types such as "SSN"), so they are shown as sent — no entries here.
 };
@@ -192,7 +214,11 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     notes.push(
       r.provider === "cato-ai-security"
         ? `Alerts only — ${name} reported ${count} but its policy required no action, so it did not block`
-        : `Detect mode — ${name} logged ${count} but its project only alerts, so it did not block`,
+        : r.provider === "datadog-ai-guard"
+          ? r.category === "deny" || r.category === "abort"
+            ? `Monitor only — ${name} answered ${r.category.toUpperCase()} but blocking is off in its policy, so it did not block`
+            : `Alerts only — ${name} found sensitive data (${count}) but allowed it`
+          : `Detect mode — ${name} logged ${count} but its project only alerts, so it did not block`,
     );
   }
   if (state === "failedOpen") {

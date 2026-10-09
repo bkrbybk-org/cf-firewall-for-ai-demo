@@ -21,6 +21,7 @@ import {
   loadGuardrailSetup,
   runPipeline,
   runReplyCheck,
+  secondKeyAad,
   stopsTurn,
   willCheckReply,
   stripRaw,
@@ -86,6 +87,74 @@ describe("validateUpdate", () => {
       error: "Cannot enable: save an API key first",
     });
     expect(validateUpdate({ provider: "cato-ai-security", apiKey: "k", enabled: true }, defaultConfig("cato-ai-security")).ok).toBe(true);
+  });
+
+  // Datadog: two keys, six official site hosts, and the policy rides on the org (no profile).
+  it("lets Datadog AI Guard be configured, unverified, on its six site hosts", () => {
+    const spec = PROVIDERS["datadog-ai-guard"];
+    expect([spec.supported, spec.verified, spec.requiresProfile, spec.replyCheck]).toEqual([true, false, false, true]);
+    expect([spec.keyLabel, spec.secondKeyLabel]).toEqual(["API key", "Application key"]);
+    expect(spec.regions.map((r) => r.url)).toEqual([
+      "https://app.datadoghq.com",
+      "https://us3.datadoghq.com",
+      "https://us5.datadoghq.com",
+      "https://app.datadoghq.eu",
+      "https://ap1.datadoghq.com",
+      "https://ap2.datadoghq.com",
+    ]);
+    expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].secondKeyLabel)).toEqual(["datadog-ai-guard"]);
+  });
+
+  describe("a second key (Datadog)", () => {
+    const dd = () => defaultConfig("datadog-ai-guard");
+
+    it("cannot be enabled until BOTH keys are saved", () => {
+      expect(validateUpdate({ enabled: true, secondKey: "app1" }, dd())).toMatchObject({ ok: false, error: "Cannot enable: save an API key first" });
+      expect(validateUpdate({ enabled: true, apiKey: "api1" }, dd())).toMatchObject({
+        ok: false,
+        error: "Cannot enable: save an application key first",
+      });
+      const both = validateUpdate({ enabled: true, apiKey: "api-1111", secondKey: "app-2222" }, dd());
+      expect(both).toMatchObject({ ok: true, newApiKey: "api-1111", newSecondKey: "app-2222" });
+      if (both.ok) expect([both.next.apiKeyLast4, both.next.secondKeyLast4]).toEqual(["1111", "2222"]);
+      // Both already stored: enabling needs nothing new.
+      const stored = { ...dd(), apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222" };
+      expect(validateUpdate({ enabled: true }, stored).ok).toBe(true);
+    });
+
+    it("keeps a saved second key when the field is empty, and replaces it alone", () => {
+      const stored = { ...dd(), apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222" };
+      const keep = validateUpdate({ apiKey: "", secondKey: "" }, stored);
+      expect(keep).toMatchObject({ ok: true, newApiKey: null, newSecondKey: null });
+      if (keep.ok) expect(keep.next).toMatchObject({ apiKeyEnc: "C1", secondKeyEnc: "C2" });
+      const swap = validateUpdate({ secondKey: "new-3333" }, stored);
+      expect(swap).toMatchObject({ ok: true, newApiKey: null, newSecondKey: "new-3333" });
+      if (swap.ok) expect(swap.next).toMatchObject({ apiKeyEnc: "C1", secondKeyLast4: "3333" });
+    });
+
+    it("Remove key removes both and disables; malformed or misplaced second keys are refused", () => {
+      const stored = { ...dd(), enabled: true, apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222" };
+      const v = validateUpdate({ clearApiKey: true, secondKey: "ignored" }, stored);
+      expect(v).toMatchObject({ ok: true, newSecondKey: null });
+      if (v.ok) expect(v.next).toMatchObject({ enabled: false, apiKeyEnc: null, apiKeyLast4: null, secondKeyEnc: null, secondKeyLast4: null });
+      expect(validateUpdate({ secondKey: "has space" }, dd()).ok).toBe(false);
+      expect(validateUpdate({ secondKey: 42 }, dd()).ok).toBe(false);
+      expect(validateUpdate({ secondKey: "x".repeat(4097) }, dd()).ok).toBe(false);
+      // A one-key provider never stores a second secret.
+      expect(validateUpdate({ secondKey: "k" }, airs())).toMatchObject({ ok: false, error: expect.stringMatching(/takes one key/) });
+    });
+
+    it("never returns either key, only their last 4", () => {
+      const pub = toPublicConfig({ ...dd(), apiKeyEnc: "CIPHER-1", apiKeyLast4: "1111", secondKeyEnc: "CIPHER-2", secondKeyLast4: "2222" });
+      expect(pub).toMatchObject({ secondKeyLabel: "Application key", secondKeySet: true, secondKeyLast4: "2222", apiKeyLast4: "1111" });
+      expect(JSON.stringify(pub)).not.toMatch(/CIPHER/);
+      // A one-key provider says so, even if a stray second ciphertext were stored on its row.
+      expect(toPublicConfig({ ...airs(), secondKeyEnc: "CIPHER-2", secondKeyLast4: "2222" })).toMatchObject({
+        secondKeyLabel: null,
+        secondKeySet: false,
+        secondKeyLast4: null,
+      });
+    });
   });
 
   it("refuses to enable without a key, and without a profile", () => {
@@ -204,34 +273,40 @@ describe("stopsTurn", () => {
 
 describe("pipeline config", () => {
   it("normalises a stored order into a full permutation", () => {
-    const ALL = ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"];
-    expect(normalizeOrder(["lakera-guard", "crowdstrike-aidr", "cato-ai-security", "cisco-ai-defense", "prisma-airs"])).toEqual([
-      "lakera-guard",
-      "crowdstrike-aidr",
-      "cato-ai-security",
-      "cisco-ai-defense",
-      "prisma-airs",
-    ]);
+    const ALL = ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security", "datadog-ai-guard"];
+    expect(
+      normalizeOrder(["lakera-guard", "datadog-ai-guard", "crowdstrike-aidr", "cato-ai-security", "cisco-ai-defense", "prisma-airs"]),
+    ).toEqual(["lakera-guard", "datadog-ai-guard", "crowdstrike-aidr", "cato-ai-security", "cisco-ai-defense", "prisma-airs"]);
     // Unknown ids dropped, duplicates removed, missing providers appended — a
     // hand-edited row can never make a provider vanish from the pipeline.
     // Missing ones are appended in registry order, so an order stored before a
-    // provider existed (2026-10-05: two providers became four; 2026-10-06: five) stays valid.
+    // provider existed (2026-10-05: two providers became four; 2026-10-06: five; 2026-10-09: six) stays valid.
     expect(normalizeOrder(["bogus", "crowdstrike-aidr", "crowdstrike-aidr"])).toEqual([
       "crowdstrike-aidr",
       "prisma-airs",
       "cisco-ai-defense",
       "lakera-guard",
       "cato-ai-security",
+      "datadog-ai-guard",
     ]);
-    // Prod's stored order from before Cato existed: Cato joins at the end.
+    // Prod's stored orders from before Cato and before Datadog existed: each joins at the end.
     expect(normalizeOrder(["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard"])).toEqual(ALL);
+    expect(normalizeOrder(["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"])).toEqual(ALL);
     expect(normalizeOrder([])).toEqual(ALL);
   });
 
   it("accepts a valid update and leaves omitted fields alone", () => {
     const v = validatePipelineUpdate({ mode: "parallel" }, defaultPipeline());
-    expect(v).toEqual({ ok: true, next: { mode: "parallel", guardrailOnly: false, order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security"], scanReplies: false } });
-    const order = ["crowdstrike-aidr", "cato-ai-security", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
+    expect(v).toEqual({
+      ok: true,
+      next: {
+        mode: "parallel",
+        guardrailOnly: false,
+        order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security", "datadog-ai-guard"],
+        scanReplies: false,
+      },
+    });
+    const order = ["crowdstrike-aidr", "datadog-ai-guard", "cato-ai-security", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
     const w = validatePipelineUpdate({ guardrailOnly: true, order }, defaultPipeline());
     expect(w.ok && w.next).toMatchObject({ mode: "sequential", guardrailOnly: true, order });
   });
@@ -527,6 +602,41 @@ describe("runPipeline", () => {
     expect(bodies[1].contents).toEqual([{ prompt: "p" }]);
   });
 
+  // Datadog: both decrypted keys, each in its own header, to the chosen site only — and the second
+  // ciphertext is bound to its slot, so the two cannot be swapped and still work.
+  it("sends both Datadog keys to the configured site, and refuses swapped ciphertexts", async () => {
+    const ddRow = async (over: Record<string, unknown> = {}) =>
+      storedRow({
+        provider: "datadog-ai-guard",
+        region: "eu1",
+        profile_name: "",
+        api_key_enc: await encryptSecret("dd-api-key", SECRET, "datadog-ai-guard"),
+        second_key_enc: await encryptSecret("dd-app-key", SECRET, secondKeyAad("datadog-ai-guard")),
+        ...over,
+      });
+    let seen: { url: string; headers: Record<string, string> } | null = null;
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      seen = { url, headers: init?.headers as Record<string, string> };
+      return Response.json({ data: { id: "e1", type: "evaluations", attributes: { action: "ALLOW", is_blocking_enabled: true, tags: [] } } });
+    }) as typeof fetch;
+    const r = await runPipeline(await envWith(await ddRow()), { prompt: "p", model: "m", ray: "abc" }, fetchImpl);
+    expect(r!.results[0]).toMatchObject({ provider: "datadog-ai-guard", outcome: "allow", scanId: "e1" });
+    expect(seen!.url).toBe("https://app.datadoghq.eu/api/v2/ai-guard/evaluate");
+    expect([seen!.headers["dd-api-key"], seen!.headers["dd-application-key"]]).toEqual(["dd-api-key", "dd-app-key"]);
+
+    const never = (async () => {
+      throw new Error("must not be called");
+    }) as typeof fetch;
+    // The API key's ciphertext copied into the second slot: its AAD does not match, so nothing is sent.
+    const swapped = await ddRow({ second_key_enc: await encryptSecret("dd-api-key", SECRET, "datadog-ai-guard") });
+    const s = await runPipeline(await envWith(swapped), { prompt: "p", model: "m", ray: null }, never);
+    expect(s!.results[0]).toMatchObject({ outcome: "error", error: expect.stringMatching(/could not be decrypted/) });
+    // A row with no second key (e.g. saved before migration 0009): an error for the fail mode, no call.
+    const half = await ddRow({ second_key_enc: null });
+    const h = await runPipeline(await envWith(half), { prompt: "p", model: "m", ray: null }, never);
+    expect(h!.results[0]).toMatchObject({ outcome: "error", error: "No application key saved" });
+  });
+
   it("no reply check → null, never an empty pass", async () => {
     const never = (async () => {
       throw new Error("must not be called");
@@ -563,7 +673,12 @@ describe("executePipeline — reply direction", () => {
   });
 
   it("only documented vendors claim reply checking", () => {
-    expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].replyCheck)).toEqual(["prisma-airs", "crowdstrike-aidr", "lakera-guard"]);
+    expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].replyCheck)).toEqual([
+      "prisma-airs",
+      "crowdstrike-aidr",
+      "lakera-guard",
+      "datadog-ai-guard",
+    ]);
   });
 
   it("validates the switch", () => {

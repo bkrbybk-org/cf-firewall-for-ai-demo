@@ -373,6 +373,24 @@ describe("rule 6: honesty notes", () => {
     expect(a.notes.join(" ")).not.toMatch(/project|Detect mode/);
   });
 
+  // Datadog has two ways to an allow with alerts: a DENY/ABORT with blocking off in its policy
+  // (`category` keeps which), and sensitive data found on an ALLOW. Each says which, in Datadog's terms.
+  it("Datadog monitor-only and sensitive-data alerts each say which, in Datadog's own words", () => {
+    const view = (over: Partial<ExternalGuardrailResult>) =>
+      pipelineView(
+        pipe({ results: [result({ provider: "datadog-ai-guard", outcome: "allow", detectOnly: true, ...over })] }),
+        "guardrailOnly",
+      ).vendors[0]!;
+    const monitor = view({ category: "abort", detected: ["data-exfiltration"] });
+    expect(monitor.partial).toBe(true);
+    expect(monitor.findings).toEqual(["Data exfiltration"]);
+    expect(monitor.notes).toContain("Monitor only — Datadog AI Guard answered ABORT but blocking is off in its policy, so it did not block");
+    const sds = view({ detected: ["us_ssn", "email_address"] });
+    expect(sds.findings).toEqual(["US SSN", "Email address"]);
+    expect(sds.notes).toContain("Alerts only — Datadog AI Guard found sensitive data (2 detections) but allowed it");
+    expect([...monitor.notes, ...sds.notes].join(" ")).not.toMatch(/project|Detect mode/);
+  });
+
   it("detectOnly on an error is ignored — an error is still not a verdict", () => {
     const v = pipelineView(
       pipe({ results: [result({ provider: "lakera-guard", outcome: "error", detectOnly: true, error: "x" })], stoppedBy: "lakera-guard" }),

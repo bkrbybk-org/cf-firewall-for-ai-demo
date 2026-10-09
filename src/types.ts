@@ -342,7 +342,8 @@ export type ExternalGuardrailProvider =
   | "crowdstrike-aidr"
   | "cisco-ai-defense"
   | "lakera-guard"
-  | "cato-ai-security";
+  | "cato-ai-security"
+  | "datadog-ai-guard";
 
 export interface ExternalGuardrailResult {
   provider: ExternalGuardrailProvider;

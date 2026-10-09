@@ -39,6 +39,7 @@ import {
   save,
   savePipeline,
   scanWithKey,
+  secondKeyAad,
   stripRaw,
   toPublicConfig,
   validatePipelineUpdate,
@@ -1661,6 +1662,9 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
       // or returned.
       next.apiKeyEnc = await encryptSecret(v.newApiKey, env.GUARDRAIL_SECRET_KEY!, next.provider);
     }
+    if (v.newSecondKey != null) {
+      next.secondKeyEnc = await encryptSecret(v.newSecondKey, env.GUARDRAIL_SECRET_KEY!, secondKeyAad(next.provider));
+    }
     await save(env.DB!, next);
     return guardrailState(env, request);
   } catch (err) {
@@ -1771,10 +1775,15 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
     // "API key" keeps its acronym; "Collector token" reads as "collector token".
     const keyWord = /^[A-Z]{2}/.test(spec.keyLabel) ? spec.keyLabel : spec.keyLabel.toLowerCase();
     if (!c.apiKeyEnc) return Response.json({ error: `No ${keyWord} saved` }, { status: 400 });
+    if (spec.secondKeyLabel && !c.secondKeyEnc) {
+      return Response.json({ error: `No ${spec.secondKeyLabel.toLowerCase()} saved` }, { status: 400 });
+    }
     if (spec.requiresProfile && !c.profileName) return Response.json({ error: `No ${spec.profileLabel} saved` }, { status: 400 });
     let apiKey: string;
+    let secondKey = "";
     try {
       apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
+      if (spec.secondKeyLabel) secondKey = await decryptSecret(c.secondKeyEnc!, env.GUARDRAIL_SECRET_KEY!, secondKeyAad(c.provider));
     } catch {
       return Response.json({
         ok: false,
@@ -1799,7 +1808,7 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
       sample === "reply-benign" || sample === "reply-pii"
         ? { ...GUARDRAIL_TEST_REPLIES[sample], model: "", ray: null }
         : { prompt: GUARDRAIL_TEST_PROMPTS[sample], model: "", ray: null };
-    const result = await scanWithKey(c, apiKey, input, recording);
+    const result = await scanWithKey(c, apiKey, input, recording, secondKey);
     return Response.json({
       ok: result.outcome !== "error",
       result,

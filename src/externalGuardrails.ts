@@ -28,6 +28,7 @@
 import { CATO_GUARD_PATH, CATO_REGIONS, scanPromptWithCato } from "./catoGuard";
 import { CISCO_AID_INSPECT_PATH, CISCO_AID_REGIONS, scanPromptWithCiscoAid } from "./ciscoAiDefense";
 import { AIDR_GUARD_PATH, AIDR_REGIONS, scanPromptWithAidr } from "./crowdstrikeAidr";
+import { DATADOG_AI_GUARD_PATH, DATADOG_REGIONS, scanPromptWithDatadog } from "./datadogAiGuard";
 import { LAKERA_GUARD_PATH, LAKERA_REGIONS, scanPromptWithLakera } from "./lakeraGuard";
 import { PRISMA_AIRS_REGIONS, PRISMA_AIRS_SCAN_PATH, scanPromptWithPrismaAirs } from "./prismaAirs";
 import { PublicError } from "./publicError";
@@ -61,6 +62,10 @@ interface ProviderSpec {
   requiresProfile: boolean;
   profileLabel: string;
   keyLabel: string;
+  // A SECOND credential, for a vendor that needs two (Datadog: an API key AND an application key).
+  // Stored and shown exactly like the first — encrypted, write-only, last 4 only — and required before
+  // the provider can be enabled or tested. Absent → the provider takes one key.
+  secondKeyLabel?: string;
   vendor: string;
   // Response fields whose VALUE *Test connection* may show, when it is a bare token
   // (src/responseShape.ts). Only for a verdict that is a string with an undocumented
@@ -146,6 +151,22 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     replyCheck: false, // reply checking is not documented
     revealPaths: ["required_action.action_type"],
   },
+  // Built from Datadog's own tracer, its recorded calls and its docs (src/datadogAiGuard.ts); unverified
+  // until Test connection has shown a real verdict's shape from the user's org.
+  "datadog-ai-guard": {
+    label: "Datadog AI Guard",
+    supported: true,
+    verified: false,
+    regions: DATADOG_REGIONS,
+    defaultRegion: "us1",
+    scanPath: DATADOG_AI_GUARD_PATH,
+    requiresProfile: false,
+    profileLabel: "",
+    keyLabel: "API key",
+    secondKeyLabel: "Application key",
+    vendor: "Datadog",
+    replyCheck: true, // "AI Guard evaluates the last message in the sequence" — the reply goes last (http_api docs)
+  },
 };
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS) as ExternalGuardrailProvider[];
@@ -164,7 +185,16 @@ export interface StoredConfig {
   failMode: FailMode;
   apiKeyEnc: string | null;
   apiKeyLast4: string | null;
+  // The second credential (ProviderSpec.secondKeyLabel), encrypted with its own AAD (secondKeyAad).
+  secondKeyEnc: string | null;
+  secondKeyLast4: string | null;
   updatedAt: number | null;
+}
+
+// AAD for the second key: bound to the provider AND to its slot, so the two ciphertexts of one provider
+// cannot be swapped into each other's column and still decrypt.
+export function secondKeyAad(provider: ExternalGuardrailProvider): string {
+  return `${provider}#second-key`;
 }
 
 export function defaultConfig(provider: ExternalGuardrailProvider): StoredConfig {
@@ -176,6 +206,8 @@ export function defaultConfig(provider: ExternalGuardrailProvider): StoredConfig
     failMode: "block",
     apiKeyEnc: null,
     apiKeyLast4: null,
+    secondKeyEnc: null,
+    secondKeyLast4: null,
     updatedAt: null,
   };
 }
@@ -208,13 +240,17 @@ export function toPublicConfig(c: StoredConfig) {
     failMode: c.failMode,
     apiKeySet: c.apiKeyEnc != null,
     apiKeyLast4: c.apiKeyLast4,
+    // null → the provider takes one key; the two fields below are then always false / null.
+    secondKeyLabel: spec.secondKeyLabel ?? null,
+    secondKeySet: spec.secondKeyLabel != null && c.secondKeyEnc != null,
+    secondKeyLast4: spec.secondKeyLabel != null ? c.secondKeyLast4 : null,
     updatedAt: c.updatedAt,
   };
 }
 
 // ── update validation (pure) ─────────────────────────────────────────────────
 export type UpdateResult =
-  | { ok: true; next: StoredConfig; newApiKey: string | null }
+  | { ok: true; next: StoredConfig; newApiKey: string | null; newSecondKey: string | null }
   | { ok: false; error: string };
 
 // Applies a PUT body to the current stored config. Everything the client sends
@@ -227,6 +263,7 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
 
   const next: StoredConfig = { ...current };
   let newApiKey: string | null = null;
+  let newSecondKey: string | null = null;
 
   if (b.region !== undefined) {
     if (typeof b.region !== "string" || !spec.regions.some((r) => r.id === b.region)) {
@@ -245,8 +282,11 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
     next.failMode = b.failMode as FailMode;
   }
   if (b.clearApiKey === true) {
+    // "Remove key" removes every credential the provider holds: half a pair is not a working setup.
     next.apiKeyEnc = null;
     next.apiKeyLast4 = null;
+    next.secondKeyEnc = null;
+    next.secondKeyLast4 = null;
     // A provider with no key cannot scan anything, so leaving it "enabled"
     // would turn every chat into a fail-mode decision. Disable it instead.
     next.enabled = false;
@@ -262,6 +302,18 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
       next.apiKeyLast4 = key.slice(-4);
     }
   }
+  if (b.secondKey !== undefined && b.clearApiKey !== true) {
+    if (!spec.secondKeyLabel) return { ok: false, error: `${spec.label} takes one key; secondKey is not accepted` };
+    if (typeof b.secondKey !== "string") return { ok: false, error: "secondKey must be a string" };
+    const key = b.secondKey.trim();
+    // Empty means "keep the existing one", as for apiKey.
+    if (key) {
+      if (key.length > MAX_API_KEY) return { ok: false, error: `secondKey exceeds ${MAX_API_KEY} characters` };
+      if (/\s/.test(key)) return { ok: false, error: "secondKey must not contain whitespace" };
+      newSecondKey = key;
+      next.secondKeyLast4 = key.slice(-4);
+    }
+  }
   if (b.enabled !== undefined) {
     if (typeof b.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
     next.enabled = b.enabled;
@@ -271,6 +323,10 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
   if (next.enabled) {
     const hasKey = newApiKey != null || next.apiKeyEnc != null;
     if (!hasKey) return { ok: false, error: `Cannot enable: save ${spec.keyLabel === "API key" ? "an API key" : `a ${spec.keyLabel.toLowerCase()}`} first` };
+    if (spec.secondKeyLabel && newSecondKey == null && next.secondKeyEnc == null) {
+      const l = spec.secondKeyLabel.toLowerCase();
+      return { ok: false, error: `Cannot enable: save ${/^[aeiou]/.test(l) ? "an" : "a"} ${l} first` };
+    }
     if (spec.requiresProfile && !next.profileName) {
       // "an AI security profile name" / "a project ID": lowercase the first letter
       // unless the word is an acronym, and pick the article from the result.
@@ -279,7 +335,7 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
       return { ok: false, error: `Cannot enable: ${/^[aeiou]/i.test(noun) ? "an" : "a"} ${noun} is required` };
     }
   }
-  return { ok: true, next, newApiKey };
+  return { ok: true, next, newApiKey, newSecondKey };
 }
 
 // ── encryption (AES-256-GCM) ────────────────────────────────────────────────
@@ -340,6 +396,8 @@ interface Row {
   fail_mode: string;
   api_key_enc: string | null;
   api_key_last4: string | null;
+  second_key_enc?: string | null; // absent before migration 0009
+  second_key_last4?: string | null;
   updated_at: number | null;
 }
 
@@ -354,6 +412,8 @@ function fromRow(r: Row): StoredConfig | null {
     failMode: r.fail_mode === "allow" ? "allow" : "block",
     apiKeyEnc: r.api_key_enc,
     apiKeyLast4: r.api_key_last4,
+    secondKeyEnc: r.second_key_enc ?? null,
+    secondKeyLast4: r.second_key_last4 ?? null,
     updatedAt: r.updated_at,
   };
 }
@@ -368,13 +428,26 @@ export async function loadAll(db: D1Database): Promise<StoredConfig[]> {
 export async function save(db: D1Database, c: StoredConfig): Promise<void> {
   const upsert = db
     .prepare(
-      `INSERT INTO external_guardrails (provider, enabled, region, profile_name, fail_mode, api_key_enc, api_key_last4, updated_at)
-       VALUES (?,?,?,?,?,?,?,?)
+      `INSERT INTO external_guardrails (provider, enabled, region, profile_name, fail_mode, api_key_enc, api_key_last4,
+         second_key_enc, second_key_last4, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(provider) DO UPDATE SET enabled = excluded.enabled, region = excluded.region,
          profile_name = excluded.profile_name, fail_mode = excluded.fail_mode, api_key_enc = excluded.api_key_enc,
-         api_key_last4 = excluded.api_key_last4, updated_at = excluded.updated_at`,
+         api_key_last4 = excluded.api_key_last4, second_key_enc = excluded.second_key_enc,
+         second_key_last4 = excluded.second_key_last4, updated_at = excluded.updated_at`,
     )
-    .bind(c.provider, c.enabled ? 1 : 0, c.region, c.profileName, c.failMode, c.apiKeyEnc, c.apiKeyLast4, c.updatedAt);
+    .bind(
+      c.provider,
+      c.enabled ? 1 : 0,
+      c.region,
+      c.profileName,
+      c.failMode,
+      c.apiKeyEnc,
+      c.apiKeyLast4,
+      c.secondKeyEnc,
+      c.secondKeyLast4,
+      c.updatedAt,
+    );
   await upsert.run();
 }
 
@@ -594,9 +667,14 @@ async function scanProvider(
     r.outcome === "error" && c.failMode === "allow" ? { ...r, failedOpen: true } : r;
   if (!c.apiKeyEnc) return resolve({ provider: c.provider, outcome: "error", error: "No API key saved", latencyMs: 0 });
 
+  const second = PROVIDERS[c.provider].secondKeyLabel;
+  if (second && !c.secondKeyEnc) return resolve({ provider: c.provider, outcome: "error", error: `No ${second.toLowerCase()} saved`, latencyMs: 0 });
+
   let apiKey: string;
+  let secondKey = "";
   try {
     apiKey = await decryptSecret(c.apiKeyEnc, env.GUARDRAIL_SECRET_KEY!, c.provider);
+    if (second) secondKey = await decryptSecret(c.secondKeyEnc!, env.GUARDRAIL_SECRET_KEY!, secondKeyAad(c.provider));
   } catch {
     return resolve({
       provider: c.provider,
@@ -606,17 +684,19 @@ async function scanProvider(
     });
   }
 
-  return resolve(await scanWithKey(c, apiKey, input, fetchImpl));
+  return resolve(await scanWithKey(c, apiKey, input, fetchImpl, secondKey));
 }
 
 // One provider's scan with an already-decrypted key. Shared by the pipeline and
 // the Test connection endpoint so the two can never call a provider differently.
-// The base URL comes ONLY from the provider's region allowlist.
+// The base URL comes ONLY from the provider's region allowlist. `secondKey` is the
+// decrypted second credential, for a provider with `secondKeyLabel` (Datadog).
 export async function scanWithKey(
   c: StoredConfig,
   apiKey: string,
   input: ForwardInput,
   fetchImpl: typeof fetch = fetch,
+  secondKey = "",
 ): Promise<ExternalGuardrailResult> {
   const spec = PROVIDERS[c.provider];
   if (!spec.supported) return { provider: c.provider, outcome: "error", error: `${spec.label} is not supported yet`, latencyMs: 0 };
@@ -653,6 +733,13 @@ export async function scanWithKey(
       // The ray as Cato's session id: one request per session, since the Worker has no
       // conversation id — but it joins Cato's console to the edge verdict and our log.
       return scanPromptWithCato({ baseUrl, apiKey, prompt: input.prompt, sessionId: ray }, fetchImpl);
+    case "datadog-ai-guard":
+      // No ray: AI Guard has no request or session id field, and HTTP evaluations send no trace.
+      if (!secondKey) return { provider: c.provider, outcome: "error", error: "No application key saved", latencyMs: 0 };
+      return scanPromptWithDatadog(
+        { baseUrl, apiKey, appKey: secondKey, prompt: input.prompt, response: input.response },
+        fetchImpl,
+      );
   }
 }
 
