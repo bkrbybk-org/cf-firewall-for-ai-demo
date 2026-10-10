@@ -5,7 +5,7 @@
 // misfiles a rule into "not AI Security" — the demo then reports that its own
 // controls did nothing, or credits them for a rule they never ran.
 import { describe, expect, it } from "vitest";
-import { aiManagedRules, flattenCustomRules, isLlmExpression } from "./cloudflare";
+import { aiManagedRules, flattenCustomRules, isLlmExpression, reasonCodeOf } from "./cloudflare";
 
 describe("isLlmExpression", () => {
   it("matches the cf.llm.* detection fields the demo's rules use", () => {
@@ -88,5 +88,32 @@ describe("aiManagedRules", () => {
         { id: "c", description: "Detects prompt injection attacks and jailbreaking" },
       ]),
     ).toEqual([{ id: "a", name: "Detects PII categories in the prompt" }]);
+  });
+});
+
+// The zone's real LLM block rule response (rule definition read 2026-10-10).
+describe("reasonCodeOf", () => {
+  const response = (content: string, content_type = "application/json") => ({ content, content_type });
+  const body = JSON.stringify({
+    error: "request_blocked",
+    reason_code: "LLM_PROMPT_INJECTION_BLOCKED",
+    message: "This request was blocked by the AI security policy.",
+  });
+  it("reads a block rule's Custom JSON reason_code — the code only", () => {
+    expect(reasonCodeOf({ action: "block", action_parameters: { response: response(body) } })).toBe("LLM_PROMPT_INJECTION_BLOCKED");
+  });
+  it("nothing for a non-block rule, a non-JSON or broken response, or a value that is not a code", () => {
+    expect(reasonCodeOf({ action: "log", action_parameters: { response: response(body) } })).toBeUndefined();
+    expect(reasonCodeOf({ action: "block", action_parameters: { response: response(body, "text/html") } })).toBeUndefined();
+    expect(reasonCodeOf({ action: "block", action_parameters: { response: response("{not json") } })).toBeUndefined();
+    expect(reasonCodeOf({ action: "block" })).toBeUndefined();
+    for (const code of ["lower_case", "HAS SPACE", "", 42, "X".repeat(65)]) {
+      expect(reasonCodeOf({ action: "block", action_parameters: { response: response(JSON.stringify({ reason_code: code })) } })).toBeUndefined();
+    }
+  });
+  it("flattenCustomRules carries it, inside a nested ruleset too", () => {
+    const entry = [{ id: "x1", action: "execute", action_parameters: { id: "rs1" } }];
+    const nested = new Map([["rs1", { name: "LLM Protection Ruleset", rules: [{ id: "b1", description: "Block LLM Injection", action: "block", expression: "cf.llm.prompt.injection_score le 15", action_parameters: { response: response(body) } }] }]]);
+    expect(flattenCustomRules(entry, nested)[0]).toMatchObject({ reasonCode: "LLM_PROMPT_INJECTION_BLOCKED", ruleset: "LLM Protection Ruleset" });
   });
 });

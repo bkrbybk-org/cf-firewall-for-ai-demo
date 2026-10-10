@@ -14,6 +14,8 @@ import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
 import { Switch } from "./Switch";
 import { Verdict } from "./Verdict";
 import { useShowTurnDetails } from "../hooks/useShowTurnDetails";
+import { useZoneRules } from "../hooks/useZoneRules";
+import { ruleForReasonCode } from "../lib/edgeBlock";
 
 const NOT_STREAMED_WHY: Record<NotStreamedReason, string> = {
   "guarded-gateway":
@@ -111,10 +113,15 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
       /* leave raw */
     }
   }
+  // A reason code this app has not seen in a payload is read against the zone's live rule definitions: which
+  // rule answers with it, and what that rule's expression detects (lib/edgeBlock.ts ruleForReasonCode).
+  const zoneRules = useZoneRules();
+  const fromRule = zoneRules.source === "live" ? ruleForReasonCode(m.code, zoneRules.rules) : null;
+  const detection = m.detection ?? fromRule?.detection;
   // Attribution only when the response identified itself. A bare 403 is
   // evidence the edge refused the request, not evidence of who did it.
-  const attributed = !!(m.detection && DETECTION_LABELS[m.detection]);
-  const label = attributed ? DETECTION_LABELS[m.detection!] : null;
+  const attributed = !!(detection && DETECTION_LABELS[detection]);
+  const label = attributed ? DETECTION_LABELS[detection!] : null;
   // A rule that answered with its own reason_code identified itself even when this
   // app does not know what that code means: show its words, claim no detection type.
   const selfIdentified = attributed || !!m.code;
@@ -140,6 +147,14 @@ function BlockedCard({ m }: { m: Extract<Msg, { kind: "blocked" }> }) {
           <>
             {" "}
             Rule's reason code <span className="font-mono break-all">{m.code}</span>.
+          </>
+        )}
+        {fromRule && (
+          <>
+            {" "}
+            Per the zone's rule definition{fromRule.rulesets.length === 1 ? ` (${fromRule.rulesets[0]})` : ""}, that code
+            is answered by <b className="font-semibold text-text">{fromRule.name}</b>
+            {!m.detection && fromRule.detection ? ", which detects this" : ""}.
           </>
         )}{" "}
         {attributed

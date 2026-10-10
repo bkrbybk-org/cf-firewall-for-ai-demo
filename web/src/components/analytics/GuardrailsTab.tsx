@@ -4,10 +4,12 @@
 // The honesty rules travel with the numbers: "≈" when Analytics Engine sampled rows (counts are estimates), "≥"
 // when the read hit its row cap (counts are a floor), "—" for a latency nobody measured — never 0 ms — and every
 // card states its window and which traffic it covers.
-import { AlertTriangle, ShieldAlert, ShieldCheck, ShieldX, Split } from "lucide-react";
+import { AlertTriangle, Download, ShieldAlert, ShieldCheck, ShieldX, Split } from "lucide-react";
 import { bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, type SeriesDef } from "./EventSeries";
-import { detectionLabel, providerLabel } from "../../lib/guardrailView";
+import { detectionLabel, providerFullLabel, providerLabel } from "../../lib/guardrailView";
+import { downloadFile } from "../../lib/export";
+import { buildGuardrailReport, guardrailReportFilename, guardrailReportToMarkdown } from "../../lib/guardrailReport";
 import type { GuardrailAnalytics, GuardrailVendorStats } from "../../lib/types";
 
 // The verdict palette the chat card uses: block red, allow with alerts amber, clean allow green; "no verdict"
@@ -26,6 +28,13 @@ export const SOURCE_LABEL: Record<GuardrailSource, string> = {
   redteam: "Red Team runs",
   all: "all traffic",
 };
+
+// The tab as a file: exactly the numbers on screen, with the same window, traffic and honesty marks.
+function download(d: GuardrailAnalytics, ext: "md" | "json") {
+  const r = buildGuardrailReport(d, providerFullLabel);
+  if (ext === "md") downloadFile(guardrailReportFilename(r, "md"), guardrailReportToMarkdown(r, detectionLabel), "text/markdown");
+  else downloadFile(guardrailReportFilename(r, "json"), JSON.stringify(r, null, 2), "application/json");
+}
 
 function rangeLabel(h: number): string {
   return h === 1 ? "last hour" : h === 24 ? "last 24h" : h === 168 ? "last 7 days" : `last ${h}h`;
@@ -87,6 +96,26 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
           </div>
         </div>
       )}
+
+      <div className="flex flex-wrap items-center justify-end gap-2 text-[11.5px]">
+        <span className="mr-auto text-subtle">{window}</span>
+        <button
+          type="button"
+          onClick={() => download(d, "md")}
+          title="Download this window as a Markdown report: vendor names, outcomes and detector names only — no prompt or reply text"
+          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-1 text-muted transition hover:text-text"
+        >
+          <Download size={12} /> Report (.md)
+        </button>
+        <button
+          type="button"
+          onClick={() => download(d, "json")}
+          title="Download the same numbers as JSON, to re-check or chart elsewhere"
+          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface px-2 py-1 text-muted transition hover:text-text"
+        >
+          <Download size={12} /> Data (.json)
+        </button>
+      </div>
 
       <div className="flex flex-wrap gap-3">
         <Tile

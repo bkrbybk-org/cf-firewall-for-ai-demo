@@ -129,6 +129,7 @@ export interface VendorStats {
   p50Ms: number | null;
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
+  lastTs: number | null; // the newest check that ran (not not_run), epoch ms — Settings' "last checked"
 }
 
 export interface SeriesPoint {
@@ -183,6 +184,7 @@ export function aggregate(
         s: {
           provider: r.provider, dir: r.dir, checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
           error: 0, failedOpen: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
+          lastTs: null,
         },
         ms: [],
         det: new Map(),
@@ -196,6 +198,7 @@ export function aggregate(
       continue;
     }
     s.checked += w;
+    s.lastTs = Math.max(s.lastTs ?? 0, r.ts);
     totals.verdicts += w;
     if (r.decided) s.decided += w;
     if (r.incomplete) s.incomplete += w;

@@ -94,6 +94,10 @@ export interface ZoneRuleLive {
   enabled: boolean;
   llm: boolean; // derived from the expression, see isLlmExpression
   ruleset?: string; // the custom ruleset it lives in; absent for a top-level rule
+  // A block rule's own `reason_code`, read from its Custom JSON response definition — so a block card can name the
+  // rule that answered. Only the code: the response's message and detail are the operator's text and already
+  // reach the user in the block body itself.
+  reasonCode?: string;
 }
 
 type RulesetsListData = {
@@ -106,7 +110,7 @@ export interface RawRule {
   action?: string;
   expression?: string;
   enabled?: boolean;
-  action_parameters?: { id?: string };
+  action_parameters?: { id?: string; response?: { content?: string; content_type?: string } };
   categories?: string[];
 }
 type RulesetData = {
@@ -125,8 +129,23 @@ const MANAGED_RULES_PHASE = "http_request_firewall_managed";
 // not the ruleset's name, is what classifies a rule.
 const AI_MANAGED_CATEGORY = "firewall-for-ai";
 
+// The `reason_code` of a block rule's Custom JSON response, or undefined. Seen live 2026-10-10: the LLM block
+// rules answer `{error, reason_code, message, detail, support_hint}` with content_type application/json. A code
+// must look like one (upper snake case) — anything else in that field is not shown.
+export function reasonCodeOf(r: RawRule): string | undefined {
+  const resp = r.action === "block" ? r.action_parameters?.response : undefined;
+  if (!resp?.content || !/json/i.test(resp.content_type ?? "")) return undefined;
+  try {
+    const code = (JSON.parse(resp.content) as { reason_code?: unknown }).reason_code;
+    return typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function toLive(r: RawRule, parent?: { enabled: boolean; name: string }): ZoneRuleLive {
   const expression = String(r.expression ?? "");
+  const reasonCode = reasonCodeOf(r);
   return {
     id: String(r.id ?? ""),
     // Matching against firewallEventsAdaptive is by id first, then description, so an
@@ -138,6 +157,7 @@ function toLive(r: RawRule, parent?: { enabled: boolean; name: string }): ZoneRu
     enabled: r.enabled !== false && (parent ? parent.enabled : true),
     llm: isLlmExpression(expression),
     ...(parent ? { ruleset: parent.name } : {}),
+    ...(reasonCode ? { reasonCode } : {}),
   };
 }
 

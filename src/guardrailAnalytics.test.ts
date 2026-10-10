@@ -80,6 +80,12 @@ describe("aggregate — hand-computed", () => {
     expect(v("prisma-airs", "reply")).toMatchObject({ checked: 1, allow: 1, redaction: 1 });
   });
 
+  it("lastTs is the newest check that RAN — a not-run row does not count as checked", () => {
+    expect(v("prisma-airs").lastTs).toBe(Date.parse("2026-10-09T11:40:00Z"));
+    // Cato: 10:15 not run, 11:05 an error — an error still ran, so it is the last check.
+    expect(v("cato-ai-security").lastTs).toBe(Date.parse("2026-10-09T11:05:00Z"));
+  });
+
   it("latency is nearest rank over the verdicts that ran: [100, 300, 5000] → p50 300, p95 5000", () => {
     expect(v("prisma-airs")).toMatchObject({ latencyN: 3, p50Ms: 300, p95Ms: 5000 });
     expect(v("lakera-guard")).toMatchObject({ latencyN: 3, p50Ms: 40, p95Ms: 60 });
@@ -143,7 +149,7 @@ describe("aggregate — latency edge cases", () => {
     const out = aggregate(rows([{ provider: "cisco-ai-defense", dir: "reply", outcome: "not_run", ms: -1 }]), {
       hours: 1, now: NOW, source: "chat", rowsRead: 1, rowsDropped: 0,
     });
-    expect(out.vendors[0]).toMatchObject({ checked: 0, notRun: 1, latencyN: 0, p50Ms: null, p95Ms: null });
+    expect(out.vendors[0]).toMatchObject({ checked: 0, notRun: 1, latencyN: 0, p50Ms: null, p95Ms: null, lastTs: null });
   });
 });
 

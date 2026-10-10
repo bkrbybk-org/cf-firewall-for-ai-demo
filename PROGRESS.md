@@ -626,6 +626,50 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-10 — Vendor health in Settings; External guardrails export; block reasons from the live rules
+
+**Asked for:** "do 2-3, 14" from the suggestion table (#2 vendor health, #3 export the External guardrails tab, #14
+block reasons from the live rule definitions). Deploy `2a8ef221-253d-4ac4-8964-c2725e733122`, then `b6e364a4-78ef-4f6e-b3b0-d64de42714d4` (openapi text only).
+
+**#2 Vendor health** (`web/src/lib/vendorHealth.ts`). Each Settings provider row shows a line from the last 24h of
+verdicts, all traffic (a Red Team call is a real vendor call too): "Last checked 22 h ago · last 24h: 18 checks, every one
+answered", or "1 of 14 checks got no verdict (7%: 1 fail open)", or "No checks in the last 24h". States: **unknown**
+when the data could not be read (never "healthy"), **idle** with no check (never "0% errors"), **degraded** when a check
+ended without a verdict — a block is an answer, not a fault. "≈" when sampled. The aggregate gained `lastTs` per vendor
+and check (newest check that ran; null when none). Locally the config comes from local D1 and the health from the
+deployed Worker's dataset, so a local row can read "no API key" next to "last checked" — on prod both are one deployment.
+
+**#3 Export** (`web/src/lib/guardrailReport.ts`). Report (.md) and Data (.json) buttons on the tab, built from exactly
+the response the tab shows: window and traffic stated, the Estimated / floor notes and "≈" / "≥" marks carried, "—" for
+unmeasured latency, every name through `mdText`. Schema `cf-ai-guardrail-verdicts/1`.
+
+**#14 Block reasons from the live rules.** The rule definitions were read live (2026-10-10): three codes in the LLM
+rulesets — `LLM_PROMPT_INJECTION_BLOCKED` (Block LLM Injection, `cf.llm.prompt.injection_score le 15`),
+`LLM_PII_BLOCKED` (Block LLM PII Categories, in both the Protection and Monitor rulesets) and `LLM_UNSAFE_TOPIC_BLOCKED`
+(Block LLM Unsafe Categories); all effectively off, as intended (#28).
+- `src/cloudflare.ts` `reasonCodeOf()`: a block rule's Custom JSON `reason_code` (upper snake case only — never the
+  message), carried as `reasonCode` on `/api/zone-rules`.
+- `web/src/lib/edgeBlock.ts` `ruleForReasonCode()` / `detectionOfExpression()`: a code no payload has shown is read
+  against those rules — the rule's name, its ruleset(s), and the detection its EXPRESSION tests (injection / pii /
+  unsafe_topic), only when every rule holding the code agrees. Disabled rules count: a block body with a code proves a
+  rule answered, and these rules are off between demos. The static `REASON_CODE_DETECTIONS` (seen in a payload) still
+  wins.
+- The block card: "Per the zone's rule definition (LLM Protection Ruleset), that code is answered by **Block LLM
+  Injection**", and the headline gets the detection label.
+
+**Verified:**
+- **Tests:** 819 (+20), 0 type errors, build clean. **Mutation-verified 13 of 13** (after adding an escaped vendor label
+  case: the first pass missed `mdText` on the label).
+- **Local browser:** Settings rows show the health line in dark and light (Cato "degraded" on real data); both export
+  files captured in the page — right file names, window, `sampled: true`, totals equal to the tab.
+- **Prod:** smoke passes; `/api/zone-rules` lists the five block rules with their codes; `/api/guardrail-analytics`
+  returns `lastTs` per vendor (null for Cisco reply checks — never run); the bundle carries the new strings.
+- **Not seen in a browser:** the block card's new line — no edge block can happen while the AI rules are on Log. Covered
+  by unit tests of the resolver against the live rule shapes.
+- **Seen in the data:** a Red Team prompt (2026-10-09 09:18 UTC) where Cato answered HTTP 200 with a verdict the parser
+  did not recognise, and Cato's fail-open let it through — consistent with the undocumented `monitor_action` the user
+  deferred (memory: Cato guard policy). Not provable from the data: error text is never stored.
+
 ### 2026-10-09 — External guardrails tab on Analytics (verdicts in Analytics Engine); Gateway tab "—"
 
 **Asked for:** "review analytics page - can we have other guardrails show in this page as well?", then "can we use live

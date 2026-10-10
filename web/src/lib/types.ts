@@ -46,6 +46,7 @@ export interface ZoneRuleLive {
   enabled: boolean; // effective: false when the rule, or the execute rule running its ruleset, is off
   llm: boolean; // expression references cf.llm.* — an AI Security rule
   ruleset?: string; // the custom ruleset it lives in (opened from an execute rule); absent = top level
+  reasonCode?: string; // a block rule's Custom JSON reason_code, from its definition
 }
 
 export interface ZoneRules {
@@ -602,6 +603,7 @@ export interface GuardrailVendorStats {
   p50Ms: number | null; // null when nothing was timed — never 0
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
+  lastTs: number | null; // newest check that ran, epoch ms
 }
 
 export interface GuardrailAnalytics {

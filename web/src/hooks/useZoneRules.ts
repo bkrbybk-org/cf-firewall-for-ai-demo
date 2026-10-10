@@ -21,6 +21,7 @@ export interface UiZoneRule {
   detail?: string;
   enabled: boolean;
   llm: boolean;
+  reasonCode?: string; // live only: a block rule's Custom JSON reason_code (from its definition)
 }
 
 export type ZoneRuleSource = "live" | "fallback";
@@ -65,6 +66,7 @@ function load(): Promise<void> {
             detail: r.expression,
             enabled: r.enabled,
             llm: r.llm,
+            ...(r.reasonCode ? { reasonCode: r.reasonCode } : {}),
           })),
           source: "live",
           ...(res.aiManaged ? { aiManagedNames: res.aiManaged.map((m) => m.name.toLowerCase()) } : {}),

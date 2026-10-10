@@ -27,6 +27,7 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { scanIdLabel } from "../lib/guardrailView";
 import {
   getExternalGuardrails,
+  getGuardrailAnalytics,
   getModels,
   saveExternalGuardrail,
   saveGuardrailPipeline,
@@ -39,10 +40,12 @@ import type {
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
   GuardrailAccess,
+  GuardrailAnalytics,
   GuardrailPipelineUpdate,
   GuardrailTestSample,
   ModelsResponse,
 } from "../lib/types";
+import { healthText, vendorHealth, type VendorHealth } from "../lib/vendorHealth";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[13px] text-text placeholder:text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50";
@@ -281,8 +284,11 @@ function ProviderCard({
   locked = false,
   open,
   onOpenChange,
+  health,
 }: {
   config: ExternalGuardrailConfig;
+  // Is it answering? From the verdict data (lib/vendorHealth.ts); undefined while loading.
+  health?: VendorHealth;
   locked?: boolean; // not a guardrail admin — read-only
   // A row in a collapsible list, closed by default (the page owns which are open,
   // so the in-page nav and deep links can open the one they point at).
@@ -477,6 +483,22 @@ function ProviderCard({
                   <span className="text-subtle"> · saved {new Date(config.updatedAt).toLocaleString()}</span>
                 )}
               </span>
+              {health && (
+                <span className="mt-0.5 flex items-start gap-1.5 text-[11.5px] font-normal leading-relaxed text-muted">
+                  <span
+                    aria-hidden
+                    className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${
+                      health.state === "ok" ? "bg-cf-green" : health.state === "degraded" ? "bg-cf-amber" : "bg-subtle"
+                    }`}
+                  />
+                  <span>
+                    <span className="sr-only">
+                      {health.state === "ok" ? "Healthy: " : health.state === "degraded" ? "Degraded: " : ""}
+                    </span>
+                    {healthText(health, Date.now())}
+                  </span>
+                </span>
+              )}
             </span>
           </button>
         </h4>
@@ -848,6 +870,15 @@ export function SettingsPage() {
     load();
   }, [load]);
 
+  // Vendor health: the last 24h of verdicts, all traffic, read once per visit. undefined = still loading (no line
+  // shown); null = could not be read (each row then says "health unknown", never "healthy").
+  const [verdicts, setVerdicts] = useState<GuardrailAnalytics | null | undefined>(undefined);
+  useEffect(() => {
+    getGuardrailAnalytics(24, "all")
+      .then((d) => setVerdicts(d))
+      .catch(() => setVerdicts(null));
+  }, []);
+
   // Shared by the diagram's writes. A rejected update comes back as { error }
   // with no usable state, so hand the message back and leave the page alone.
   const accept = (s: (ExternalGuardrailsState & { error?: string }) | null): string | null => {
@@ -1007,6 +1038,7 @@ export function SettingsPage() {
                           locked={state.access?.canEdit === false}
                           open={openRows.has(c.provider)}
                           onOpenChange={(on) => setRowOpen(c.provider, on)}
+                          health={verdicts === undefined ? undefined : vendorHealth(c.provider, verdicts)}
                         />
                       </li>
                     ))}
