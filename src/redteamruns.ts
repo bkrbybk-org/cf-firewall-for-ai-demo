@@ -66,7 +66,7 @@ export const RT_VENDOR_VERDICTS = ["block", "allow", "alerts", "error", "notRun"
 export type RtVendorVerdictServer = (typeof RT_VENDOR_VERDICTS)[number];
 
 export interface StoredVendors {
-  mode: "parallel" | "sequential";
+  mode: "parallel" | "sequential" | "quorum";
   verdicts: { provider: string; verdict: RtVendorVerdictServer; latencyMs?: number }[];
   latencyMs?: number; // the whole guardrail stage for this prompt
 }
@@ -172,7 +172,7 @@ function toPromptPreview(rawPrompt: unknown): string {
 // words get through, so no vendor text can be smuggled into storage here.
 export function toStoredVendorsJson(v: unknown, providers: readonly string[] = PROVIDER_IDS): string | null {
   if (!isPlainObject(v)) return null;
-  if (v.mode !== "parallel" && v.mode !== "sequential") return null;
+  if (v.mode !== "parallel" && v.mode !== "sequential" && v.mode !== "quorum") return null;
   if (!Array.isArray(v.verdicts) || v.verdicts.length === 0 || v.verdicts.length > providers.length) return null;
   const out: ([string, string] | [string, string, number])[] = [];
   const seen = new Set<string>();

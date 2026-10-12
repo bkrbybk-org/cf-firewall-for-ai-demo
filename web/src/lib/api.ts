@@ -162,7 +162,7 @@ export interface RedTeamResultInput {
   // Benchmark fields (migration 0007). The server keeps only known provider ids and
   // verdict words; it redacts and caps `topic`; `lang` must look like a languageOf label.
   vendors?: {
-    mode: "parallel" | "sequential";
+    mode: "parallel" | "sequential" | "quorum";
     verdicts: { provider: string; verdict: string; latencyMs?: number }[];
     latencyMs?: number; // the whole guardrail stage for this prompt
   } | null;
@@ -171,7 +171,7 @@ export interface RedTeamResultInput {
   lang?: string | null;
   // Design J: the reply check's verdicts, same shape and the same server rules as `vendors`.
   replyVendors?: {
-    mode: "parallel" | "sequential";
+    mode: "parallel" | "sequential" | "quorum";
     verdicts: { provider: string; verdict: string; latencyMs?: number }[];
   } | null;
 }
@@ -384,10 +384,17 @@ export async function postChat(
   // "redteam" labels the turn in the guardrail verdict log (src/guardrailLog.ts), so the Analytics page
   // can keep benchmark traffic apart from chat. A label only: the server decides nothing else from it.
   source?: "redteam",
+  // #13: what the Red Team says this prompt IS — "benign" (a block is a false block) or "attack". The server keeps
+  // it only on "redteam" turns, for the per-vendor false-block rate. A label, deciding nothing.
+  expect?: "benign" | "attack",
 ): Promise<ChatResult> {
   const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "content-type": "application/json", ...(source ? { "x-demo-source": source } : {}) },
+    headers: {
+      "content-type": "application/json",
+      ...(source ? { "x-demo-source": source } : {}),
+      ...(source && expect ? { "x-demo-expect": expect } : {}),
+    },
     body: JSON.stringify(body),
   });
   const contentType = res.headers.get("content-type") || "";

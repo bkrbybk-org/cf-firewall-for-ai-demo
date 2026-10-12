@@ -46,6 +46,7 @@ import type {
   ModelsResponse,
 } from "../lib/types";
 import { healthText, vendorHealth, type VendorHealth } from "../lib/vendorHealth";
+import { TestAllVendors } from "../components/settings/TestAllVendors";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[13px] text-text placeholder:text-subtle focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50";
@@ -302,6 +303,7 @@ function ProviderCard({
   const [region, setRegion] = useState(config.region);
   const [profileName, setProfileName] = useState(config.profileName);
   const [failMode, setFailMode] = useState(config.failMode);
+  const [applyRedaction, setApplyRedaction] = useState(!!config.applyRedaction);
   const [apiKey, setApiKey] = useState("");
   const [secondKey, setSecondKey] = useState(""); // only used when config.secondKeyLabel is set
   const [toggleErr, setToggleErr] = useState<string | null>(null);
@@ -316,6 +318,7 @@ function ProviderCard({
     region !== config.region ||
     profileName !== config.profileName ||
     failMode !== config.failMode ||
+    applyRedaction !== !!config.applyRedaction ||
     apiKey !== "" ||
     secondKey !== "";
   // Every credential the provider needs is saved — one key, or both of a pair.
@@ -352,6 +355,7 @@ function ProviderCard({
     setSaveStatus("saving");
     setSaveErr(null);
     const update: ExternalGuardrailUpdate = { provider: p, region, profileName, failMode };
+    if (config.redactionSupported) update.applyRedaction = applyRedaction;
     if (apiKey) update.apiKey = apiKey;
     if (secondKey) update.secondKey = secondKey;
     try {
@@ -445,6 +449,7 @@ function ProviderCard({
     savedRegion?.label ?? config.region,
     config.requiresProfile || config.profileName ? config.profileName || `no ${config.profileLabel}` : null,
     config.failMode === "block" ? "fail closed" : "fail open",
+    config.applyRedaction ? "redaction applied" : null,
   ].filter(Boolean) as string[];
 
   return (
@@ -688,6 +693,32 @@ function ProviderCard({
             />
           </div>
         </fieldset>
+
+        {/* #11. Only where this vendor's redacted prompt has been seen in a real response — elsewhere the server
+            refuses the switch, so it is not offered. */}
+        {config.redactionSupported && (
+          <div className="lg:col-span-2">
+            <label className="flex items-start gap-2 text-[12.5px] text-text">
+              <input
+                type="checkbox"
+                checked={applyRedaction}
+                disabled={saving}
+                onChange={(e) => setApplyRedaction(e.target.checked)}
+                className="mt-0.5 accent-[var(--color-accent)]"
+              />
+              <span>
+                <b>Send the redacted prompt to the model</b>
+                <span className="block text-[11.5px] leading-relaxed text-muted">
+                  When {config.label} allows a prompt but masks part of it, the model receives its masked prompt
+                  instead of the original. Off: the redaction is only reported. One redaction per turn — the first in
+                  the pipeline order — and every guardrail still scans the original. If {config.label} says it
+                  redacted but its masked text cannot be read, that counts as an error and the fail mode above
+                  decides.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -1043,6 +1074,8 @@ export function SettingsPage() {
                       </li>
                     ))}
                   </ul>
+                  {/* #8: every fixed test on every saved vendor in one table — the evidence for verifying the parsers. */}
+                  <TestAllVendors providers={state.providers} canEdit={state.access?.canEdit !== false} />
                 </Group>
               )}
 

@@ -11,6 +11,7 @@ import { detectionLabel, providerFullLabel, providerLabel } from "../../lib/guar
 import { downloadFile } from "../../lib/export";
 import { buildGuardrailReport, guardrailReportFilename, guardrailReportToMarkdown } from "../../lib/guardrailReport";
 import type { GuardrailAnalytics, GuardrailVendorStats } from "../../lib/types";
+import { labelledRows, type RateCell } from "../../lib/falseBlocks";
 
 // The verdict palette the chat card uses: block red, allow with alerts amber, clean allow green; "no verdict"
 // grey, because an error is not a decision either way.
@@ -157,6 +158,8 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
             <VendorTable vendors={d.vendors} n={n} buckets={d.series.map((p) => p.t)} bucket={d.bucket} />
           </Card>
 
+          {d.source !== "chat" && <FalseBlocks vendors={d.vendors} n={n} window={window} />}
+
           <Card title="Verdicts over time" subtitle={`per ${bucketLabel(d.bucket)} · every vendor's verdicts, by outcome · ${window}`}>
             <EventSeries rows={d.series} bucket={d.bucket} defs={GUARDRAIL_SERIES} ariaLabel="External guardrail verdicts over time" />
           </Card>
@@ -276,6 +279,64 @@ export function LatencySparkline({
   );
 }
 
+// #13: false blocks and catches per vendor, from the Red Team's own labels (lib/falseBlocks.ts says what counts).
+function FalseBlocks({ vendors, n, window }: { vendors: GuardrailVendorStats[]; n: (v: number) => string; window: string }) {
+  const rows = labelledRows(vendors);
+  const rate = (c: RateCell, tone: string) =>
+    c.verdicts === 0 ? (
+      <span className="text-subtle">—</span>
+    ) : (
+      <>
+        <span className={`font-bold ${tone}`}>{c.rate}</span>{" "}
+        <span className="text-[10.5px] text-subtle">
+          {n(c.block)} of {n(c.verdicts)}
+          {c.small ? " · small sample" : ""}
+        </span>
+      </>
+    );
+  return (
+    <Card
+      title="Red Team: false blocks and catches"
+      subtitle={`blocks on the Red Team's harmless prompts (false blocks) and on its attacks · over verdicts, errors left out · ${window}`}
+    >
+      {rows.length === 0 ? (
+        <p className="text-sm text-muted">
+          No labelled Red Team verdicts in this window. The Red Team page labels each prompt harmless or attack from
+          2026-10-12 on; run a corpus with harmless rows to measure false blocks.
+        </p>
+      ) : (
+        <div className="relative overflow-x-auto">
+          <table className="w-full min-w-[560px] border-collapse text-[12px]">
+            <thead>
+              <tr className="border-b border-line text-left text-[11px] text-subtle">
+                <th className="py-1.5 pr-3 font-semibold">Vendor</th>
+                <th className="py-1.5 pr-3 font-semibold" title="Blocks on harmless prompts ÷ verdicts on harmless prompts">
+                  false-block rate
+                </th>
+                <th className="py-1.5 font-semibold" title="Blocks on attacks ÷ verdicts on attacks">
+                  catch rate
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={`${r.provider}|${r.dir}`} className="border-b border-line/60 last:border-0">
+                  <td className="py-2 pr-3">
+                    <span className="font-semibold text-text">{providerLabel(r.provider)}</span>{" "}
+                    <span className="rounded-full border border-line px-1.5 text-[10.5px] text-subtle">{r.dir}</span>
+                  </td>
+                  <td className="py-2 pr-3 font-mono tabular-nums">{rate(r.falseBlocks, r.falseBlocks.block > 0 ? "text-cf-amber" : "text-text")}</td>
+                  <td className="py-2 font-mono tabular-nums">{rate(r.catches, "text-text")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function VendorTable({
   vendors,
   n,
@@ -317,11 +378,21 @@ function VendorTable({
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-text">{n(v.checked)}</td>
               <td className={`py-2 pr-3 text-right font-mono tabular-nums ${v.block > 0 ? "font-bold text-cf-red" : "text-muted"}`}>
                 {n(v.block)}
+                {(v.outvoted ?? 0) > 0 && (
+                  <div className="text-[10.5px] font-normal text-cf-amber" title="Quorum mode: blocked, but too few other guardrails voted to stop the turn">
+                    {n(v.outvoted!)} outvoted
+                  </div>
+                )}
               </td>
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-muted">
                 {n(v.allow)}
                 {v.alerts > 0 && <div className="text-[10.5px] text-cf-amber">{n(v.alerts)} with alerts</div>}
-                {v.redaction > 0 && <div className="text-[10.5px] text-cf-amber">{n(v.redaction)} redaction not applied</div>}
+                {(v.redactionApplied ?? 0) > 0 && (
+                  <div className="text-[10.5px] text-cf-green">{n(v.redactionApplied!)} redaction applied</div>
+                )}
+                {v.redaction - (v.redactionApplied ?? 0) > 0 && (
+                  <div className="text-[10.5px] text-cf-amber">{n(v.redaction - (v.redactionApplied ?? 0))} redaction not applied</div>
+                )}
               </td>
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-muted">
                 {n(v.error + v.failedOpen)}

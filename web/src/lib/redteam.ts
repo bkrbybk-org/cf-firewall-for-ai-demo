@@ -478,7 +478,7 @@ export interface RtRunResult {
   // Absent when the request never reached the Worker (the edge refused it) or the
   // response carried no pipeline. Saved with a run since migration 0007 (RtStoredResult.vendors).
   vendors?: RtVendorOutcome[];
-  pipelineMode?: "sequential" | "parallel";
+  pipelineMode?: "sequential" | "parallel" | "quorum";
   // The whole external-guardrail stage for this prompt — what it added before the
   // model: the slowest call in parallel mode, the sum in sequential.
   pipelineLatencyMs?: number;
@@ -487,7 +487,7 @@ export interface RtRunResult {
   // Scored as counts only (lib/replyCounts.ts): an attack prompt does not make its reply
   // harmful, so there is no reply catch rate.
   replyVendors?: RtVendorOutcome[];
-  replyPipelineMode?: "sequential" | "parallel";
+  replyPipelineMode?: "sequential" | "parallel" | "quorum";
 }
 
 // One external guardrail's answer for one attack. "alerts" is a Detect-mode
@@ -720,14 +720,14 @@ export interface RtStoredResult {
   promptPreview?: string | null;
   // Benchmark fields (migration 0007) — absent/null on runs saved before it.
   vendors?: RtVendorOutcome[] | null;
-  pipelineMode?: "sequential" | "parallel" | null;
+  pipelineMode?: "sequential" | "parallel" | "quorum" | null;
   pipelineLatencyMs?: number | null;
   expected?: "allow" | null; // harmless row: kept for false blocks, never in totals or diffRuns
   topic?: string | null;
   lang?: string | null;
   // Design J (migration 0008): the reply check; null on runs that did not check replies.
   replyVendors?: RtVendorOutcome[] | null;
-  replyPipelineMode?: "sequential" | "parallel" | null;
+  replyPipelineMode?: "sequential" | "parallel" | "quorum" | null;
 }
 
 // A saved run's metadata — everything GET /api/redteam-runs (list) returns

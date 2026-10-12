@@ -152,8 +152,9 @@ alters what a customer sees in a demo. State it and let them choose.
   probe there does prove a path exists. A provider stays `verified: false` (an "unverified" badge) until a real
   verdict payload has been seen; the admin's *Test connection* returns the response's shape (names, types,
   booleans — never text, `src/responseShape.ts`) as that evidence. Unlike PANW and CrowdStrike, local workerd
-  CAN reach Cisco and Lakera, and both answer a bad key differently from a missing one, so a dummy-key test
-  there proves the key arrived. Cato AI Security also answers a made-up path with 404 and a bad key differently
+  could reach Cisco and Lakera, and both answer a bad key differently from a missing one, so a dummy-key test
+  there proves the key arrived — but on 2026-10-12 local workerd failed to reach Lakera too (`internal error`), so
+  test Lakera on prod as well. Cato AI Security also answers a made-up path with 404 and a bad key differently
   from a missing one (`{detail}` bodies), but local workerd cannot reach it — test it on prod. Cato's console
   sample was wrong too: the real allow is `required_action: null` (undocumented), sections are keyed by policy
   UUID with a `policy_name`, and there is an `invocation_id`. Cato's verdict is a

@@ -6,6 +6,7 @@
 // The data holds no prompt or reply text (src/guardrailLog.ts), only names. Names still go through mdText — a
 // vendor's detector name is text this app did not write, and must not be able to break a table or open a link.
 import { mdText } from "./benchmarkReport";
+import { labelledRows, type RateCell } from "./falseBlocks";
 import type { ExternalGuardrailProvider, GuardrailAnalytics } from "./types";
 
 export const GUARDRAIL_REPORT_SCHEMA = "cf-ai-guardrail-verdicts/1";
@@ -127,7 +128,31 @@ export function guardrailReportToMarkdown(r: GuardrailReport, detectionLabel: (n
         [2, 3, 4, 5, 6, 7],
       ),
       "",
-      "*Allow* counts every allow; allows with alerts and with a redaction requested (not applied) are inside it. *No verdict* is an error: the operator's fail mode decided. *Not run* is skipped — an earlier vendor stopped the turn, or the vendor does not check replies. Latency is nearest rank over the checks that ran.",
+      "*Allow* counts every allow; allows with alerts and with a redaction (applied or not) are inside it. *No verdict* is an error: the operator's fail mode decided. *Not run* is skipped — an earlier vendor stopped the turn, or the vendor does not check replies. Latency is nearest rank over the checks that ran.",
+      "",
+    );
+    const outvoted = r.vendors.filter((v) => (v.outvoted ?? 0) > 0);
+    const applied = r.vendors.filter((v) => (v.redactionApplied ?? 0) > 0);
+    if (outvoted.length) {
+      L.push(`*Outvoted* (quorum mode — blocked, but too few votes to stop the turn): ${outvoted.map((v) => `${mdText(v.label)} ${v.dir} ${n(v.outvoted!)}`).join(", ")}.`, "");
+    }
+    if (applied.length) {
+      L.push(`*Redaction applied* (the model received the vendor's redacted prompt): ${applied.map((v) => `${mdText(v.label)} ${n(v.redactionApplied!)}`).join(", ")}.`, "");
+    }
+  }
+
+  // #13: only where Red Team traffic is in the window — chat prompts carry no label.
+  const labelled = r.window.traffic === "chat" ? [] : labelledRows(r.vendors);
+  if (labelled.length) {
+    const rate = (c: RateCell) => (c.verdicts === 0 ? "—" : `${c.rate} (${n(c.block)} of ${n(c.verdicts)}${c.small ? ", small sample" : ""})`);
+    L.push("## Red Team: false blocks and catches", "");
+    L.push(
+      ...table(
+        ["Vendor", "Check", "False-block rate (harmless prompts)", "Catch rate (attacks)"],
+        labelled.map((x) => [mdText(r.vendors.find((v) => v.provider === x.provider)!.label), x.dir, rate(x.falseBlocks), rate(x.catches)]),
+      ),
+      "",
+      "Over verdicts (block + allow); errors are left out. Labels come from the Red Team page and exist from 2026-10-12 on.",
       "",
     );
   }

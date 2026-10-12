@@ -320,7 +320,7 @@ export interface RedTeamResultRow {
   promptPreview: string | null;
   // Since migration 0007; null on older rows ("not recorded", never a miss).
   vendors: {
-    mode: "parallel" | "sequential";
+    mode: "parallel" | "sequential" | "quorum";
     verdicts: { provider: string; verdict: string; latencyMs?: number }[];
     latencyMs?: number; // the whole guardrail stage for this prompt
   } | null;
@@ -387,6 +387,12 @@ export interface ExternalGuardrailResult {
   summary?: string;
   transformed?: boolean;
   detectOnly?: boolean;
+  // #11: the prompt as the vendor redacted it, kept only for a provider whose `applyRedaction` is on (scanProvider
+  // drops it otherwise). The user's own words with the PII masked — sent in the requester's JSON body only, never
+  // in a header, a log or a saved run (stripRaw()).
+  redactedPrompt?: string;
+  // #11: THIS vendor's redaction is what the model received (one per turn — pipeline.redactionAppliedBy).
+  redactionApplied?: boolean;
   // Only when the chat request asked for it (`includeRaw`): the vendor's response
   // as it came back. It can quote the prompt and what the vendor detected, so it is
   // sent to the requester in the JSON body and nowhere else — see stripRaw().
@@ -417,7 +423,9 @@ export interface GuardrailReport {
   detections: GuardrailReportDetection[];
 }
 
-export type GuardrailPipelineMode = "sequential" | "parallel";
+// "quorum" (#7): every guardrail runs together, as in parallel, and the turn stops only when at least `quorum` of
+// them vote to stop it (a block, or a fail-closed error).
+export type GuardrailPipelineMode = "sequential" | "parallel" | "quorum";
 
 export interface GuardrailPipelineConfig {
   mode: GuardrailPipelineMode;
@@ -426,6 +434,8 @@ export interface GuardrailPipelineConfig {
   // Design J: also check the model's reply (migration 0008). Turns are then never
   // streamed — a reply cannot be withheld once its tokens are on screen.
   scanReplies: boolean;
+  // How many votes stop the turn in quorum mode (migration 0010; default 2). Kept when another mode is picked.
+  quorum: number;
 }
 
 export interface GuardrailPipelineResult {
@@ -438,4 +448,9 @@ export interface GuardrailPipelineResult {
   notRun: { provider: ExternalGuardrailProvider; reason: string }[];
   stoppedBy: ExternalGuardrailProvider | null;
   latencyMs: number;
+  // Quorum mode only. `needed` is min(configured, guardrails that ran) — `clamped` says it was lowered, so "2 of
+  // 1" can never quietly mean "nothing can ever stop the turn". `votes`: blocks plus fail-closed errors.
+  quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean };
+  // #11: whose redacted prompt the model received instead of the original. Absent → the original prompt.
+  redactionAppliedBy?: ExternalGuardrailProvider;
 }

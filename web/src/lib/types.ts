@@ -167,7 +167,11 @@ export type GuardrailReportResponse =
 //   parallel   — all at once; the model runs only if EVERY one lets it through.
 //                The Worker waits for all of them (each is capped by its own
 //                timeout), so every verdict is shown. Latency = the slowest.
-export type GuardrailPipelineMode = "sequential" | "parallel";
+//   quorum     — all at once, like parallel, but the turn stops only when at least
+//                `quorum` of them vote to stop it: a block, or a fail-closed error.
+//                A fail-open error abstains. A lone block can be OUTVOTED — it is
+//                still that vendor's verdict and is always shown, never hidden.
+export type GuardrailPipelineMode = "sequential" | "parallel" | "quorum";
 
 export interface GuardrailPipelineConfig {
   mode: GuardrailPipelineMode;
@@ -178,6 +182,8 @@ export interface GuardrailPipelineConfig {
   // Design J: also check the model's reply. Turns are then never streamed. Absent
   // from an older Worker.
   scanReplies?: boolean;
+  // Votes needed to stop a turn in quorum mode (1–6). Absent from an older Worker.
+  quorum?: number;
 }
 
 // PUT /api/external-guardrails/pipeline. Omitted fields are left unchanged.
@@ -198,6 +204,12 @@ export interface GuardrailPipelineResult {
   // The guardrail whose result stopped the turn, or null when the turn went on.
   stoppedBy: ExternalGuardrailProvider | null;
   latencyMs: number; // wall clock for the whole pipeline
+  // Quorum mode only. `of`: guardrails that gave a verdict or voted (a fail-open error abstains and is not
+  // counted). `needed` = min(configured, of), at least 1; `clamped` when that lowered it. `votes`: blocks plus
+  // fail-closed errors. The turn stopped iff votes ≥ needed.
+  quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean };
+  // #11: the vendor whose redacted prompt the model received instead of the original.
+  redactionAppliedBy?: ExternalGuardrailProvider;
 }
 
 // What one forwarded prompt produced. `outcome` is what the Worker DID:
@@ -226,10 +238,16 @@ export interface ExternalGuardrailResult {
   incomplete?: boolean;
   policy?: string; // CrowdStrike AIDR: the policy its collector token evaluated
   summary?: string; // CrowdStrike AIDR: its own one-line description of the result
-  // CrowdStrike AIDR redacted something in the prompt. This app does NOT apply
-  // the redaction — the model gets the original prompt — so say so, never imply
-  // the model saw a cleaned version.
+  // The vendor redacted something in the prompt. Unless `redactionApplied`, this app
+  // did NOT apply it — the model got the original prompt — so say so, never imply the
+  // model saw a cleaned version.
   transformed?: boolean;
+  // #11: the operator opted in for this vendor and ITS redacted prompt is what the
+  // model received. At most one per turn (pipeline.redactionAppliedBy).
+  redactionApplied?: boolean;
+  // #11: the redacted prompt itself (the user's words, PII masked), in the JSON body
+  // only — never in the x-external-guardrails header, so a streamed turn has none.
+  redactedPrompt?: string;
   // Lakera Guard in Detect mode: detectors fired, but the project only logs them, so
   // `flagged` is forced false and the outcome is allow. "Allow with alerts" — never
   // rendered as a clean pass, never as a block.
@@ -278,6 +296,10 @@ export interface ExternalGuardrailConfig {
   secondKeyLabel?: string | null;
   secondKeySet?: boolean;
   secondKeyLast4?: string | null; // write-only too: only the last 4 come back
+  // #11: this vendor's redacted prompt can be sent to the model (its redaction shape was seen live), and
+  // whether the operator chose to. Absent from an older Worker, which reads as false.
+  redactionSupported?: boolean;
+  applyRedaction?: boolean;
   updatedAt: number | null; // epoch ms
 }
 
@@ -308,6 +330,7 @@ export interface ExternalGuardrailUpdate {
   apiKey?: string;
   secondKey?: string; // only for a provider with secondKeyLabel; empty = keep the saved one
   clearApiKey?: boolean; // removes every key the provider holds
+  applyRedaction?: boolean; // only for a provider with redactionSupported
 }
 
 // Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an
@@ -563,7 +586,7 @@ export interface RedTeamResultRow {
   promptPreview: string | null;
   // Since migration 0007; null on older rows ("not recorded", never a miss).
   vendors?: {
-    mode: "parallel" | "sequential";
+    mode: "parallel" | "sequential" | "quorum";
     verdicts: { provider: string; verdict: string; latencyMs?: number }[];
     latencyMs?: number; // the whole guardrail stage for this prompt
   } | null;
@@ -622,6 +645,11 @@ export interface GuardrailVendorStats {
   topDetections: { name: string; count: number }[];
   lastTs: number | null; // newest check that ran, epoch ms
   latencyTrend?: (number | null)[]; // p50 per series bucket; null = no timed check there (absent from an older Worker)
+  // Absent from a Worker before 2026-10-12:
+  redactionApplied?: number; // #11: a subset of redaction — the model received this vendor's redacted prompt
+  outvoted?: number; // #7: a subset of block — quorum mode, too few votes to stop the turn
+  // #13: Red Team turns only, by the page's label. verdicts = block + allow (errors are not verdicts).
+  labelled?: { benign: { verdicts: number; block: number }; attack: { verdicts: number; block: number } };
 }
 
 export interface GuardrailAnalytics {

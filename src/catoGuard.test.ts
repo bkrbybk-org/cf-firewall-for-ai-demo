@@ -111,9 +111,13 @@ const REAL_ALLOW = {
 
 // Anything of the user's that Cato echoes back. None may appear in any result.
 const LEAKS = ["078-05-1120", "078", "due diligence", "detected as SSN", "SSN_1", "Hi, how can I help"];
+// `redactedPrompt` is the one exception: the user's own prompt with the PII MASKED, read so the pipeline can send
+// it to the model when the operator opted in (#11). It may hold the prompt's words, never the masked value.
 function expectNoLeak(r: unknown) {
-  const s = JSON.stringify(r);
+  const { redactedPrompt, ...rest } = r as { redactedPrompt?: unknown };
+  const s = JSON.stringify(rest);
   for (const leak of LEAKS) expect(s, leak).not.toContain(leak);
+  if (redactedPrompt !== undefined) expect(String(redactedPrompt)).not.toContain("078-05-1120");
 }
 
 // A body that carries the same PII fields but a different action_type.
@@ -417,6 +421,34 @@ describe("parseCatoResponse — anything that is not block_action is an error, n
     // Exact value only: a near miss stays an error.
     expect(parseCatoResponse(200, withAction("anonymize_action "), 1).outcome).toBe("error");
     expect(parseCatoResponse(200, withAction("Anonymize_Action"), 1).outcome).toBe("error");
+  });
+
+  // Decided with the user 2026-10-12: a Monitor-only rule matched → allow WITH ALERTS, never clean, never a block.
+  it("reads monitor_action as allow with alerts, even with no detections listed", () => {
+    const r = parseCatoResponse(200, { ...withAction("monitor_action"), invocation_id: "inv_2" }, 3);
+    expect(r).toMatchObject({ outcome: "allow", action: "allow", detectOnly: true, policy: "Example Policy", scanId: "inv_2" });
+    expect(r.detected).toEqual(["PII", "SSN"]);
+    expectNoLeak(r);
+    const bare = parseCatoResponse(200, { analysis_result: {}, required_action: { action_type: "monitor_action" } }, 1);
+    expect(bare).toMatchObject({ outcome: "allow", detectOnly: true, detected: [] });
+    expect(bare).not.toHaveProperty("transformed");
+    for (const near of ["monitor_action ", "Monitor_Action", "monitor"]) {
+      expect(parseCatoResponse(200, withAction(near), 1).outcome, near).toBe("error");
+    }
+  });
+
+  // #11: the masked prompt, from the newest message only, and only when it is the user's.
+  it("reads the redacted prompt from redacted_new_message (role user, string content) — never the entities", () => {
+    const r = parseCatoResponse(200, withAction("anonymize_action"), 1);
+    expect(r.redactedPrompt).toBe("Can you please provide me a due diligence check for SSN [SSN_1]?");
+    const notUser = withAction("anonymize_action");
+    notUser.redacted_chat = {
+      ...notUser.redacted_chat,
+      redacted_new_message: { ...notUser.redacted_chat.redacted_new_message, role: "assistant" },
+    };
+    expect(parseCatoResponse(200, notUser, 1)).not.toHaveProperty("redactedPrompt");
+    // A block never carries it: a blocked prompt goes nowhere.
+    expect(parseCatoResponse(200, SAMPLE_BLOCK, 1)).not.toHaveProperty("redactedPrompt");
   });
 
   it("errors on any other string, naming it when it is a short lowercase token", () => {

@@ -24,6 +24,7 @@ import {
   type GatewayBackoff,
 } from "./config";
 import {
+  chooseRedaction,
   decryptSecret,
   defaultConfig,
   defaultPipeline,
@@ -61,7 +62,7 @@ import {
 import { guardrailWriteAccess } from "./accessAuth";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
-import { logVerdicts, sourceOf } from "./guardrailLog";
+import { expectOf, logVerdicts, sourceOf } from "./guardrailLog";
 import { shapeOf, type Shape } from "./responseShape";
 import {
   buildPromptLogQuery,
@@ -751,11 +752,18 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // edge scan (which happened before this Worker was invoked) and BEFORE the
   // model, on both routes. null when no provider is enabled and guardrail-only
   // is off, in which case nothing below changes.
-  const external = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw, setup: guardrailSetup });
+  const scanned = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw, setup: guardrailSetup });
+  // #11: when the turn goes on and an opted-in vendor redacted the prompt, the MODEL receives that redacted prompt
+  // (chooseRedaction says whose). Only the model's copy changes: the reply check, the prompt log and every verdict
+  // still describe the prompt the user sent — the reply check is about the reply, and the prompt log redacts on its own.
+  const redaction = scanned ? chooseRedaction(scanned) : null;
+  const external = redaction ? redaction.pipeline : scanned;
+  if (redaction?.prompt != null) messages[messages.length - 1] = { role: "user", content: redaction.prompt };
   // One Workers Logs line per vendor verdict, for the Analytics page's External guardrails tab (names
   // only — src/guardrailLog.ts). A turn the caller asked to keep out of the log stays out of this too.
   const verdictSource = sourceOf(request);
-  if (!excludeFromLog) logVerdicts(external, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS });
+  const verdictExpect = expectOf(request); // #13: the Red Team's harmless/attack label, for the false-block rate
+  if (!excludeFromLog) logVerdicts(external, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS, expect: verdictExpect });
   // Carried on every response from here on, so the client can show the verdicts
   // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
   // because a header value must stay within Latin-1. NEVER with raw responses:
@@ -801,7 +809,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const rc = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
       captureRaw: includeRaw,
     });
-    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS });
+    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS, expect: verdictExpect });
     return { rc, modelMs };
   };
   const withheld = (

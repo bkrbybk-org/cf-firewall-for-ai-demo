@@ -43,6 +43,7 @@ export interface PipelineDiagramProps {
 const MODES: { id: GuardrailPipelineMode; label: string }[] = [
   { id: "sequential", label: "Sequential" },
   { id: "parallel", label: "Parallel" },
+  { id: "quorum", label: "Quorum" },
 ];
 
 function errMsg(e: unknown): string {
@@ -229,6 +230,11 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
   const isOn = (p: ExternalGuardrailConfig) => p.supported && p.enabled;
   const active = ordered.filter(isOn);
   const sequential = pipeline.mode === "sequential";
+  // Quorum (#7): runs like parallel; stops on `quorum` votes. With fewer guardrails enabled than that, the server
+  // lowers it to all of them (never leaves it unreachable) — said here before it happens.
+  const quorumMode = pipeline.mode === "quorum";
+  const quorumN = pipeline.quorum ?? 2;
+  const quorumLowered = quorumMode && active.length > 0 && quorumN > active.length;
   const skipModel = pipeline.guardrailOnly;
   // Design J: whether replies are really checked — the switch, at least one enabled
   // guardrail able to check a reply, and a model to write one. Mirrors the server's
@@ -249,7 +255,8 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
     `Prompt, then the edge WAF, then ` +
     (active.length === 0
       ? "no external guardrail"
-      : active.map((p) => p.label).join(sequential ? ", then " : " and ") + (sequential ? "" : ", in parallel")) +
+      : active.map((p) => p.label).join(sequential ? ", then " : " and ") +
+        (sequential ? "" : quorumMode ? `, all at once, stopping only when ${quorumN} vote to stop` : ", in parallel")) +
     (skipModel
       ? ", then the model is skipped."
       : `, then the model with AI Gateway Guardrails, ${checkReplies ? `then a reply check by ${replyCheckers.map((p) => p.label).join(" and ")}, ` : ""}then the reply.`);
@@ -292,7 +299,9 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
         <div className="flex min-w-0 flex-col gap-2 rounded-2xl border border-dashed border-cf-amber/60 p-3">
           <div className="flex flex-wrap items-baseline gap-x-2">
             <span className="text-[11px] font-bold tracking-wider text-cf-amber uppercase">External guardrails</span>
-            <span className="text-[11px] text-subtle">{sequential ? "one after another" : "all at once"}</span>
+            <span className="text-[11px] text-subtle">
+              {sequential ? "one after another" : quorumMode ? `all at once · stop on ${quorumN} votes` : "all at once"}
+            </span>
           </div>
           {active.length === 0 && (
             <div className="text-[12px] leading-snug text-muted">
@@ -336,13 +345,27 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
                   />
                 ))}
               </div>
-              <FlowChip icon={<Merge size={12} />}>join · waits for all</FlowChip>
+              <FlowChip icon={<Merge size={12} />}>
+                {quorumMode
+                  ? active.length === 0
+                    ? "vote · none enabled"
+                    : `vote · stop on ${Math.min(quorumN, active.length)} of ${active.length}`
+                  : "join · waits for all"}
+              </FlowChip>
             </div>
           )}
           <div className="text-[11px] leading-snug text-subtle">
             {sequential
               ? "The first guardrail to stop a prompt ends the turn; later ones do not run. Latency adds up."
-              : "The model runs only if every guardrail allows; the Worker waits for all of them. Latency is the slowest one."}
+              : quorumMode
+                ? `The turn stops only when at least ${quorumN} guardrails vote to stop it — a block, or an outage on one set to fail closed. One set to fail open abstains when it is down. A lone block can be outvoted; it is still shown on the turn. Latency is the slowest one.`
+                : "The model runs only if every guardrail allows; the Worker waits for all of them. Latency is the slowest one."}
+            {quorumLowered && (
+              <b className="mt-1 block text-cf-amber">
+                Only {active.length} enabled: a quorum of {quorumN} can never be reached, so each turn lowers it to{" "}
+                {active.length} (the card says so).
+              </b>
+            )}
           </div>
         </div>
         <Arrow dim={skipModel} />
@@ -421,6 +444,24 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
             </button>
           ))}
         </div>
+        {quorumMode && (
+          <label className="flex items-center gap-1.5 text-[12.5px] text-text">
+            Votes to stop
+            <select
+              value={quorumN}
+              disabled={busy}
+              onChange={(e) => void run(() => onPipeline({ quorum: Number(e.target.value) }))}
+              className="rounded-lg border border-line bg-surface-2 px-1.5 py-1 text-[12.5px] text-text focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-60"
+            >
+              {Array.from({ length: Math.max(6, providers.length) }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                  {n === 1 ? " (same as parallel)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <Switch
           checked={skipModel}
           onChange={(v) => void run(() => onPipeline({ guardrailOnly: v }))}
@@ -433,7 +474,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
           onChange={(v) => void run(() => onPipeline({ scanReplies: v }))}
           disabled={busy}
           label="Check replies too"
-          title="After the model answers, send its reply to every enabled guardrail that can check replies (Prisma AIRS, CrowdStrike AIDR, Lakera Guard — documented, not yet verified). A blocked reply is withheld. Turns are not streamed while this is on, and each guardrail is called twice."
+          title="After the model answers, send its reply to every enabled guardrail that can check replies (named in the flow above when on). A blocked reply is withheld. Turns are not streamed while this is on, and each guardrail is called twice."
         />
         {pipeline.scanReplies && replyCheckers.length === 0 && !skipModel && (
           <span className="text-[11px] text-muted">On, but no enabled guardrail can check replies — nothing is checked.</span>

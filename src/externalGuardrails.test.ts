@@ -9,6 +9,7 @@
 // treated as a verdict.
 import { describe, expect, it } from "vitest";
 import {
+  chooseRedaction,
   decryptSecret,
   PROVIDER_IDS,
   PROVIDERS,
@@ -28,6 +29,7 @@ import {
   toPublicConfig,
   validatePipelineUpdate,
   validateUpdate,
+  usableRedaction,
   type Scan,
   type StoredConfig,
 } from "./externalGuardrails";
@@ -304,6 +306,7 @@ describe("pipeline config", () => {
         guardrailOnly: false,
         order: ["prisma-airs", "crowdstrike-aidr", "cisco-ai-defense", "lakera-guard", "cato-ai-security", "datadog-ai-guard"],
         scanReplies: false,
+        quorum: 2,
       },
     });
     const order = ["crowdstrike-aidr", "datadog-ai-guard", "cato-ai-security", "lakera-guard", "prisma-airs", "cisco-ai-defense"];
@@ -398,6 +401,51 @@ describe("executePipeline", () => {
       ["crowdstrike-aidr", "block"],
     ]);
     expect(out.notRun).toEqual([]);
+  });
+
+  // #7. Three fakes are enough to show a vote, an abstention and an outvoted block.
+  const C = { ...defaultConfig("lakera-guard"), enabled: true };
+  const q = (a: ExternalGuardrailResult, b: ExternalGuardrailResult, c: ExternalGuardrailResult) =>
+    fakes({ "prisma-airs": { r: a }, "crowdstrike-aidr": { r: b }, "lakera-guard": { r: c } });
+
+  it("quorum: one block of three is outvoted at 2 — the block is still reported, nothing is marked not run", async () => {
+    const f = q(verdict("prisma-airs", "allow"), verdict("crowdstrike-aidr", "allow"), verdict("lakera-guard", "block"));
+    const out = await executePipeline([A, B, C], "quorum", false, f.scan, Date.now, "prompt", [], 2);
+    expect(f.calls.sort()).toEqual(["crowdstrike-aidr", "lakera-guard", "prisma-airs"]);
+    expect(out.stoppedBy).toBeNull();
+    expect(out.results.map((r) => r.outcome)).toEqual(["allow", "allow", "block"]);
+    expect(out.notRun).toEqual([]);
+    expect(out.quorum).toEqual({ configured: 2, needed: 2, votes: 1, of: 3, clamped: false });
+  });
+
+  it("quorum: two votes stop it — a fail-closed error is a vote; stoppedBy is the first voter in configured order", async () => {
+    const f = q(verdict("prisma-airs", "allow"), verdict("crowdstrike-aidr", "error"), verdict("lakera-guard", "block"));
+    const out = await executePipeline([A, B, C], "quorum", false, f.scan, Date.now, "prompt", [], 2);
+    expect(out.stoppedBy).toBe("crowdstrike-aidr");
+    expect(out.quorum).toMatchObject({ needed: 2, votes: 2, of: 3 });
+  });
+
+  // Two vendors DOWN (fail open) must not outvote the one that answered and blocked.
+  it("quorum: a fail-open error abstains and leaves `of` — needed is lowered openly, never unreachable", async () => {
+    const down = (p: StoredConfig["provider"]) => verdict(p, "error", { failedOpen: true });
+    const f = q(down("prisma-airs"), down("crowdstrike-aidr"), verdict("lakera-guard", "block"));
+    const out = await executePipeline([A, B, C], "quorum", false, f.scan, Date.now, "prompt", [], 2);
+    expect(out.quorum).toEqual({ configured: 2, needed: 1, votes: 1, of: 1, clamped: true });
+    expect(out.stoppedBy).toBe("lakera-guard");
+    // Nobody answered at all: nothing to count, the turn goes on (each was set to fail open).
+    const all = q(down("prisma-airs"), down("crowdstrike-aidr"), down("lakera-guard"));
+    const none = await executePipeline([A, B, C], "quorum", false, all.scan, Date.now, "prompt", [], 2);
+    expect(none.quorum).toMatchObject({ needed: 1, votes: 0, of: 0 });
+    expect(none.stoppedBy).toBeNull();
+  });
+
+  it("quorum: a quorum larger than the guardrails that ran is clamped to all of them", async () => {
+    const f = q(verdict("prisma-airs", "block"), verdict("crowdstrike-aidr", "block"), verdict("lakera-guard", "block"));
+    const out = await executePipeline([A, B, C], "quorum", false, f.scan, Date.now, "prompt", [], 5);
+    expect(out.quorum).toEqual({ configured: 5, needed: 3, votes: 3, of: 3, clamped: true });
+    expect(out.stoppedBy).toBe("prisma-airs");
+    // Other modes carry no tally.
+    expect((await executePipeline([A], "parallel", false, f.scan)).quorum).toBeUndefined();
   });
 
   it("carries guardrail-only through, including with no guardrail enabled (edge-only test)", async () => {
@@ -686,5 +734,165 @@ describe("executePipeline — reply direction", () => {
     const v = validatePipelineUpdate({ scanReplies: true }, defaultPipeline());
     expect(v.ok && v.next.scanReplies).toBe(true);
     expect(validatePipelineUpdate({ scanReplies: "yes" }, defaultPipeline()).ok).toBe(false);
+  });
+});
+
+// #11: applying a vendor's redaction.
+describe("chooseRedaction", () => {
+  const base = { mode: "parallel" as const, guardrailOnly: false, notRun: [], stoppedBy: null, latencyMs: 1 };
+  const r = (provider: ExternalGuardrailResult["provider"], extra: Partial<ExternalGuardrailResult> = {}): ExternalGuardrailResult => ({
+    provider,
+    outcome: "allow",
+    latencyMs: 1,
+    ...extra,
+  });
+
+  it("uses the first redacted allow in configured order, and marks only that one", () => {
+    const p = {
+      ...base,
+      results: [
+        r("prisma-airs"),
+        r("crowdstrike-aidr", { transformed: true, redactedPrompt: "mail ****.com" }),
+        r("cato-ai-security", { transformed: true, redactedPrompt: "mail [EMAIL_1]" }),
+      ],
+    };
+    const { pipeline, prompt } = chooseRedaction(p);
+    expect(prompt).toBe("mail ****.com");
+    expect(pipeline.redactionAppliedBy).toBe("crowdstrike-aidr");
+    expect(pipeline.results.map((x) => !!x.redactionApplied)).toEqual([false, true, false]);
+    expect(p.results[1].redactionApplied).toBeUndefined(); // copies, never mutates
+  });
+
+  it("applies nothing when the turn stopped, in guardrail-only, on a reply check, or with no redacted allow", () => {
+    const red = r("cato-ai-security", { transformed: true, redactedPrompt: "x [EMAIL_1]" });
+    for (const p of [
+      { ...base, results: [red], stoppedBy: "lakera-guard" as const },
+      { ...base, results: [red], guardrailOnly: true },
+      { ...base, results: [red], direction: "reply" as const },
+      { ...base, results: [r("cato-ai-security", { transformed: true })] },
+      { ...base, results: [{ ...red, outcome: "block" as const }] },
+    ]) {
+      const out = chooseRedaction(p);
+      expect(out.prompt).toBeNull();
+      expect(out.pipeline.redactionAppliedBy).toBeUndefined();
+    }
+  });
+
+  it("stripRaw drops the redacted prompt (headers, logs) but keeps the applied flag", () => {
+    const { pipeline } = chooseRedaction({ ...base, results: [r("cato-ai-security", { transformed: true, redactedPrompt: "x [EMAIL_1]" })] });
+    const s = stripRaw(pipeline);
+    expect(s.results[0].redactedPrompt).toBeUndefined();
+    expect(s.results[0].redactionApplied).toBe(true);
+    expect(s.redactionAppliedBy).toBe("cato-ai-security");
+  });
+});
+
+describe("usableRedaction", () => {
+  it("accepts masked text near the original's length, refuses anything else", () => {
+    expect(usableRedaction("mail [EMAIL_1] please", "mail a@b.co please")).toBe(true);
+    expect(usableRedaction("line one\nline two\ttab", "line one\nline two\ttab")).toBe(true);
+    for (const bad of [undefined, null, 7, "", "   ", "a\u0000b", "a\u001bb", "x".repeat(4 * 10 + 1001)]) {
+      expect(usableRedaction(bad, "0123456789"), JSON.stringify(bad)).toBe(false);
+    }
+    expect(usableRedaction("x".repeat(4 * 10 + 1000), "0123456789")).toBe(true);
+  });
+});
+
+describe("applyRedaction (#11) — config and the scan", () => {
+  it("is accepted only for a provider whose redacted prompt has been seen live, and defaults off", () => {
+    expect(PROVIDER_IDS.filter((id) => PROVIDERS[id].redaction)).toEqual(["crowdstrike-aidr", "cato-ai-security"]);
+    const cato = defaultConfig("cato-ai-security");
+    expect(cato.applyRedaction).toBe(false);
+    const on = validateUpdate({ applyRedaction: true }, cato);
+    expect(on.ok && on.next.applyRedaction).toBe(true);
+    const datadog = validateUpdate({ applyRedaction: true }, defaultConfig("datadog-ai-guard"));
+    expect(datadog).toMatchObject({ ok: false });
+    expect(validateUpdate({ applyRedaction: "yes" }, cato)).toMatchObject({ ok: false });
+    // Turning it OFF is always allowed, even where it could never be on.
+    expect(validateUpdate({ applyRedaction: false }, defaultConfig("datadog-ai-guard")).ok).toBe(true);
+    expect(toPublicConfig({ ...cato, applyRedaction: true })).toMatchObject({ redactionSupported: true, applyRedaction: true });
+    expect(toPublicConfig({ ...defaultConfig("lakera-guard"), applyRedaction: true })).toMatchObject({
+      redactionSupported: false,
+      applyRedaction: false,
+    });
+  });
+
+  // A Cato row and a fake Cato answer: the real anonymize_action shape, trimmed.
+  async function catoEnv(apply: number, failMode = "allow"): Promise<Env> {
+    const row = {
+      provider: "cato-ai-security",
+      enabled: 1,
+      region: "global",
+      profile_name: "",
+      fail_mode: failMode,
+      api_key_enc: await encryptSecret("cato-key", SECRET, "cato-ai-security"),
+      api_key_last4: "-key",
+      apply_redaction: apply,
+      updated_at: 1,
+    };
+    return {
+      GUARDRAIL_SECRET_KEY: SECRET,
+      DB: {
+        prepare: () => ({ first: async () => null, all: async () => ({ results: [row] }) }),
+      } as unknown as D1Database,
+    } as Env;
+  }
+  const anonymize = (content: unknown) =>
+    (async () =>
+      Response.json({
+        analysis_result: {},
+        required_action: { action_type: "anonymize_action" },
+        redacted_chat: { redacted_new_message: { role: "user", content, entities: [{ type: "EMAIL" }] } },
+      })) as typeof fetch;
+  const input = { prompt: "Send it to jane@example.com", model: "m", ray: null };
+
+  it("keeps the redacted prompt only when the operator opted in", async () => {
+    const off = await runPipeline(await catoEnv(0), input, anonymize("Send it to [EMAIL_1]"));
+    expect(off!.results[0]).toMatchObject({ outcome: "allow", transformed: true });
+    expect(off!.results[0].redactedPrompt).toBeUndefined();
+    const on = await runPipeline(await catoEnv(1), input, anonymize("Send it to [EMAIL_1]"));
+    expect(on!.results[0].redactedPrompt).toBe("Send it to [EMAIL_1]");
+    expect(chooseRedaction(on!).prompt).toBe("Send it to [EMAIL_1]");
+  });
+
+  it("opted in but the redacted text is unusable: an error, and the fail mode decides — never the original quietly", async () => {
+    const open = await runPipeline(await catoEnv(1, "allow"), input, anonymize(""));
+    expect(open!.results[0]).toMatchObject({ outcome: "error", failedOpen: true });
+    expect(open!.results[0].error).toMatch(/redacted text could not be read — not applied/);
+    expect(open!.stoppedBy).toBeNull();
+    const closed = await runPipeline(await catoEnv(1, "block"), input, anonymize(null));
+    expect(closed!.results[0].outcome).toBe("error");
+    expect(closed!.stoppedBy).toBe("cato-ai-security");
+  });
+});
+
+describe("quorum in the stored pipeline (#7)", () => {
+  it("validates the quorum and the mode", () => {
+    const d = defaultPipeline();
+    expect(d.quorum).toBe(2);
+    const v = validatePipelineUpdate({ mode: "quorum", quorum: 3 }, d);
+    expect(v.ok && v.next).toMatchObject({ mode: "quorum", quorum: 3 });
+    for (const bad of [0, 7, 2.5, "2", null]) {
+      expect(validatePipelineUpdate({ quorum: bad }, d), JSON.stringify(bad)).toMatchObject({ ok: false });
+    }
+  });
+
+  it("reads quorum_on as mode quorum; a bad stored quorum falls back to 2", async () => {
+    const setupFor = async (pipe: Record<string, unknown>) =>
+      loadGuardrailSetup({
+        GUARDRAIL_SECRET_KEY: SECRET,
+        DB: {
+          prepare: (sql: string) => ({
+            first: async () => (sql.includes("guardrail_pipeline") ? pipe : null),
+            all: async () => ({ results: [] }),
+          }),
+        } as unknown as D1Database,
+      } as Env);
+    const a = await setupFor({ mode: "parallel", guardrail_only: 0, provider_order: "", quorum_on: 1, quorum: 3 });
+    expect(a!.pipeline).toMatchObject({ mode: "quorum", quorum: 3 });
+    const b = await setupFor({ mode: "sequential", guardrail_only: 0, provider_order: "", quorum_on: 0, quorum: 99 });
+    expect(b!.pipeline).toMatchObject({ mode: "sequential", quorum: 2 });
+    const old = await setupFor({ mode: "parallel", guardrail_only: 0, provider_order: "" }); // before migration 0010
+    expect(old!.pipeline).toMatchObject({ mode: "parallel", quorum: 2 });
   });
 });

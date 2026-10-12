@@ -155,3 +155,22 @@ describe("controlMatrix — the reply check (design J)", () => {
     expect(m({ kind: "assistant", pipeline: prompt }).some((x) => x.layer === "replyCheck")).toBe(false);
   });
 });
+
+describe("controlMatrix — quorum (#7)", () => {
+  const q = (stoppedBy: GuardrailPipelineResult["stoppedBy"], votes: number) =>
+    P({
+      mode: "quorum",
+      results: [R({ provider: "lakera-guard", outcome: "block" }), R({ provider: "prisma-airs", outcome: "allow" })],
+      stoppedBy,
+      quorum: { configured: 2, needed: 2, votes, of: 2, clamped: false },
+    });
+  it("an outvoted block is flagged, not painted as a stop, and says why", () => {
+    const c = byKey(m({ kind: "assistant", pipeline: q(null, 1) }))["ext:lakera-guard"];
+    expect(c).toMatchObject({ state: "flagged", stateLabel: "blocked · outvoted", decisive: false });
+    expect(c.detail).toMatch(/only 1 of the 2 votes needed/);
+  });
+  it("a block that was one of the stopping votes is a stop, and marked", () => {
+    const c = byKey(m({ kind: "external", pipeline: q("lakera-guard", 2) }))["ext:lakera-guard"];
+    expect(c).toMatchObject({ state: "stopped", decisive: true });
+  });
+});

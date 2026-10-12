@@ -50,7 +50,7 @@ export interface VendorScorecard {
   controls: ControlScore[];
   attacks: number; // attacks with a result
   missedByAll: number; // scanned by at least one control, caught by none
-  modes: ("sequential" | "parallel")[]; // pipeline modes seen in the run
+  modes: ("sequential" | "parallel" | "quorum")[]; // pipeline modes seen in the run
   // True when the guardrails did not all see the same prompts — sequential mode,
   // or a guardrail enabled only part-way. The UI must say so.
   unevenCoverage: boolean;
@@ -169,7 +169,7 @@ export function vendorScorecard(
   const scored = controls.map((c) => scoreControl(results, c, controls, labels));
   const missedByAll = countMissedByAll(results, controls);
 
-  const modes = [...new Set(results.map((r) => r.pipelineMode).filter((m): m is "sequential" | "parallel" => !!m))];
+  const modes = [...new Set(results.map((r) => r.pipelineMode).filter((m): m is "sequential" | "parallel" | "quorum" => !!m))];
   // Uneven when any guardrail skipped prompts it could have seen: a "notRun", or a
   // response that carried a pipeline without it while another guardrail scanned.
   const reachedWorker = results.filter((r) => r.vendors && r.vendors.length > 0);

@@ -322,7 +322,12 @@ export function VendorScorecard({
             <>
               The guardrail stage added <span className="font-semibold text-text">{fmtMs(stat.p50)}</span> per prompt
               at the median, <span className="font-semibold text-text">{fmtMs(stat.p95)}</span> at p95 (
-              {mode === "parallel" ? "parallel — it waits for the slowest guardrail" : "sequential — the calls add up"};
+              {mode === "parallel"
+                ? "parallel — it waits for the slowest guardrail"
+                : mode === "quorum"
+                  ? "quorum — it waits for every vote, the slowest guardrail"
+                  : "sequential — the calls add up"}
+              ;
               n={stat.n}
               {stat.errorsExcluded ? `, ${stat.errorsExcluded} with an error not counted` : ""}).
             </>

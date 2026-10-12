@@ -167,7 +167,8 @@ export interface VendorView {
   // on its own, and stoppedBy names only the first in configured order. Crediting
   // that one as "decided" would read as if the others did not matter, so each blocker
   // is "independent" and nothing is "decided".
-  marker: "decided" | "independent" | null;
+  // Quorum mode (#7): "vote" — one of the votes that together stopped the turn; none of them decided it alone.
+  marker: "decided" | "independent" | "vote" | null;
   findings: string[]; // human labels from `detected`, in order, deduped; never for an error
   latencyMs: number | null; // null for notRun: it never started, so there is no latency
   notes: string[];
@@ -192,7 +193,8 @@ function dedupe(items: string[]): string[] {
   return [...new Set(items)];
 }
 
-function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailProvider | null): VendorView {
+function resultVendor(r: ExternalGuardrailResult, p: GuardrailPipelineResult): VendorView {
+  const stoppedBy = p.stoppedBy;
   const name = providerLabel(r.provider);
   const isError = r.outcome === "error";
   // Anything that is not an explicit allow or block is treated as "the provider
@@ -205,15 +207,24 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
         : r.failedOpen
           ? "failedOpen"
           : "unavailable";
-  const decided = stoppedBy != null && r.provider === stoppedBy;
+  // Quorum: stoppedBy is only bookkeeping (the first voter) — no single result decided it.
+  const decided = p.mode !== "quorum" && stoppedBy != null && r.provider === stoppedBy;
+  const quorumVote = p.mode === "quorum" && stoppedBy != null && (r.outcome === "block" || (r.outcome === "error" && !r.failedOpen));
 
   const notes: string[] = [];
   if (!isError && r.incomplete) {
     notes.push("At least one detection service timed out — this verdict covers only the checks that ran");
   }
-  // Only an allow can carry this: a block means the prompt never reaches the model.
-  if (r.outcome === "allow" && r.transformed) {
-    notes.push(`Redaction requested by ${name} was not applied — the model would receive the original prompt`);
+  // Only an allow can carry this: a block means the prompt never reaches the model. #11: the operator may have
+  // chosen to send ONE vendor's redacted prompt — then that one says so, and any other redaction names whose was used.
+  if (r.outcome === "allow" && r.redactionApplied) {
+    notes.push(`Redaction by ${name} applied — the model received ${name}'s redacted prompt, not the original`);
+  } else if (r.outcome === "allow" && r.transformed) {
+    notes.push(
+      p.redactionAppliedBy
+        ? `Redaction requested by ${name} was not applied — the model received ${providerLabel(p.redactionAppliedBy)}'s redacted prompt instead`
+        : `Redaction requested by ${name} was not applied — the model would receive the original prompt`,
+    );
   }
   // Lakera Guard in Detect mode: detectors fired, the project only logs. Cato: a policy
   // reported detections but `required_action` came back null. Decided with the user:
@@ -224,7 +235,9 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     const count = n === 1 ? "1 detection" : `${n} detections`;
     notes.push(
       r.provider === "cato-ai-security"
-        ? `Alerts only — ${name} reported ${count} but its policy required no action, so it did not block`
+        ? n === 0
+          ? `Monitor only — a ${name} Monitor rule matched; its policy asked for no action, so it did not block`
+          : `Alerts only — ${name} reported ${count} but its policy required no action, so it did not block`
         : r.provider === "datadog-ai-guard"
           ? r.category === "deny" || r.category === "abort"
             ? `Monitor only — ${name} answered ${r.category.toUpperCase()} but blocking is off in its policy, so it did not block`
@@ -238,6 +251,7 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
   if (state === "unavailable") {
     notes.push("Not a verdict — it could not be consulted, so nothing is known about this prompt from it");
     if (decided) notes.push("Set to fail closed, so the prompt was not sent to the model");
+    if (quorumVote) notes.push("Set to fail closed, so it counted as a vote to stop");
   }
 
   const details: VendorDetail[] = [];
@@ -256,9 +270,9 @@ function resultVendor(r: ExternalGuardrailResult, stoppedBy: ExternalGuardrailPr
     fullName: providerFullLabel(r.provider),
     state,
     stateLabel: STATE_LABELS[state],
-    partial: state === "allow" && (!!r.incomplete || !!r.transformed || !!r.detectOnly),
+    partial: state === "allow" && (!!r.incomplete || (!!r.transformed && !r.redactionApplied) || !!r.detectOnly),
     decided,
-    marker: decided ? "decided" : null, // revisited in pipelineView, which sees every result
+    marker: decided ? "decided" : quorumVote ? "vote" : null, // revisited in pipelineView, which sees every result
     // An error is not a verdict: whatever `detected` holds, nothing was found.
     findings: isError ? [] : dedupe((r.detected ?? []).map(detectionLabel)),
     latencyMs: r.latencyMs,
@@ -304,7 +318,7 @@ function whyLine(vendors: VendorView[]): string | null {
 }
 
 export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" | "guardrailOnly"): PipelineView {
-  const ran = pipeline.results.map((r) => resultVendor(r, pipeline.stoppedBy));
+  const ran = pipeline.results.map((r) => resultVendor(r, pipeline));
   const notRun: VendorView[] = pipeline.notRun.map((n) => ({
     provider: n.provider,
     name: providerLabel(n.provider),
@@ -339,8 +353,14 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
   const reply = pipeline.direction === "reply";
   let headline: string;
   let caveat: string | null = null;
+  const q = pipeline.mode === "quorum" ? pipeline.quorum : undefined;
   if (kind === "guardrailOnly") {
     headline = GUARDRAIL_ONLY_HEADLINE;
+  } else if (q && pipeline.stoppedBy) {
+    // Quorum: the votes stopped it, not any one vendor. A fail-closed error is a vote too, so the count is votes,
+    // never "blocked by" — an unavailable vendor never looked at the prompt.
+    const by = `${q.votes} of ${q.of} guardrails voted to stop it (${q.needed} needed)`;
+    headline = reply ? `Reply withheld by quorum — ${by}` : `Stopped by quorum — ${by}`;
   } else if (blocks > 0) {
     const by = `${blocks} of ${ran.length} ${ran.length === 1 ? "guardrail" : "guardrails"}`;
     headline = reply ? `Reply withheld — blocked by ${by}` : `Blocked by ${by}`;
@@ -364,7 +384,14 @@ export function pipelineView(pipeline: GuardrailPipelineResult, kind: "blocked" 
   if (kind === "guardrailOnly" && ran.length === 0) {
     subline = "Passed the edge WAF; no external guardrail is enabled";
   } else {
-    const mode = pipeline.mode === "parallel" ? "parallel (waited for all)" : "sequential";
+    const mode =
+      pipeline.mode === "parallel"
+        ? "parallel (waited for all)"
+        : q
+          ? `quorum ${q.needed} of ${q.of}${q.clamped ? ` (set to ${q.configured}; lowered — only ${q.of} gave a verdict or vote)` : ""}`
+          : pipeline.mode === "quorum"
+            ? "quorum"
+            : "sequential";
     subline = `${reply ? "reply check · " : ""}${mode} · ${pipeline.latencyMs} ms${kind === "guardrailOnly" ? " · model not called" : ""}`;
   }
 

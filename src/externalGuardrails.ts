@@ -75,6 +75,9 @@ interface ProviderSpec {
   // Documented, not verified — no real reply verdict has been seen from any of them yet.
   // false → the reply stage lists it as not run, with the reason, never as an allow.
   replyCheck: boolean;
+  // #11: the vendor's redacted prompt can be sent to the model instead of the original — only where the field
+  // carrying it has been SEEN in a real payload (the parser reads it as `redactedPrompt`). Absent → reported only.
+  redaction?: boolean;
 }
 
 export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
@@ -103,6 +106,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     keyLabel: "Collector token",
     vendor: "CrowdStrike",
     replyCheck: true, // event_type "output" (aidr_openapi.json)
+    redaction: true, // result.guard_output.messages, seen live 2026-10-12 (src/crowdstrikeAidr.ts)
   },
   // Built from the vendor docs; unverified until the admin runs Test connection with a real key and the
   // returned response shape matches the parser (PROGRESS.md plan, step 6).
@@ -150,6 +154,7 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     vendor: "Cato Networks",
     replyCheck: false, // reply checking is not documented
     revealPaths: ["required_action.action_type"],
+    redaction: true, // redacted_chat.redacted_new_message, seen live 2026-10-12 (src/catoGuard.ts)
   },
   // Built from Datadog's own tracer, its recorded calls and its docs (src/datadogAiGuard.ts); unverified
   // until Test connection has shown a real verdict's shape from the user's org.
@@ -188,6 +193,8 @@ export interface StoredConfig {
   // The second credential (ProviderSpec.secondKeyLabel), encrypted with its own AAD (secondKeyAad).
   secondKeyEnc: string | null;
   secondKeyLast4: string | null;
+  // #11: send this vendor's redacted prompt to the model (only where PROVIDERS[...].redaction).
+  applyRedaction: boolean;
   updatedAt: number | null;
 }
 
@@ -208,6 +215,7 @@ export function defaultConfig(provider: ExternalGuardrailProvider): StoredConfig
     apiKeyLast4: null,
     secondKeyEnc: null,
     secondKeyLast4: null,
+    applyRedaction: false,
     updatedAt: null,
   };
 }
@@ -244,6 +252,8 @@ export function toPublicConfig(c: StoredConfig) {
     secondKeyLabel: spec.secondKeyLabel ?? null,
     secondKeySet: spec.secondKeyLabel != null && c.secondKeyEnc != null,
     secondKeyLast4: spec.secondKeyLabel != null ? c.secondKeyLast4 : null,
+    redactionSupported: spec.redaction === true,
+    applyRedaction: spec.redaction === true && c.applyRedaction,
     updatedAt: c.updatedAt,
   };
 }
@@ -313,6 +323,14 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
       newSecondKey = key;
       next.secondKeyLast4 = key.slice(-4);
     }
+  }
+  if (b.applyRedaction !== undefined) {
+    if (typeof b.applyRedaction !== "boolean") return { ok: false, error: "applyRedaction must be a boolean" };
+    // Refused rather than stored: a switch with nothing behind it would read as if the model got a cleaned prompt.
+    if (b.applyRedaction && !spec.redaction) {
+      return { ok: false, error: `${spec.label}'s redacted prompt has not been seen in a real response, so it cannot be applied` };
+    }
+    next.applyRedaction = b.applyRedaction;
   }
   if (b.enabled !== undefined) {
     if (typeof b.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
@@ -398,6 +416,7 @@ interface Row {
   api_key_last4: string | null;
   second_key_enc?: string | null; // absent before migration 0009
   second_key_last4?: string | null;
+  apply_redaction?: number; // absent before migration 0010
   updated_at: number | null;
 }
 
@@ -414,6 +433,7 @@ function fromRow(r: Row): StoredConfig | null {
     apiKeyLast4: r.api_key_last4,
     secondKeyEnc: r.second_key_enc ?? null,
     secondKeyLast4: r.second_key_last4 ?? null,
+    applyRedaction: r.apply_redaction === 1 && PROVIDERS[provider].redaction === true,
     updatedAt: r.updated_at,
   };
 }
@@ -429,12 +449,13 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
   const upsert = db
     .prepare(
       `INSERT INTO external_guardrails (provider, enabled, region, profile_name, fail_mode, api_key_enc, api_key_last4,
-         second_key_enc, second_key_last4, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)
+         second_key_enc, second_key_last4, apply_redaction, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(provider) DO UPDATE SET enabled = excluded.enabled, region = excluded.region,
          profile_name = excluded.profile_name, fail_mode = excluded.fail_mode, api_key_enc = excluded.api_key_enc,
          api_key_last4 = excluded.api_key_last4, second_key_enc = excluded.second_key_enc,
-         second_key_last4 = excluded.second_key_last4, updated_at = excluded.updated_at`,
+         second_key_last4 = excluded.second_key_last4, apply_redaction = excluded.apply_redaction,
+         updated_at = excluded.updated_at`,
     )
     .bind(
       c.provider,
@@ -446,16 +467,21 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
       c.apiKeyLast4,
       c.secondKeyEnc,
       c.secondKeyLast4,
+      c.applyRedaction ? 1 : 0,
       c.updatedAt,
     );
   await upsert.run();
 }
 
 // ── pipeline configuration ───────────────────────────────────────────────────
-export const PIPELINE_MODES = ["sequential", "parallel"] as const satisfies readonly GuardrailPipelineMode[];
+export const PIPELINE_MODES = ["sequential", "parallel", "quorum"] as const satisfies readonly GuardrailPipelineMode[];
+// Votes that stop a turn in quorum mode. 2 by default (#7, picked 2026-10-12): one vendor's false block — Lakera's
+// on a WAF explanation — no longer stops the turn alone, while two agreeing still do. 1 would be parallel mode.
+export const DEFAULT_QUORUM = 2;
+export const MAX_QUORUM = PROVIDER_IDS.length;
 
 export function defaultPipeline(): GuardrailPipelineConfig {
-  return { mode: "sequential", guardrailOnly: false, order: [...PROVIDER_IDS], scanReplies: false };
+  return { mode: "sequential", guardrailOnly: false, order: [...PROVIDER_IDS], scanReplies: false, quorum: DEFAULT_QUORUM };
 }
 
 // Stored order → a full permutation of the registry: unknown ids dropped,
@@ -476,7 +502,9 @@ export function validatePipelineUpdate(body: unknown, current: GuardrailPipeline
   const b = body as Record<string, unknown>;
   const next: GuardrailPipelineConfig = { ...current, order: [...current.order] };
   if (b.mode !== undefined) {
-    if (!(PIPELINE_MODES as readonly unknown[]).includes(b.mode)) return { ok: false, error: 'mode must be "sequential" or "parallel"' };
+    if (!(PIPELINE_MODES as readonly unknown[]).includes(b.mode)) {
+      return { ok: false, error: 'mode must be "sequential", "parallel" or "quorum"' };
+    }
     next.mode = b.mode as GuardrailPipelineMode;
   }
   if (b.guardrailOnly !== undefined) {
@@ -486,6 +514,12 @@ export function validatePipelineUpdate(body: unknown, current: GuardrailPipeline
   if (b.scanReplies !== undefined) {
     if (typeof b.scanReplies !== "boolean") return { ok: false, error: "scanReplies must be a boolean" };
     next.scanReplies = b.scanReplies;
+  }
+  if (b.quorum !== undefined) {
+    if (typeof b.quorum !== "number" || !Number.isInteger(b.quorum) || b.quorum < 1 || b.quorum > MAX_QUORUM) {
+      return { ok: false, error: `quorum must be a whole number from 1 to ${MAX_QUORUM}` };
+    }
+    next.quorum = b.quorum;
   }
   if (b.order !== undefined) {
     // Strict on input (lenient only on read): an order that is not exactly a
@@ -508,15 +542,19 @@ interface PipelineRow {
   guardrail_only: number;
   provider_order: string;
   scan_replies?: number; // absent before migration 0008
+  quorum_on?: number; // absent before migration 0010
+  quorum?: number;
 }
 
 function pipelineFromRow(r: PipelineRow | null): GuardrailPipelineConfig {
   if (!r) return defaultPipeline();
   return {
-    mode: r.mode === "parallel" ? "parallel" : "sequential",
+    mode: r.quorum_on === 1 ? "quorum" : r.mode === "parallel" ? "parallel" : "sequential",
     guardrailOnly: r.guardrail_only === 1,
     order: normalizeOrder(r.provider_order ? r.provider_order.split(",") : []),
     scanReplies: r.scan_replies === 1,
+    quorum:
+      typeof r.quorum === "number" && Number.isInteger(r.quorum) && r.quorum >= 1 && r.quorum <= MAX_QUORUM ? r.quorum : DEFAULT_QUORUM,
   };
 }
 
@@ -534,11 +572,23 @@ export async function loadPipeline(db: D1Database): Promise<GuardrailPipelineCon
 export async function savePipeline(db: D1Database, p: GuardrailPipelineConfig): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO guardrail_pipeline (id, mode, guardrail_only, provider_order, scan_replies, updated_at) VALUES (1,?,?,?,?,?)
+      `INSERT INTO guardrail_pipeline (id, mode, guardrail_only, provider_order, scan_replies, quorum_on, quorum, updated_at)
+       VALUES (1,?,?,?,?,?,?,?)
        ON CONFLICT(id) DO UPDATE SET mode = excluded.mode, guardrail_only = excluded.guardrail_only,
-         provider_order = excluded.provider_order, scan_replies = excluded.scan_replies, updated_at = excluded.updated_at`,
+         provider_order = excluded.provider_order, scan_replies = excluded.scan_replies, quorum_on = excluded.quorum_on,
+         quorum = excluded.quorum, updated_at = excluded.updated_at`,
     )
-    .bind(p.mode, p.guardrailOnly ? 1 : 0, p.order.join(","), p.scanReplies ? 1 : 0, Date.now())
+    // `mode` keeps its CHECK (migration 0010): quorum rides on quorum_on, and the column holds "parallel" — the
+    // mode quorum runs like.
+    .bind(
+      p.mode === "sequential" ? "sequential" : "parallel",
+      p.guardrailOnly ? 1 : 0,
+      p.order.join(","),
+      p.scanReplies ? 1 : 0,
+      p.mode === "quorum" ? 1 : 0,
+      p.quorum,
+      Date.now(),
+    )
     .run();
 }
 
@@ -572,6 +622,7 @@ export async function executePipeline(
   // that cannot check a reply: listed as not run, with the reason, never as an allow.
   direction: "prompt" | "reply" = "prompt",
   cannotCheck: StoredConfig[] = [],
+  quorum: number = DEFAULT_QUORUM, // quorum mode only
 ): Promise<GuardrailPipelineResult> {
   const started = now();
   const results: ExternalGuardrailResult[] = [];
@@ -580,8 +631,23 @@ export async function executePipeline(
     reason: `Not run: ${PROVIDERS[c.provider].label} does not check replies here (not documented, or not yet verified)`,
   }));
   let stoppedBy: ExternalGuardrailProvider | null = null;
+  let tally: GuardrailPipelineResult["quorum"];
 
-  if (mode === "parallel") {
+  if (mode === "quorum") {
+    // Everyone runs, as in parallel — a vote needs every voter. A VOTE to stop is what would stop the turn on its
+    // own in the other modes: a block, or an error on a fail-closed guardrail (the operator asked "stop if this one
+    // cannot answer"). A fail-open error abstains, and is left out of `of` too: two vendors that were DOWN must not
+    // outvote the one that blocked. needed = min(configured, of), at least 1 — lowered openly (`clamped`), never
+    // left unreachable, which would mean that no block could ever stop the turn.
+    results.push(...(await Promise.all(steps.map((s) => scan(s)))));
+    const voters = results.filter(stopsTurn);
+    const of = results.filter((r) => !(r.outcome === "error" && r.failedOpen)).length;
+    const needed = Math.max(1, Math.min(quorum, of));
+    tally = { configured: quorum, needed, votes: voters.length, of, clamped: needed < quorum };
+    // The pipeline's bookkeeping needs one name; it is the first voter in configured order. No single vote decided
+    // it, and the view says so (every voter is marked, none "decided").
+    stoppedBy = voters.length >= needed ? (voters[0]?.provider ?? null) : null;
+  } else if (mode === "parallel") {
     // Wait for ALL of them, not just the first block: each call is capped by its
     // own timeout, and the point of running two guardrails side by side is to
     // see both verdicts. Results keep configured order, not arrival order.
@@ -609,7 +675,39 @@ export async function executePipeline(
     notRun,
     stoppedBy,
     latencyMs: now() - started,
+    ...(tally ? { quorum: tally } : {}),
   };
+}
+
+// #11: the redacted prompt to send to the model, when the turn goes on. The first guardrail IN CONFIGURED ORDER whose
+// allow carries one (`redactedPrompt` survives scanProvider only where the operator opted in). One redaction, never
+// a merge: two vendors mask differently, and splicing their outputs would send a prompt neither of them produced. A
+// later vendor's redaction then stays "not applied" and the card says whose was used. Every vendor scanned the
+// ORIGINAL prompt, so the verdicts stay like-for-like. Returns the pipeline marked, plus the text.
+export function chooseRedaction(p: GuardrailPipelineResult): { pipeline: GuardrailPipelineResult; prompt: string | null } {
+  if (p.stoppedBy || p.guardrailOnly || p.direction === "reply") return { pipeline: p, prompt: null };
+  const winner = p.results.find((r) => r.outcome === "allow" && typeof r.redactedPrompt === "string");
+  if (!winner) return { pipeline: p, prompt: null };
+  return {
+    pipeline: {
+      ...p,
+      results: p.results.map((r) => (r === winner ? { ...r, redactionApplied: true } : r)),
+      redactionAppliedBy: winner.provider,
+    },
+    prompt: winner.redactedPrompt!,
+  };
+}
+
+// A redacted prompt the model may receive: text, not empty, no control characters beyond whitespace, and not
+// wildly longer than what was sent (a mask is a few characters per span; 4x + 1,000 is far past any real one).
+// Anything else is not used — see scanProvider for what happens instead.
+export function usableRedaction(redacted: unknown, original: string): redacted is string {
+  return (
+    typeof redacted === "string" &&
+    redacted.trim() !== "" &&
+    redacted.length <= Math.min(original.length * 4 + 1000, RAW_MAX_CHARS) &&
+    !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(redacted)
+  );
 }
 
 // ── raw responses (opt-in, per request) ─────────────────────────────────────
@@ -646,8 +744,9 @@ function recordingFetch(base: typeof fetch, sink: { raw?: GuardrailRawResponse }
   };
 }
 
+// Also drops `redactedPrompt` (#11): the prompt's words, even masked, belong in the requester's JSON body only.
 export function stripRaw(p: GuardrailPipelineResult): GuardrailPipelineResult {
-  return { ...p, results: p.results.map(({ raw: _raw, ...r }) => r) };
+  return { ...p, results: p.results.map(({ raw: _raw, redactedPrompt: _redacted, ...r }) => r) };
 }
 
 // The real scan for one stored provider config.
@@ -663,8 +762,25 @@ async function scanProvider(
     const r = await scanProvider(env, c, input, recordingFetch(fetchImpl, sink));
     return sink.raw ? { ...r, raw: sink.raw } : r;
   }
-  const resolve = (r: ExternalGuardrailResult): ExternalGuardrailResult =>
+  const failMode = (r: ExternalGuardrailResult): ExternalGuardrailResult =>
     r.outcome === "error" && c.failMode === "allow" ? { ...r, failedOpen: true } : r;
+  // #11. The redacted prompt is kept only when the operator opted in for this vendor, and only on a prompt check.
+  // Opted in, the vendor redacted (an allow, `transformed`), but no usable text came back: that is an ERROR, never
+  // a quiet fall back to the original — the operator said this vendor's PII must not reach the model, so the fail
+  // mode decides (fail open: the original goes on, marked failedOpen; fail closed: the turn stops).
+  const resolve = (r: ExternalGuardrailResult): ExternalGuardrailResult => {
+    const { redactedPrompt, ...rest } = r;
+    const applying = c.applyRedaction && PROVIDERS[c.provider].redaction === true && input.response == null;
+    if (!applying || rest.outcome !== "allow" || !rest.transformed) return failMode(rest);
+    if (usableRedaction(redactedPrompt, input.prompt)) return { ...rest, redactedPrompt };
+    return failMode({
+      provider: rest.provider,
+      outcome: "error",
+      error: `${PROVIDERS[c.provider].label} redacted the prompt, but its redacted text could not be read — not applied`,
+      latencyMs: rest.latencyMs,
+      ...(rest.httpStatus != null ? { httpStatus: rest.httpStatus } : {}),
+    });
+  };
   if (!c.apiKeyEnc) return resolve({ provider: c.provider, outcome: "error", error: "No API key saved", latencyMs: 0 });
 
   const second = PROVIDERS[c.provider].secondKeyLabel;
@@ -796,8 +912,15 @@ export async function runPipeline(
   if (!setup) return null;
   const { pipeline, enabled } = setup;
   if (enabled.length === 0 && !pipeline.guardrailOnly) return null;
-  return executePipeline(enabled, pipeline.mode, pipeline.guardrailOnly, (c) =>
-    scanProvider(env, c, { ...input, response: undefined }, fetchImpl, opts.captureRaw === true),
+  return executePipeline(
+    enabled,
+    pipeline.mode,
+    pipeline.guardrailOnly,
+    (c) => scanProvider(env, c, { ...input, response: undefined }, fetchImpl, opts.captureRaw === true),
+    Date.now,
+    "prompt",
+    [],
+    pipeline.quorum,
   );
 }
 
@@ -822,5 +945,6 @@ export async function runReplyCheck(
     Date.now,
     "reply",
     unable,
+    setup.pipeline.quorum,
   );
 }

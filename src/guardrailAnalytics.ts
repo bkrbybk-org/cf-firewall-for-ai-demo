@@ -17,7 +17,7 @@
 
 import { bucketFor, type SeriesBucket } from "./config";
 import { PROVIDER_IDS } from "./externalGuardrails";
-import { AE_SCHEMA, type VerdictOutcome, type VerdictSource } from "./guardrailLog";
+import { AE_SCHEMA, type VerdictExpect, type VerdictOutcome, type VerdictSource } from "./guardrailLog";
 import { nearestRank } from "./percentile";
 import { clientError } from "./publicError";
 import type { Env, ExternalGuardrailProvider } from "./types";
@@ -37,8 +37,10 @@ export function buildSql(hours: (typeof RANGE_HOURS)[number], source: SourceFilt
   return [
     "SELECT timestamp AS ts, _sample_interval AS si,",
     "blob2 AS src, blob3 AS dir, blob4 AS provider, blob5 AS outcome, blob6 AS detected, blob7 AS ray,",
-    "blob8 AS scan_id, blob10 AS action,",
-    "double1 AS ms, double2 AS status, double3 AS alerts, double4 AS redaction, double5 AS incomplete, double6 AS decided",
+    "blob8 AS scan_id, blob9 AS mode, blob10 AS action, blob11 AS expect,",
+    "double1 AS ms, double2 AS status, double3 AS alerts, double4 AS redaction, double5 AS incomplete, double6 AS decided,",
+    // blob11 / double7 date from 2026-10-12; checked live that day, older points read "" and 0 (the columns always exist).
+    "double7 AS applied",
     `FROM ${AE_DATASET}`,
     `WHERE blob1 = '${AE_SCHEMA}' AND timestamp > NOW() - INTERVAL '${hours}' HOUR`,
     source === "all" ? "" : `AND blob2 = '${source}'`,
@@ -66,6 +68,9 @@ export interface VerdictRow {
   redaction: boolean;
   incomplete: boolean;
   decided: boolean;
+  quorum: boolean; // the pipeline ran in quorum mode (#7)
+  applied: boolean; // #11: this vendor's redacted prompt reached the model
+  expect: VerdictExpect; // #13: the Red Team's label; "" when unlabelled (chat, and every point before 2026-10-12)
 }
 
 const NAME = /^[A-Za-z0-9_.:\-/ ]{1,80}$/;
@@ -106,6 +111,10 @@ export function parseRow(r: unknown): VerdictRow | null {
     redaction: num(o.redaction) === 1,
     incomplete: num(o.incomplete) === 1,
     decided: num(o.decided) === 1,
+    quorum: o.mode === "quorum",
+    applied: outcome === "allow" && num(o.applied) === 1,
+    // Only on the Red Team's own turns, as written; re-checked so a stray label can never reach the rate.
+    expect: o.src === "redteam" && (o.expect === "benign" || o.expect === "attack") ? o.expect : "",
   };
 }
 
@@ -118,12 +127,17 @@ export interface VendorStats {
   block: number;
   allow: number; // every allow, alerts included
   alerts: number; // allows with alerts (detectOnly) — a subset of allow
-  redaction: number; // allows with a redaction requested, not applied — a subset of allow
+  redaction: number; // allows where the vendor redacted the prompt — a subset of allow, applied or not
+  redactionApplied: number; // #11: of those, the ones whose redacted prompt the model received
   incomplete: number;
   error: number; // fail closed: the turn stopped without a verdict
   failedOpen: number; // fail open: the turn went on without a verdict
   notRun: number;
-  decided: number; // times this vendor's verdict stopped the turn
+  decided: number; // times this vendor's verdict stopped the turn (quorum: times it was one of the stopping votes)
+  outvoted: number; // #7: blocks that did NOT stop the turn — quorum mode, too few votes. A subset of block.
+  // #13: Red Team turns only, by the page's own label. `verdicts` = block + allow (errors and not-run are not
+  // verdicts, so they are out of the rate). A block on a harmless prompt is a FALSE block; on an attack, a catch.
+  labelled: { benign: { verdicts: number; block: number }; attack: { verdicts: number; block: number } };
   // Over the stored rows that ran and timed (unweighted); null when there are none — never 0 ms.
   latencyN: number;
   p50Ms: number | null;
@@ -187,7 +201,8 @@ export function aggregate(
         s: {
           provider: r.provider, dir: r.dir, checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
           error: 0, failedOpen: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
-          lastTs: null,
+          lastTs: null, redactionApplied: 0, outvoted: 0,
+          labelled: { benign: { verdicts: 0, block: 0 }, attack: { verdicts: 0, block: 0 } },
           latencyTrend: [],
         },
         ms: [],
@@ -206,9 +221,15 @@ export function aggregate(
     totals.verdicts += w;
     if (r.decided) s.decided += w;
     if (r.incomplete) s.incomplete += w;
+    if (r.expect && (r.outcome === "block" || r.outcome === "allow")) {
+      const l = s.labelled[r.expect];
+      l.verdicts += w;
+      if (r.outcome === "block") l.block += w;
+    }
     if (r.outcome === "block") {
       s.block += w;
       totals.block += w;
+      if (r.quorum && !r.decided) s.outvoted += w;
     } else if (r.outcome === "allow") {
       s.allow += w;
       if (r.alerts) {
@@ -216,6 +237,7 @@ export function aggregate(
         totals.alerts += w;
       }
       if (r.redaction) s.redaction += w;
+      if (r.applied) s.redactionApplied += w;
     } else if (r.outcome === "error") {
       s.error += w;
       totals.error += w;

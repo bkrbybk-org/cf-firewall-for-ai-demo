@@ -129,10 +129,23 @@ export function parseAidrResponse(status: number, body: unknown, latencyMs: numb
     profileName: null,
     policy: str(result.policy),
     summary: str(b.summary),
-    // AIDR may redact the prompt. This app does NOT apply the redaction — the
-    // model receives the original prompt — so the UI must say that.
-    ...(result.transformed === true ? { transformed: true } : {}),
+    // AIDR may redact the prompt. It is applied only when the operator opted in (#11, applyRedaction) —
+    // otherwise the model receives the original prompt, and the UI must say that.
+    ...(result.transformed === true ? { transformed: true, ...redactedPromptOf(result, action) } : {}),
   };
+}
+
+// The redacted prompt, read only so the pipeline can send it to the model when the operator opted in (#11).
+// Seen live 2026-10-12 (a test email address): `result.guard_output` = {messages: [{role: "user", content:
+// "…****************.com…"}]} — the guard_input with the PII masked (the spec only says "Updated structured
+// prompt"). The LAST message, and only when it is the user's: on a reply check (event_type "output") the
+// last is the assistant's, and a block never needs one — a blocked prompt goes nowhere.
+function redactedPromptOf(result: Record<string, unknown>, action: "allow" | "block"): { redactedPrompt?: string } {
+  if (action !== "allow") return {};
+  const out = result.guard_output as { messages?: unknown } | null | undefined;
+  const msgs = out && Array.isArray(out.messages) ? out.messages : [];
+  const last = msgs[msgs.length - 1] as { role?: unknown; content?: unknown } | undefined;
+  return last?.role === "user" && typeof last.content === "string" ? { redactedPrompt: last.content } : {};
 }
 
 // One synchronous scan. Never throws: network, timeout, bad JSON and non-2xx

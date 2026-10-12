@@ -615,3 +615,67 @@ describe("detectionLabel — Lakera names", () => {
     for (const d of ["custom/thing", "moderated_content/Crime!", "toString", "__proto__", "SSN"]) expect(detectionLabel(d)).toBe(d);
   });
 });
+
+// #7: a quorum stop is the votes', never one vendor's; #11: an applied redaction says whose prompt the model got.
+describe("quorum and applied redaction", () => {
+  const LAKERA = "lakera-guard" as const;
+  it("a quorum stop marks every vote, decides nothing, and counts votes — a fail-closed outage is a vote, not a block", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "quorum",
+        results: [
+          result({ provider: AIRS, outcome: "block" }),
+          result({ provider: AIDR, outcome: "error", error: "down" }),
+          result({ provider: LAKERA, outcome: "allow" }),
+        ],
+        stoppedBy: AIRS,
+        quorum: { configured: 2, needed: 2, votes: 2, of: 3, clamped: false },
+      }),
+      "blocked",
+    );
+    expect(v.headline).toBe("Stopped by quorum — 2 of 3 guardrails voted to stop it (2 needed)");
+    expect(v.vendors.map((x) => [x.provider, x.marker, x.decided])).toEqual([
+      [AIRS, "vote", false],
+      [AIDR, "vote", false],
+      [LAKERA, null, false],
+    ]);
+    expect(v.vendors[1].notes).toContain("Set to fail closed, so it counted as a vote to stop");
+    expect(v.subline).toContain("quorum 2 of 3");
+  });
+
+  it("a lowered quorum says so in the subline", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "quorum",
+        results: [result({ provider: AIRS, outcome: "block" })],
+        stoppedBy: AIRS,
+        quorum: { configured: 3, needed: 1, votes: 1, of: 1, clamped: true },
+      }),
+      "blocked",
+    );
+    expect(v.subline).toContain("set to 3; lowered");
+  });
+
+  it("the applied redaction is not 'partial'; another vendor's says whose prompt the model received", () => {
+    const v = pipelineView(
+      pipe({
+        mode: "parallel",
+        results: [
+          result({ provider: AIDR, transformed: true, redactionApplied: true }),
+          result({ provider: "cato-ai-security", transformed: true }),
+        ],
+        redactionAppliedBy: AIDR,
+      }),
+      "guardrailOnly",
+    );
+    expect(v.vendors[0].partial).toBe(false);
+    expect(v.vendors[0].notes[0]).toMatch(/^Redaction by CrowdStrike AIDR applied — the model received/);
+    expect(v.vendors[1].partial).toBe(true);
+    expect(v.vendors[1].notes[0]).toMatch(/not applied — the model received CrowdStrike AIDR's redacted prompt instead/);
+  });
+
+  it("a Cato Monitor match with no detection listed reads monitor only, not '0 detections'", () => {
+    const v = pipelineView(pipe({ results: [result({ provider: "cato-ai-security", detectOnly: true, detected: [] })] }), "guardrailOnly");
+    expect(v.vendors[0].notes[0]).toMatch(/^Monitor only — a Cato AI Security Monitor rule matched/);
+  });
+});

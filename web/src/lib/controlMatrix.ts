@@ -117,6 +117,19 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
   const key = `${reply ? "reply" : "ext"}:${r.provider}`;
   if (r.outcome === "block") {
     const why = r.detected?.length ? ` (${r.detected.join(", ")})` : "";
+    // Quorum (#7): a block that did not reach the quorum is still this vendor's verdict — shown, never hidden —
+    // but it did not stop anything, so it is not painted as a stop.
+    if (p.quorum && !p.stoppedBy) {
+      return cell(
+        key,
+        layer,
+        name,
+        "flagged",
+        `${name} blocked ${what}${why}, but only ${p.quorum.votes} of the ${p.quorum.needed} votes needed to stop it came in, so ${what} went on.`,
+        false,
+        "blocked · outvoted",
+      );
+    }
     const decisive = multiBlock || p.stoppedBy === r.provider;
     return cell(key, layer, name, "stopped", `${name} blocked ${what}${why}.`, decisive, "blocked");
   }
@@ -124,6 +137,10 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
     if (r.detectOnly) {
       // Lakera's Detect mode, or Cato's null required_action — named generically here.
       return cell(key, layer, name, "flagged", `${name} detected ${r.detected?.join(", ") || "something"} but only alerted — it did not block.`, false, "alerts only");
+    }
+    // #11: this vendor's redacted prompt is what the model received — a pass, and a complete one for the PII it masked.
+    if (r.redactionApplied && !r.incomplete) {
+      return cell(key, layer, name, "passed", `${name} allowed it and redacted it; the model received its redacted prompt.`, false, "passed · redacted");
     }
     if (r.incomplete || r.transformed) {
       return cell(key, layer, name, "passed", `${name} allowed it, but ${r.incomplete ? "not every detection service ran" : "its redaction was not applied"}.`, false, "passed · partial");
@@ -136,15 +153,30 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
     return cell(key, layer, name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail open, so ${what} went on without its verdict.`, false, "no verdict · fail open");
   }
   const why = noVerdictReason(r);
+  // Quorum: a fail-closed error is a vote to stop, and no single vote decides.
+  const tail = p.quorum
+    ? p.stoppedBy
+      ? `, which counts as a vote to stop — ${p.quorum.votes} of ${p.quorum.needed} needed came in, so ${reply ? "the reply was withheld" : "the turn stopped"}`
+      : `, which counts as a vote to stop — but only ${p.quorum.votes} of ${p.quorum.needed} needed came in`
+    : p.stoppedBy === r.provider
+      ? `, so ${reply ? "the reply was withheld" : "the turn stopped"} here`
+      : "";
   return cell(
     key,
     layer,
     name,
     "unavailable",
-    `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed${p.stoppedBy === r.provider ? `, so ${reply ? "the reply was withheld" : "the turn stopped"} here` : ""}. Not a verdict.`,
-    p.stoppedBy === r.provider,
+    `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed${tail}. Not a verdict.`,
+    p.quorum ? !!p.stoppedBy : p.stoppedBy === r.provider,
     "no verdict · fail closed",
   );
+}
+
+// Parallel with two or more blocks: each would have stopped it alone. Quorum, stopped: every block was one of the
+// votes that stopped it — no single one decided, so all are marked.
+function multipleStops(p: GuardrailPipelineResult): boolean {
+  const blocks = p.results.filter((r) => r.outcome === "block").length;
+  return (p.mode === "parallel" && blocks >= 2) || (p.mode === "quorum" && p.stoppedBy != null && blocks >= 1);
 }
 
 function externalCells(i: ControlMatrixInput): MatrixCell[] {
@@ -157,7 +189,7 @@ function externalCells(i: ControlMatrixInput): MatrixCell[] {
   }
   // Parallel with two or more blocks: each would have stopped it alone (same rule
   // as the chat card's "blocked independently").
-  const multiBlock = p.mode === "parallel" && p.results.filter((r) => r.outcome === "block").length >= 2;
+  const multiBlock = multipleStops(p);
   return [
     ...p.results.map((r) => vendorCell(r, p, multiBlock)),
     ...p.notRun.map((n) =>
@@ -200,7 +232,7 @@ function modelCell(i: ControlMatrixInput): MatrixCell {
 function replyCells(i: ControlMatrixInput): MatrixCell[] {
   const p = i.replyPipeline;
   if (!p) return [];
-  const multiBlock = p.mode === "parallel" && p.results.filter((r) => r.outcome === "block").length >= 2;
+  const multiBlock = multipleStops(p);
   return [
     ...p.results.map((r) => vendorCell(r, p, multiBlock)),
     ...p.notRun.map((n) =>

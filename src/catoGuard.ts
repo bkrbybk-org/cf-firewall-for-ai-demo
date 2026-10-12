@@ -44,8 +44,8 @@
 //   - `required_action` null/absent = nothing to do (our live allow).
 //   - `block_action` (with `detection_message`, `policy_name`) and `anonymize_action`
 //     (with `redacted_chat.all_redacted_messages`).
-//   - NEW: `monitor_action` — both pass the request through. NOT handled here yet: it falls
-//     to "unrecognised", so the fail mode decides (PROGRESS.md, Open question for the user).
+//   - NEW: `monitor_action` — both pass the request through. Read as allow with alerts since
+//     2026-10-12 (the user said go); before that it fell to "unrecognised" and the fail mode decided.
 //   - NEW: replies are checked by appending the model's reply as an `assistant` message
 //     (LiteLLM post_call, TrueFoundry output hook). `replyCheck` stays false until the user
 //     decides on third-party evidence.
@@ -147,7 +147,7 @@ function invocationId(v: unknown): string | null {
 // named only when it is a short lowercase token; otherwise it is not echoed at all.
 function unrecognisedVerdict(actionType: unknown, requiredActionPresent: boolean): string {
   const lead =
-    "Cato AI Security's verdict was not recognised (seen live: required_action null = allow, anonymize_action = allow + redaction; documented: block_action)";
+    "Cato AI Security's verdict was not recognised (seen live: required_action null = allow, anonymize_action = allow + redaction; documented: block_action, monitor_action)";
   if (!requiredActionPresent) return `${lead}: required_action was missing or not an object`;
   if (typeof actionType !== "string") return `${lead}: required_action.action_type was missing or not a string`;
   if (SAFE_ACTION.test(actionType)) return `${lead}: action_type was "${actionType}"`;
@@ -161,8 +161,10 @@ function unrecognisedVerdict(actionType: unknown, requiredActionPresent: boolean
 // strip) can end up holding the very value the guardrail was meant to catch.
 // What it does read: names of what fired (each fired policy's operator-set
 // `policy_name`, entity `type`s — each shape-checked), the policy that required the
-// action, Cato's `invocation_id`, and whether the newest message was redacted (never
-// the redacted text itself).
+// action, Cato's `invocation_id`, and whether the newest message was redacted. The one
+// text it reads is the newest message's redacted `content` (`redactedPrompt`) — the user's
+// prompt with the PII already masked — and the pipeline drops it unless the operator chose
+// to send it to the model (#11). Never `entities[].content`, which is the PII itself.
 //
 // The verdict, from the real payloads above:
 //   - `required_action: null` with an `analysis_result` object → allow. If a policy
@@ -212,6 +214,12 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
   const chat = isObject(body.redacted_chat) ? body.redacted_chat : {};
   const newest = isObject(chat.redacted_new_message) ? chat.redacted_new_message : {};
   const transformed = Array.isArray(newest.entities) && newest.entities.length > 0;
+  // The redacted prompt itself, read ONLY so the pipeline can send it to the model when the operator opted in
+  // (applyRedaction, #11). Seen live 2026-10-12: `redacted_new_message` {role: "user", content: "…SSN
+  // [ID_NUMBER_1]?"}. It is the user's own prompt with the PII masked, never a vendor message; it travels in
+  // the requester's JSON body only (stripRaw drops it everywhere else). `entities[].content` — the PII — is not read.
+  const redacted =
+    newest.role === "user" && typeof newest.content === "string" ? { redactedPrompt: newest.content } : {};
 
   if (required === null && analysis) {
     const detected = firedNames(analysis);
@@ -222,7 +230,7 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
       detected,
       ...ids,
       ...(detected.length > 0 ? { detectOnly: true } : {}),
-      ...(transformed ? { transformed: true } : {}),
+      ...(transformed ? { transformed: true, ...redacted } : {}),
     };
   }
   if (required === null) {
@@ -248,6 +256,24 @@ export function parseCatoResponse(status: number, body: unknown, latencyMs: numb
       ...ids,
       ...(policy ? { policy } : {}),
       transformed: true,
+      ...redacted,
+    };
+  }
+  // `monitor_action` — documented by both integrators (LiteLLM, TrueFoundry: pass the request through); the
+  // user's Guards Policy has Monitor-only rules (EU AI Act, Code Protection, Language Detection). A Monitor rule
+  // matched and asked for no action: allow WITH ALERTS (`detectOnly`) — never a clean pass, never a block Cato did
+  // not ask for. Until 2026-10-12 it fell to "unrecognised", so under fail-closed a Monitor match stopped the turn
+  // as "Cato unavailable" (decided with the user that day: read it as allow with alerts). Not yet seen live.
+  if (isObject(required) && required.action_type === "monitor_action") {
+    return {
+      ...base,
+      outcome: "allow",
+      action: "allow",
+      detected: analysis ? firedNames(analysis) : [],
+      ...ids,
+      ...(policy ? { policy } : {}),
+      detectOnly: true,
+      ...(transformed ? { transformed: true, ...redacted } : {}),
     };
   }
   if (!isObject(required) || required.action_type !== "block_action") {

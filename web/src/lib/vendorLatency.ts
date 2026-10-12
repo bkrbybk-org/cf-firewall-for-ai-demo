@@ -60,7 +60,7 @@ export function vendorLatency(results: RtRunResult[], provider: string): Latency
 }
 
 export interface StageLatency {
-  mode: "parallel" | "sequential";
+  mode: "parallel" | "sequential" | "quorum";
   stat: LatencyStat;
 }
 
@@ -68,7 +68,8 @@ export interface StageLatency {
 // errored is excluded for the same reason as above — it would time our timeout.
 export function stageLatency(results: RtRunResult[]): StageLatency[] {
   const out: StageLatency[] = [];
-  for (const mode of ["parallel", "sequential"] as const) {
+  // Quorum waits for every guardrail, like parallel: its stage is the slowest call too, but it is kept apart.
+  for (const mode of ["parallel", "quorum", "sequential"] as const) {
     const rs = results.filter((r) => r.pipelineMode === mode && r.vendors && r.vendors.length > 0);
     if (rs.length === 0) continue;
     const values: number[] = [];

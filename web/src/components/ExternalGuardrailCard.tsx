@@ -73,19 +73,23 @@ function findingChip(v: VendorView): string {
 
 // "decided": the one result that stopped the turn. "blocked independently": parallel mode,
 // where two or more blocked and any one alone would have stopped it (VendorView.marker).
+// "voted to stop": quorum mode, where the turn stopped because enough guardrails voted to stop it.
 function Marker({ v }: { v: VendorView }) {
   if (!v.marker) return null;
   const independent = v.marker === "independent";
+  const vote = v.marker === "vote";
   return (
     <span
       title={
-        independent
-          ? "Ran in parallel with the others and blocked on its own — any one of these blocks would have stopped the turn"
-          : "This result is the one that stopped the turn"
+        vote
+          ? "Quorum mode: one of the votes (a block, or fail closed while unavailable) that together stopped the turn — no single one decided it"
+          : independent
+            ? "Ran in parallel with the others and blocked on its own — any one of these blocks would have stopped the turn"
+            : "This result is the one that stopped the turn"
       }
       className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
     >
-      {independent ? "blocked independently" : "decided"}
+      {vote ? "voted to stop" : independent ? "blocked independently" : "decided"}
     </span>
   );
 }
@@ -595,19 +599,88 @@ export function ExternalGuardrailBadges({ pipeline }: { pipeline: GuardrailPipel
   return (
     <>
       {pipeline.results.map((r) => (
-        <ExternalGuardrailBadge key={r.provider} result={r} reply={pipeline.direction === "reply"} />
+        <ExternalGuardrailBadge
+          key={r.provider}
+          result={r}
+          reply={pipeline.direction === "reply"}
+          quorum={pipeline.quorum}
+          appliedBy={pipeline.redactionAppliedBy}
+        />
       ))}
     </>
   );
 }
 
+// #11: what the model actually received, when an opted-in vendor's redaction was applied. The redacted text rides
+// in the JSON body only (never the x-external-guardrails header), so a streamed turn names the vendor but has no
+// text to show — said, never invented.
+export function RedactionAppliedNote({ pipeline }: { pipeline: GuardrailPipelineResult }) {
+  const by = pipeline.redactionAppliedBy;
+  if (!by || pipeline.direction === "reply") return null;
+  const text = pipeline.results.find((r) => r.provider === by)?.redactedPrompt;
+  return (
+    <div className="mt-1.5 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[11.5px] text-muted">
+      <b className="text-text">Model received {providerLabel(by)}&apos;s redacted prompt</b>, not the original
+      {text ? (
+        <>
+          : <span className="font-mono break-words whitespace-pre-wrap text-text">{text}</span>
+        </>
+      ) : (
+        " — the redacted text is not sent with a streamed reply"
+      )}
+    </div>
+  );
+}
+
 // Reply-metadata chip for a turn the guardrail let through. Same size as the
-// GUARDRAILS / ROUTE chips in Chat.tsx's meta row. A "block" or a fail-closed
-// error never reaches here (those render the card), so they return nothing
-// rather than a chip that would imply the reply was allowed.
+// GUARDRAILS / ROUTE chips in Chat.tsx's meta row. Outside quorum mode a "block" or a
+// fail-closed error never reaches here (those render the card), so they return nothing
+// rather than a chip that would imply the reply was allowed. In quorum mode (#7) they DO
+// reach here when they were outvoted — and are shown as exactly that, never dropped.
 // `reply` (design J): the chip is for the reply check, so it is named and worded for the reply.
-export function ExternalGuardrailBadge({ result, reply = false }: { result: ExternalGuardrailResult; reply?: boolean }) {
+export function ExternalGuardrailBadge({
+  result,
+  reply = false,
+  quorum,
+  appliedBy,
+}: {
+  result: ExternalGuardrailResult;
+  reply?: boolean;
+  quorum?: GuardrailPipelineResult["quorum"];
+  appliedBy?: GuardrailPipelineResult["redactionAppliedBy"];
+}) {
   const name = reply ? `${providerLabel(result.provider)} (reply)` : providerLabel(result.provider);
+  const tally = quorum ? `${quorum.votes} of ${quorum.needed} votes needed` : "";
+  if (quorum && result.outcome === "block") {
+    return (
+      <span
+        title={`${name} blocked ${reply ? "this reply" : "this prompt"}, but quorum mode needs ${quorum.needed} votes to stop a turn and only ${quorum.votes} came in — so it went on. The block is still ${name}'s verdict.`}
+        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+      >
+        {name} · blocked · outvoted ({tally}) · {result.latencyMs} ms
+      </span>
+    );
+  }
+  if (quorum && result.outcome === "error" && !result.failedOpen) {
+    return (
+      <span
+        title={`${result.error ?? "No verdict"} — set to fail closed, so it counted as a vote to stop; too few votes came in.`}
+        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+      >
+        {name} unavailable · fail-closed vote outvoted ({tally})
+      </span>
+    );
+  }
+  if (result.outcome === "allow" && result.redactionApplied && !result.incomplete && !result.detectOnly) {
+    return (
+      <span
+        title={`${name} redacted this prompt and, as configured, the model received ${name}'s redacted prompt instead of the original.`}
+        className="rounded-full border border-cf-green/60 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green"
+      >
+        {name} · allow · redaction applied · {result.latencyMs} ms
+      </span>
+    );
+  }
   if (result.outcome === "allow") {
     // An allow from a scan where a detection service timed out or errored only
     // covers what did run, so it gets the amber "partial" tone rather than the
@@ -620,12 +693,16 @@ export function ExternalGuardrailBadge({ result, reply = false }: { result: Exte
         <span
           title={
             reply
-              ? `${name} redacted part of this reply, but this app does not apply the redaction — the reply is shown as the model wrote it.`
-              : `${name} redacted part of this prompt, but this app does not apply the redaction — the model received the original prompt.`
+              ? `${name} redacted part of this reply, but this app does not apply a reply's redaction — the reply is shown as the model wrote it.`
+              : result.redactionApplied
+                ? `${name}'s redaction was applied — the model received its redacted prompt.`
+                : appliedBy
+                  ? `${name} redacted part of this prompt, but only one redaction is applied per turn — the model received ${providerLabel(appliedBy)}'s redacted prompt.`
+                  : `${name} redacted part of this prompt, but its redaction is not applied (Settings: off for this vendor) — the model received the original prompt.`
           }
           className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
         >
-          {name} · allow · redaction not applied · {result.latencyMs} ms
+          {name} · allow · {result.redactionApplied ? "redaction applied" : "redaction not applied"} · {result.latencyMs} ms
         </span>
       );
     }

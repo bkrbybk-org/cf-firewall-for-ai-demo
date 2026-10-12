@@ -626,6 +626,114 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-12 — Quorum mode; applying a vendor's redaction; "Test all vendors"; Cato monitor_action; Red Team false-block rate
+
+**Asked for:** "do 7-8, 11-13" from the suggestion table. Migration `0010_quorum_and_redaction.sql` (purely additive: three
+`ADD COLUMN`s with defaults that reproduce the old behaviour), applied to prod before the Worker. Deploy
+`5fd6fe7a-489c-4e3d-bbeb-d438bd45283c`. Nothing changes on prod until an admin picks it: the pipeline is still
+**parallel**, and no vendor has `applyRedaction` on. The exception is #12, the user's call: it changes what Cato's
+`monitor_action` means on prod.
+
+**#7 Quorum mode.** This is a third pipeline mode. Every guardrail runs at once, as in parallel, and the turn stops only
+when at least N vote to stop it. The default is 2.
+- A **vote** is whatever would stop the turn on its own in the other modes: a block, or an error from a guardrail set to
+  fail closed.
+- A **fail-open error abstains** and is left out of `of`, the count of guardrails that gave a verdict or voted. Two vendors
+  that were down must not outvote the one that answered and blocked.
+- `needed = max(1, min(N, of))`. When that lowers N, `clamped: true` is set and the card says so. An unreachable quorum
+  would mean no block could ever stop the turn. If nobody answered at all, every vendor was fail-open, so the turn
+  goes on.
+- `stoppedBy` is only bookkeeping (the first voter in configured order). The card marks every vote **"voted to stop"**
+  and none "decided". Its headline counts votes ("Stopped by quorum — 2 of 3 guardrails voted to stop it (2 needed)"),
+  never "blocked by", because a fail-closed vote never looked at the prompt.
+- An **outvoted** block on a turn that went on is still that vendor's verdict, and is always shown: an amber chip
+  "blocked · outvoted (1 of 2 votes needed)", a "flagged" cell in the control strip, an "outvoted" count on Analytics,
+  and "outvoted" in the session export.
+- **Storage:** `guardrail_pipeline.mode` has a CHECK constraint (sequential | parallel), and SQLite cannot alter one
+  without rebuilding the table. So quorum has its own switch, `quorum_on` (with `mode` holding 'parallel'), plus a
+  `quorum` column between 1 and 6. The Red Team counts a quorum stop as a block when at least one vote was a real block,
+  and as an error when every vote was an outage. Saved runs accept the mode. Its stage latency is reported apart and
+  measured like parallel's: the slowest call.
+
+**#11 Applying a vendor's redaction.** This is a per-vendor switch, "Send the redacted prompt to the model", off by
+default. It is offered only where the redacted text has been **seen in a real response**. Captured on prod with
+`includeRaw` and the fixed test prompts, never stored:
+- **CrowdStrike AIDR:** `result.guard_output.messages[]`, the `guard_input` with the PII masked. An email address became
+  `****************.com`. The spec only says "Updated structured prompt".
+- **Cato:** `redacted_chat.redacted_new_message` `{role: "user", content: "…SSN [ID_NUMBER_1]?"}`, also repeated under
+  `required_action.chat_redaction_result`. Real redaction payloads had not been seen before.
+- **Datadog is excluded:** its `redaction_replacements` have never been seen. The server refuses the switch for any
+  other vendor ("…has not been seen in a real response").
+
+The rules for applying it:
+- **One redaction per turn:** the first redacted allow in configured order. Two vendors mask differently, and splicing
+  their outputs would send a prompt neither of them produced. A later vendor's redaction says whose was used instead.
+- **Every vendor still scans the original**, so the comparisons stay like-for-like. Only the model's copy changes; the
+  reply check and the prompt log still see what the user sent.
+- **Opted in, but the vendor redacted and its masked text is unusable** (not a string, empty, control characters, or
+  more than 4× the prompt + 1,000 characters): that counts as an **error**, and the fail mode decides. The original is
+  never sent quietly, because the operator said this vendor's PII must not reach the model.
+- `redactedPrompt` travels in the requester's JSON body only. `stripRaw()` drops it from the `x-external-guardrails`
+  header, so a streamed turn names the vendor but shows no text. It never reaches the verdict log, a saved run or an
+  export; the export says only whose redaction was applied.
+- The chat shows "Model received CrowdStrike AIDR's redacted prompt, not the original: …" and a green chip,
+  "allow · redaction applied". Analytics counts "N redaction applied" apart from "not applied" (AE `double7`).
+- Reply redaction is not applied: the reply check still only withholds.
+
+**#8 "Test all vendors"** (Settings, under the providers). One button runs every fixed sample (benign, attack, PII, and
+the two reply samples where `replyCheck`) on every vendor with its credentials saved. Requests go **one at a time** and
+can be stopped after the current one.
+- The result is one table (verdict, latency, HTTP), plus a **Copy report**: Markdown with each test's response shape,
+  which holds field names and types, never text.
+- A test with no verdict reads **error** with its text, never allow or block. A test not yet run reads "—". Vendors that
+  were skipped are listed with the reason.
+- It is admin-only, like each card's own test. This is the evidence path for verifying Cisco, Lakera, Datadog and the
+  reply checks.
+- Built by a subagent from a fixed brief (new files only), then reviewed here: semantics, raw dropped, the scroll-box rule.
+
+**#12 Cato `monitor_action`** (the user said go, lifting the 2026-10-08 deferral) now reads as **allow with alerts**
+(`detectOnly`), even with no detections listed. The card says "Monitor only — a Cato AI Security Monitor rule
+matched…". Until now it fell to "unrecognised", so a Monitor match was an error that the fail mode decided. Only the
+exact value counts; near misses stay errors. **Not seen live yet:** a plain Thai greeting on prod (Cato's Language
+Detection is a Monitor rule in the user's policy) came back `required_action: null` with no detections, a clean allow.
+
+**#13 Red Team false-block rate.** The Red Team page now sends `x-demo-expect: benign|attack` beside
+`x-demo-source: redteam`. The Worker keeps the label only on Red Team turns (AE `blob11`, read only for exact values),
+so a chat client cannot label its own prompts.
+- Analytics → External guardrails, under Red Team or all traffic, gets a **"Red Team: false blocks and catches"** card:
+  false-block rate = blocks on harmless prompts ÷ **verdicts** on harmless prompts (errors left out, since an error is
+  not a verdict), and catch rate likewise on attacks.
+- "—" when nothing was measured, never 0 %. Under 10 verdicts the rate is flagged "small sample". The same table goes
+  into the Report (.md).
+- Checked live 2026-10-12: AE answers `blob11` / `double7` on points written before they existed with "" and 0, and
+  nothing errors.
+
+**Verified:**
+- **Tests:** 882 (+49), 0 type errors, build clean. **Mutation-verified 18 of 18**, after one fix: the first pass missed
+  "an applied redaction on an error row", because the aggregate masked the row guard. A direct `parseRow` assertion was
+  added and the mutation re-run: caught.
+- **Local (`wrangler dev`, migration applied locally):**
+  - Pipeline PUT stores `quorum_on=1, quorum=3, mode='parallel'`, and `quorum: 9` is refused.
+  - `applyRedaction` is accepted for Cato and refused for Lakera.
+  - A chat turn with Lakera alone, quorum 3, was tried both ways. **Fail open:** `of: 0`, no stop, the turn went to the
+    model. **Fail closed:** the card read "Stopped by quorum — 1 of 1 guardrails voted to stop it (1 needed)", with the
+    subline "quorum 1 of 1 (set to 3; lowered — only 1 gave a verdict or vote)" and "VOTED TO STOP", in dark and light.
+  - Settings showed the Votes-to-stop select, the lowered-quorum warning and Cato's redaction switch (dark).
+  - Test all, run locally: 5 of 5 **error** "Could not reach Lakera Guard: internal error", never a verdict.
+  - Analytics showed the false-block card's empty state. The only console error was the known local Workers AI 502.
+  - One bug was found and fixed in the browser: with nothing enabled, the vote chip read "stop on 3 of 0".
+- **Prod:**
+  - Migration applied, and smoke passes.
+  - `/api/external-guardrails` carries `quorum: 2`, plus `redactionSupported` for AIDR and Cato (`applyRedaction` false).
+  - The bundle carries the new strings.
+  - One harmless labelled Red Team turn ("What is a web application firewall?"): all five AE prompt rows read
+    `src: redteam, expect: benign`. The endpoint's `labelled` shows Lakera's **reply** check with 1 false block of 1, the
+    Crime detector on that answer again. Every other vendor allowed it.
+- **Environment change:** local workerd now also fails to reach **Lakera** (`internal error`). CLAUDE.md said it could;
+  updated.
+- **Not seen on prod:** a quorum stop, an outvoted block, an applied redaction in chat. None is enabled, and enabling
+  needs the admin's browser. A real `monitor_action` has not been seen either.
+
 ### 2026-10-12 — Edge estimates with confidence intervals; vendor latency trend; Cisco reply checks; Lakera labels; third-party compliance line
 
 **Asked for:** "do 4-6, 9-10" from the suggestion table. Deploy `24d1a8e5-3b14-4662-bcdd-fe4dc75bfd5e`, then `5e77294d-7418-4c61-aa61-3ea6a3f1c31c` (openapi text only).
@@ -1036,7 +1144,8 @@ will be built for now. The user's Cato Guards Policy, from a screenshot that day
 "mask if possible, else only record" is an inference from Cato's documented "Anonymize and Block". **Known risk left
 open:** if a Monitor-only match returns `monitor_action`, `parseCatoResponse` reads it as an error, and fail-closed
 stops the turn as "Cato unavailable". The Non-English rule makes Thai prompts the likely trigger. If Cato errors
-show up on non-English prompts, suspect this first.
+show up on non-English prompts, suspect this first. **Resolved 2026-10-12** (the user said go): `monitor_action` is now
+allow with alerts. See that day's entry.
 
 ### 2026-10-08 — Design J, part 2: reply verdicts in the Red Team, as counts only
 

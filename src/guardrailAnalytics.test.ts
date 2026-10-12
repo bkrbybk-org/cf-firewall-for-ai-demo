@@ -193,6 +193,45 @@ describe("aggregate — honesty flags", () => {
   });
 });
 
+// #13, #7, #11 — hand-computed. Lakera on Red Team turns: 4 harmless prompts (1 block, 2 allows, 1 error) and 2
+// attacks (2 blocks). Chat rows carry no label even if one were written; an error is not a verdict.
+describe("aggregate — labels, outvoted blocks, applied redactions", () => {
+  const LABELLED = [
+    { src: "redteam", expect: "benign", provider: "lakera-guard", outcome: "block", mode: "quorum", decided: 0 },
+    { src: "redteam", expect: "benign", provider: "lakera-guard", outcome: "allow" },
+    { src: "redteam", expect: "benign", provider: "lakera-guard", outcome: "allow", alerts: 1 },
+    { src: "redteam", expect: "benign", provider: "lakera-guard", outcome: "error" },
+    { src: "redteam", expect: "attack", provider: "lakera-guard", outcome: "block", mode: "quorum", decided: 1 },
+    { src: "redteam", expect: "attack", provider: "lakera-guard", outcome: "block", si: 2 },
+    { src: "chat", expect: "benign", provider: "lakera-guard", outcome: "block" },
+    { src: "redteam", expect: "harmless", provider: "lakera-guard", outcome: "block" },
+    { src: "chat", provider: "cato-ai-security", outcome: "allow", redaction: 1, applied: 1 },
+    { src: "chat", provider: "cato-ai-security", outcome: "allow", redaction: 1, applied: 0 },
+    { src: "chat", provider: "cato-ai-security", outcome: "error", applied: 1 },
+  ];
+  const out = aggregate(rows(LABELLED), { hours: 24, now: NOW, source: "all", rowsRead: LABELLED.length, rowsDropped: 0 });
+  const lakera = out.vendors.find((v) => v.provider === "lakera-guard")!;
+  const cato = out.vendors.find((v) => v.provider === "cato-ai-security")!;
+
+  it("false blocks: 1 of 3 harmless verdicts; catches: 3 of 3 attack verdicts (weighted); unlabelled rows stay out", () => {
+    expect(lakera.labelled).toEqual({ benign: { verdicts: 3, block: 1 }, attack: { verdicts: 3, block: 3 } });
+  });
+  it("an outvoted block is a quorum block that did not decide; a block outside quorum never is", () => {
+    expect(lakera.block).toBe(6);
+    expect(lakera.outvoted).toBe(1);
+  });
+  it("redactions applied are a subset of redactions, and never on an error", () => {
+    expect(cato).toMatchObject({ redaction: 2, redactionApplied: 1 });
+    // The row itself refuses it, not only the aggregate: an error is not a verdict, so nothing reached the model by it.
+    expect(parseRow(raw({ outcome: "error", applied: 1 }))!.applied).toBe(false);
+    expect(parseRow(raw({ outcome: "allow", applied: "1" }))!.applied).toBe(true);
+  });
+  it("selects the new columns by name", () => {
+    expect(buildSql(24, "all")).toMatch(/blob9 AS mode, blob10 AS action, blob11 AS expect/);
+    expect(buildSql(24, "all")).toMatch(/double7 AS applied/);
+  });
+});
+
 describe("handleGuardrailAnalytics", () => {
   const env = (over: Partial<Env> = {}) => ({ CF_ANALYTICS_TOKEN: "t", CF_ACCOUNT_ID: "acct", ...over }) as Env;
   const url = (q = "") => new URL(`https://x/api/guardrail-analytics${q}`);

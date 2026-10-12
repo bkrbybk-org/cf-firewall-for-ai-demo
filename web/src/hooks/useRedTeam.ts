@@ -18,7 +18,7 @@
 import { useCallback, useRef, useState } from "react";
 import { postChat } from "../lib/api";
 import { fetchVerdictOnce, verdictOutcome } from "../lib/verdict";
-import type { RedTeamAttack, RtResultState, RtRunResult } from "../lib/redteam";
+import { isAttack, type RedTeamAttack, type RtResultState, type RtRunResult } from "../lib/redteam";
 import type { GuardrailPipelineResult } from "../lib/types";
 import { toVendorOutcomes } from "../lib/vendorScorecard";
 
@@ -61,6 +61,7 @@ type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "e
 async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
+  expect: "benign" | "attack",
 ): Promise<{ ray?: string; kind: SendKind; pipeline?: GuardrailPipelineResult; replyPipeline?: GuardrailPipelineResult }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
@@ -78,6 +79,7 @@ async function sendOne(
       },
       undefined,
       "redteam",
+      expect,
     );
     if (res.mode === "stream") {
       // Shouldn't happen with stream:false, but treat a stream as a reply.
@@ -99,8 +101,13 @@ async function sendOne(
     // one that decides is `stoppedBy` — not whichever result happens to be first.
     if (data?.externalGuardrailBlocked) {
       const p = data.externalGuardrails;
-      const stopper = p?.results.find((r) => r.provider === p.stoppedBy);
-      return { ray, pipeline, kind: stopper?.outcome === "block" ? "external" : "error" };
+      // Quorum (#7): stoppedBy is only the first voter. The votes stopped it; it scores as a block when at least
+      // one vote was a real block, and as an error when every vote was a fail-closed outage (no verdict at all).
+      const blocked =
+        p?.mode === "quorum"
+          ? p.results.some((r) => r.outcome === "block")
+          : p?.results.find((r) => r.provider === p.stoppedBy)?.outcome === "block";
+      return { ray, pipeline, kind: blocked ? "external" : "error" };
     }
     // Guardrail-only: also a 200 with no reply, and also not a failure.
     if (status >= 200 && status < 300 && data?.guardrailOnly) return { ray, pipeline, kind: "skipped" };
@@ -244,7 +251,7 @@ export function useRedTeam(): RedTeamRun {
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
-      const { ray, kind, pipeline, replyPipeline } = await sendOne(a.prompt, cfg);
+      const { ray, kind, pipeline, replyPipeline } = await sendOne(a.prompt, cfg, isAttack(a) ? "attack" : "benign");
       if (stopRef.current) return;
       sent.push({ id: a.id, ray, ts, kind, pipeline, replyPipeline });
       setOne(a.id, "sent");

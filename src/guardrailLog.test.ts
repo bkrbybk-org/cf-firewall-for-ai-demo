@@ -3,7 +3,16 @@
 // is its own outcome); and the privacy allowlist — no prompt, reply, error text, raw body, summary or
 // policy can reach a line, whatever the result object carries.
 import { describe, expect, it } from "vitest";
-import { AE_SCHEMA, VERDICT_EVENT, dataPointOf, logVerdicts, sourceOf, verdictLines, type VerdictLine } from "./guardrailLog";
+import {
+  AE_SCHEMA,
+  VERDICT_EVENT,
+  dataPointOf,
+  expectOf,
+  logVerdicts,
+  sourceOf,
+  verdictLines,
+  type VerdictLine,
+} from "./guardrailLog";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 
 const SECRET = "078-05-1120"; // the void sample SSN — must never appear in a line
@@ -43,6 +52,7 @@ describe("verdictLines", () => {
       outcome: "allow",
       alerts: false,
       redaction: false,
+      redactionApplied: false,
       incomplete: false,
       decided: false,
       ms: 12,
@@ -52,6 +62,7 @@ describe("verdictLines", () => {
       scanId: "scan-1",
       mode: "sequential",
       action: null,
+      expect: "",
     });
     expect(lines[1].detected).toBe("prompt_attack");
     expect(lines[2]).toMatchObject({ ms: null, status: null, detected: "" });
@@ -154,14 +165,47 @@ describe("dataPointOf (Analytics Engine)", () => {
     );
     expect(dataPointOf(ran)).toEqual({
       indexes: ["abc|reply|datadog-ai-guard"],
-      blobs: [AE_SCHEMA, "redteam", "reply", "datadog-ai-guard", "allow", "jailbreak", "abc", "e1", "sequential", "abort"],
-      doubles: [87, 200, 1, 0, 0, 0],
+      blobs: [AE_SCHEMA, "redteam", "reply", "datadog-ai-guard", "allow", "jailbreak", "abc", "e1", "sequential", "abort", ""],
+      doubles: [87, 200, 1, 0, 0, 0, 0],
     });
     expect(dataPointOf(skipped)).toEqual({
       indexes: ["abc|reply|cisco-ai-defense"],
-      blobs: [AE_SCHEMA, "redteam", "reply", "cisco-ai-defense", "not_run", "", "abc", "", "sequential", ""],
-      doubles: [-1, 0, 0, 0, 0, 0],
+      blobs: [AE_SCHEMA, "redteam", "reply", "cisco-ai-defense", "not_run", "", "abc", "", "sequential", "", ""],
+      doubles: [-1, 0, 0, 0, 0, 0, 0],
     });
+  });
+
+  // #13 and #11: blob11 is the Red Team's label, double7 whether this vendor's redaction reached the model.
+  it("carries the Red Team label (blob11) and an applied redaction (double7)", () => {
+    const p = pipe({
+      results: [res({ provider: "cato-ai-security", outcome: "allow", transformed: true, redactionApplied: true })],
+      redactionAppliedBy: "cato-ai-security",
+    });
+    const [l] = verdictLines(p, "redteam", "r1", "benign");
+    expect(l).toMatchObject({ expect: "benign", redaction: true, redactionApplied: true });
+    expect(dataPointOf(l).blobs![10]).toBe("benign");
+    expect(dataPointOf(l).doubles![6]).toBe(1);
+    // A label means nothing on a chat turn: nobody curated that prompt.
+    expect(verdictLines(p, "chat", "r1", "benign")[0].expect).toBe("");
+    // An error is never "redaction applied", whatever it carries.
+    const err = pipe({ results: [res({ provider: "cato-ai-security", outcome: "error", redactionApplied: true })] });
+    expect(verdictLines(err, "chat", "r1")[0].redactionApplied).toBe(false);
+  });
+
+  // #7: no single vote decides a quorum; every vote does, when they stopped the turn — and none when outvoted.
+  it("marks every vote as decided in a stopped quorum turn, and none when the block was outvoted", () => {
+    const results = [
+      res({ provider: "lakera-guard", outcome: "block" }),
+      res({ provider: "prisma-airs", outcome: "block" }),
+      res({ provider: "cato-ai-security", outcome: "error" }), // fail closed: a vote
+      res({ provider: "cisco-ai-defense", outcome: "error", failedOpen: true }), // abstains
+      res({ provider: "crowdstrike-aidr", outcome: "allow" }),
+    ];
+    const stopped = verdictLines(pipe({ mode: "quorum", results, stoppedBy: "lakera-guard" }), "chat", "r");
+    expect(stopped.map((l) => l.decided)).toEqual([true, true, true, false, false]);
+    expect(stopped[0].mode).toBe("quorum");
+    const outvoted = verdictLines(pipe({ mode: "quorum", results: results.slice(0, 1), stoppedBy: null }), "chat", "r");
+    expect(outvoted[0]).toMatchObject({ outcome: "block", decided: false });
   });
 
   // AE samples per index: a repeating index (the vendor) was sampled on prod after 7 points in 15 s.
@@ -196,5 +240,14 @@ describe("sourceOf", () => {
     expect(sourceOf(req("redteam"))).toBe("redteam");
     // (Header values are whitespace-trimmed by the platform, so "redteam " arrives as "redteam".)
     for (const v of [undefined, "RedTeam", "red team", "chat", "scanner"]) expect(sourceOf(req(v))).toBe("chat");
+  });
+});
+
+describe("expectOf", () => {
+  it("reads only the exact labels; anything else is unlabelled", () => {
+    const req = (v?: string) => new Request("https://x/api/chat", v == null ? {} : { headers: { "x-demo-expect": v } });
+    expect(expectOf(req("benign"))).toBe("benign");
+    expect(expectOf(req("attack"))).toBe("attack");
+    for (const v of [undefined, "", "Benign", "harmless", "benign,attack"]) expect(expectOf(req(v)), String(v)).toBe("");
   });
 });

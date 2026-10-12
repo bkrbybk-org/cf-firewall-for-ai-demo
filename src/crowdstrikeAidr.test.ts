@@ -86,6 +86,23 @@ describe("parseAidrResponse", () => {
     expect(parseAidrResponse(200, ok({ blocked: false, transformed: true }), 1).transformed).toBe(true);
   });
 
+  // #11, the shape seen live 2026-10-12: guard_output mirrors guard_input with the PII masked.
+  it("reads the redacted prompt from guard_output's last message, only for a user message on an allow", () => {
+    const masked = "Please send the summary to ****************.com when you are done.";
+    const live = { blocked: false, transformed: true, guard_output: { messages: [{ content: masked, role: "user" }] } };
+    expect(parseAidrResponse(200, ok(live), 1)).toMatchObject({ outcome: "allow", transformed: true, redactedPrompt: masked });
+    // Not transformed → nothing read, even if a guard_output is present.
+    expect(parseAidrResponse(200, ok({ ...live, transformed: false }), 1)).not.toHaveProperty("redactedPrompt");
+    // A block never carries it.
+    expect(parseAidrResponse(200, ok({ ...live, blocked: true }), 1)).not.toHaveProperty("redactedPrompt");
+    // The last message must be the user's, with string content.
+    const reply = { ...live, guard_output: { messages: [{ role: "user", content: "q" }, { role: "assistant", content: masked }] } };
+    expect(parseAidrResponse(200, ok(reply), 1)).not.toHaveProperty("redactedPrompt");
+    for (const bad of [null, {}, { messages: "x" }, { messages: [] }, { messages: [{ role: "user", content: 7 }] }]) {
+      expect(parseAidrResponse(200, ok({ ...live, guard_output: bad }), 1), JSON.stringify(bad)).not.toHaveProperty("redactedPrompt");
+    }
+  });
+
   it("treats a 200 without a boolean `blocked` as an error, not an allow", () => {
     expect(parseAidrResponse(200, ok({ detectors: {} }), 1).outcome).toBe("error");
     expect(parseAidrResponse(200, ok({ blocked: "false" }), 1).outcome).toBe("error");

@@ -7,7 +7,7 @@ import { controlMatrix, type ControlMatrixInput } from "../lib/controlMatrix";
 import { useEdgeKnowledge } from "../lib/verdictStore";
 import { ControlMatrix } from "./ControlMatrix";
 import { ExportButton } from "./ExportButton";
-import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard } from "./ExternalGuardrailCard";
+import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard, RedactionAppliedNote } from "./ExternalGuardrailCard";
 import { GuardrailRawResponses } from "./GuardrailRawResponses";
 import { GuardrailReports } from "./GuardrailReportPanel";
 import { useGuardrailCardLayout } from "../hooks/useGuardrailCardLayout";
@@ -439,6 +439,7 @@ export function Chat({
                     </div>
                     {/* An allowed prompt still has a Prisma AIRS report: which
                         detectors looked, and any that flagged it but only alert. */}
+                    {m.meta.externalGuardrails && <RedactionAppliedNote pipeline={m.meta.externalGuardrails} />}
                     {m.meta.externalGuardrails && <GuardrailReports pipeline={m.meta.externalGuardrails} />}
                     {m.meta.externalGuardrails && <GuardrailRawResponses pipeline={m.meta.externalGuardrails} />}
                     {m.meta.replyGuardrails && <GuardrailRawResponses pipeline={m.meta.replyGuardrails} />}

@@ -28,6 +28,9 @@ interface ExportGuardrails {
   results: { provider: string; outcome: string; latencyMs: number; failedOpen?: boolean; httpStatus?: number; category?: string; detected?: string[] }[];
   notRun: { provider: string; reason: string }[];
   latencyMs: number;
+  quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean }; // quorum mode (#7)
+  // #11: whose redacted prompt the model received. The redacted TEXT is never exported — only who.
+  redactionAppliedBy?: string;
 }
 
 function summarizePipeline(p: GuardrailPipelineResult): ExportGuardrails {
@@ -45,6 +48,8 @@ function summarizePipeline(p: GuardrailPipelineResult): ExportGuardrails {
     })),
     notRun: p.notRun,
     latencyMs: p.latencyMs,
+    ...(p.quorum ? { quorum: p.quorum } : {}),
+    ...(p.redactionAppliedBy ? { redactionAppliedBy: p.redactionAppliedBy } : {}),
   };
 }
 
@@ -282,7 +287,23 @@ export function toMarkdown(exp: SessionExport): string {
     lines.push("");
     if (t.ray) lines.push(`ray: \`${t.ray}\``);
     const pipelineLines = (title: string, g: ExportGuardrails, stopped: string) => {
-      lines.push(`${title} (${g.mode}, ${g.latencyMs} ms total):`);
+      const q = g.quorum;
+      lines.push(
+        `${title} (${g.mode}${q ? ` — ${q.votes} of ${q.needed} votes needed${q.clamped ? `, lowered from ${q.configured}` : ""}` : ""}, ${g.latencyMs} ms total):`,
+      );
+      // Quorum: no single result stopped it. Every vote is marked when the votes stopped it, and a block that was
+      // outvoted says so — stoppedBy there is only bookkeeping (the first voter).
+      const vote = (r: ExportGuardrails["results"][number]) => r.outcome === "block" || (r.outcome === "error" && !r.failedOpen);
+      const tag = (r: ExportGuardrails["results"][number]) =>
+        q
+          ? vote(r)
+            ? g.stoppedBy
+              ? " — voted to stop"
+              : " — outvoted"
+            : ""
+          : r.provider === g.stoppedBy
+            ? ` — ${stopped}`
+            : "";
       for (const r of g.results) {
         const what =
           r.outcome === "error"
@@ -290,9 +311,10 @@ export function toMarkdown(exp: SessionExport): string {
               ? `no verdict (${noVerdictReason(r).toLowerCase()}) — went on (fail open)`
               : `no verdict (${noVerdictReason(r).toLowerCase()})`
             : r.outcome;
-        lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${r.provider === g.stoppedBy ? ` — ${stopped}` : ""}`);
+        lines.push(`- ${r.provider}: ${what} (${r.latencyMs} ms)${tag(r)}`);
       }
       for (const n of g.notRun) lines.push(`- ${n.provider}: did not run — ${n.reason}`);
+      if (g.redactionAppliedBy) lines.push(`- the model received ${g.redactionAppliedBy}'s redacted prompt, not the original`);
     };
     if (t.externalGuardrails) pipelineLines("external guardrails", t.externalGuardrails, "stopped the turn");
     if (t.replyGuardrails) pipelineLines("reply check", t.replyGuardrails, "withheld the reply");

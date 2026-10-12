@@ -358,7 +358,7 @@ export function reportToMarkdown(r: BenchmarkReport): string {
       "",
     );
     for (const s of r.latency.stage) {
-      L.push(`Guardrail stage, ${s.mode} (${s.mode === "parallel" ? "the slowest call" : "the sum of the calls"} per prompt): ${lat(s.stat)}.`, "");
+      L.push(`Guardrail stage, ${s.mode} (${s.mode === "sequential" ? "the sum of the calls" : "the slowest call"} per prompt): ${lat(s.stat)}.`, "");
     }
   }
 

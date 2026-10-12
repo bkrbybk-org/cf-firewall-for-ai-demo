@@ -13,7 +13,13 @@
 // Never: the prompt, the reply, `error` text (it can carry a vendor's message), `raw`, `summary`,
 // `category` beyond Datadog's deny/abort token, or `policy` (operator free text).
 
-import type { ExternalGuardrailProvider, ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
+import type {
+  ExternalGuardrailProvider,
+  ExternalGuardrailResult,
+  GuardrailPipelineMode,
+  GuardrailPipelineResult,
+} from "./types";
+import { stopsTurn } from "./externalGuardrails";
 
 // The marker every line carries, so the query can select exactly these lines out of the Worker's logs.
 export const VERDICT_EVENT = "guardrail_verdict";
@@ -24,6 +30,9 @@ export type VerdictOutcome = "block" | "allow" | "error" | "failed_open" | "not_
 // Where the turn came from. "redteam" is the app's own Red Team page (it says so in a request header);
 // everything else — the chat page, the API, an external scanner — is "chat".
 export type VerdictSource = "chat" | "redteam";
+// What the Red Team page says a prompt IS (#13): "benign" for its harmless rows — a block there is a false block —
+// "attack" for the rest. "" for anything else (chat, the API), where nobody has labelled the prompt.
+export type VerdictExpect = "benign" | "attack" | "";
 
 export interface VerdictLine {
   event: typeof VERDICT_EVENT;
@@ -33,16 +42,19 @@ export interface VerdictLine {
   provider: ExternalGuardrailProvider;
   outcome: VerdictOutcome;
   alerts: boolean; // allow with alerts (detectOnly)
-  redaction: boolean; // redaction requested, not applied (transformed)
+  redaction: boolean; // the vendor redacted the prompt (transformed) — applied or not, see redactionApplied
+  redactionApplied: boolean; // #11: ITS redacted prompt is what the model received
   incomplete: boolean; // a vendor sub-check timed out (Prisma AIRS)
-  decided: boolean; // this vendor's verdict stopped the turn
+  // This vendor's verdict stopped the turn. Quorum mode: every vote, when the votes stopped it (no single one did).
+  decided: boolean;
   ms: number | null; // the vendor call's latency; null when it never ran
   status: number | null; // the vendor's HTTP status, when it answered
   detected: string; // comma-joined names; "" when nothing fired
   ray: string | null;
   scanId: string | null;
-  mode: "sequential" | "parallel";
+  mode: GuardrailPipelineMode;
   action: string | null; // Datadog's "deny" / "abort" only — the one category that is a fixed token
+  expect: VerdictExpect; // #13: the Red Team's label for the prompt; "" when unlabelled
 }
 
 const NAME = /^[A-Za-z0-9_.:\-/ ]{1,80}$/;
@@ -56,11 +68,29 @@ function outcomeOf(r: ExternalGuardrailResult): VerdictOutcome {
 
 // The lines for one pipeline run: one per vendor that ran, and one per vendor listed as not run (so a
 // vendor skipped after a block is counted as skipped, never as missing).
-export function verdictLines(p: GuardrailPipelineResult, src: VerdictSource, ray: string | null): VerdictLine[] {
+export function verdictLines(
+  p: GuardrailPipelineResult,
+  src: VerdictSource,
+  ray: string | null,
+  expect: VerdictExpect = "",
+): VerdictLine[] {
   // The bare ray id ("8f1c…", not "8f1c…-SIN"): the form the edge's firewall events carry as rayName, so
   // a line joins to the edge verdict; the prompt log's full cf-ray starts with it.
   const rayId = ray ? ray.split("-")[0].trim() || null : null;
-  const base = { event: VERDICT_EVENT, v: VERDICT_SCHEMA, src, dir: p.direction ?? "prompt", ray: rayId, mode: p.mode } as const;
+  // A label only counts on the Red Team's own turns: "benign" on a chat turn would be a client's say-so about a
+  // prompt nobody curated.
+  const label: VerdictExpect = src === "redteam" ? expect : "";
+  const base = {
+    event: VERDICT_EVENT,
+    v: VERDICT_SCHEMA,
+    src,
+    dir: p.direction ?? "prompt",
+    ray: rayId,
+    mode: p.mode,
+    expect: label,
+  } as const;
+  const decidedBy = (r: ExternalGuardrailResult) =>
+    p.mode === "quorum" ? p.stoppedBy != null && stopsTurn(r) : p.stoppedBy === r.provider;
   const ran = p.results.map(
     (r): VerdictLine => ({
       ...base,
@@ -69,8 +99,9 @@ export function verdictLines(p: GuardrailPipelineResult, src: VerdictSource, ray
       // Flags describe a verdict; an error has none, whatever the result object carries.
       alerts: r.outcome === "allow" && !!r.detectOnly,
       redaction: r.outcome === "allow" && !!r.transformed,
+      redactionApplied: r.outcome === "allow" && !!r.redactionApplied,
       incomplete: r.outcome !== "error" && !!r.incomplete,
-      decided: p.stoppedBy === r.provider,
+      decided: decidedBy(r),
       ms: Number.isFinite(r.latencyMs) ? Math.max(0, Math.round(r.latencyMs)) : null,
       status: typeof r.httpStatus === "number" ? r.httpStatus : null,
       detected: r.outcome === "error" ? "" : [...new Set((r.detected ?? []).filter((d) => NAME.test(d)))].join(","),
@@ -86,6 +117,7 @@ export function verdictLines(p: GuardrailPipelineResult, src: VerdictSource, ray
       outcome: "not_run",
       alerts: false,
       redaction: false,
+      redactionApplied: false,
       incomplete: false,
       decided: false,
       ms: null,
@@ -128,6 +160,7 @@ export function dataPointOf(l: VerdictLine, unique: () => string = () => crypto.
       l.scanId ?? "", // blob8
       l.mode, // blob9
       l.action ?? "", // blob10
+      l.expect, // blob11 — #13; absent (read as "") on points written before 2026-10-12
     ],
     doubles: [
       l.ms ?? -1, // double1 — -1: the vendor never ran (not_run), so there is no latency to count
@@ -136,6 +169,7 @@ export function dataPointOf(l: VerdictLine, unique: () => string = () => crypto.
       l.redaction ? 1 : 0, // double4
       l.incomplete ? 1 : 0, // double5
       l.decided ? 1 : 0, // double6
+      l.redactionApplied ? 1 : 0, // double7 — #11; absent (read as 0) on older points
     ],
   };
 }
@@ -146,12 +180,12 @@ export function logVerdicts(
   p: GuardrailPipelineResult | null,
   src: VerdictSource,
   ray: string | null,
-  opts: { ae?: AnalyticsEngineDataset; sink?: (line: VerdictLine) => void } = {},
+  opts: { ae?: AnalyticsEngineDataset; sink?: (line: VerdictLine) => void; expect?: VerdictExpect } = {},
 ): void {
   if (!p) return;
   const sink = opts.sink ?? ((line: VerdictLine) => console.log(line));
   try {
-    for (const line of verdictLines(p, src, ray)) {
+    for (const line of verdictLines(p, src, ray, opts.expect)) {
       sink(line);
       opts.ae?.writeDataPoint(dataPointOf(line)); // non-blocking; never awaited (Cloudflare's guidance)
     }
@@ -165,4 +199,12 @@ export const SOURCE_HEADER = "x-demo-source";
 
 export function sourceOf(request: Request): VerdictSource {
   return request.headers.get(SOURCE_HEADER) === "redteam" ? "redteam" : "chat";
+}
+
+// #13: the Red Team page's label for the prompt it sent. Exact values only; anything else is unlabelled.
+export const EXPECT_HEADER = "x-demo-expect";
+
+export function expectOf(request: Request): VerdictExpect {
+  const v = request.headers.get(EXPECT_HEADER);
+  return v === "benign" || v === "attack" ? v : "";
 }
