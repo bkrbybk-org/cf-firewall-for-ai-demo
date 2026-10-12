@@ -117,8 +117,8 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     profileLabel: "",
     keyLabel: "API key",
     vendor: "Cisco",
-    // "prompts and responses", but which roles are inspected is not documented: off until a payload is seen.
-    replyCheck: false,
+    // The SDK's inspect_response() sends the reply alone as {role: "assistant"} (src/ciscoAiDefense.ts, 2026-10-12).
+    replyCheck: true,
   },
   "lakera-guard": {
     label: "Check Point Lakera Guard",
@@ -722,7 +722,10 @@ export async function scanWithKey(
     // Both `verified: false` until a real payload has been seen (PROGRESS.md plan,
     // step 6) — the page says so; the parsers follow the vendors' docs.
     case "cisco-ai-defense":
-      return scanPromptWithCiscoAid({ baseUrl, apiKey, prompt: input.prompt, transactionId: ray }, fetchImpl);
+      return scanPromptWithCiscoAid(
+        { baseUrl, apiKey, prompt: input.prompt, response: input.response, transactionId: ray },
+        fetchImpl,
+      );
     case "lakera-guard":
       // The project is the policy, as Prisma AIRS's profile is: profileName holds it.
       return scanPromptWithLakera(

@@ -126,6 +126,18 @@ describe("aggregate — hand-computed", () => {
     });
   });
 
+  it("latency trend: each bucket's p50 over its timed checks, aligned with the series, null where none ran", () => {
+    const i10 = out.series.findIndex((p) => p.t === "2026-10-09T10:00:00.000Z");
+    const i11 = out.series.findIndex((p) => p.t === "2026-10-09T11:00:00.000Z");
+    const airs = v("prisma-airs");
+    expect(airs.latencyTrend).toHaveLength(out.series.length);
+    expect(airs.latencyTrend[i10]).toBe(100); // 10:15 block, 100 ms
+    expect(airs.latencyTrend[i11]).toBe(300); // 11:05 300 ms + 11:40 5000 ms → nearest-rank p50 of [300, 5000] = 300
+    expect(airs.latencyTrend.filter((x) => x != null)).toHaveLength(2); // every other hour: a gap, not 0 ms
+    expect(v("cato-ai-security").latencyTrend[i10]).toBeNull(); // its 10:15 row was not run — no latency
+    expect(v("cato-ai-security").latencyTrend[i11]).toBe(5000);
+  });
+
   it("series: every hour of the window prefilled, verdicts in their bucket, alerts apart from clean allows", () => {
     expect(out.series).toHaveLength(25); // 12:00 yesterday … 12:00 today, inclusive
     const at10 = out.series.find((p) => p.t === "2026-10-09T10:00:00.000Z")!;
@@ -145,6 +157,17 @@ describe("aggregate — latency edge cases", () => {
     });
     expect(out.vendors[0]).toMatchObject({ latencyN: 2, p50Ms: 100, p95Ms: 200 });
   });
+  it("a not-run row in the same bucket does not pull the bucket's trend point to null", () => {
+    const out = aggregate(
+      rows([
+        { provider: "lakera-guard", dir: "reply", outcome: "not_run", ms: -1, ts: at("2026-10-09T11:31:00Z") },
+        { provider: "lakera-guard", dir: "reply", ms: 300, ts: at("2026-10-09T11:32:00Z") },
+      ]),
+      { hours: 1, now: NOW, source: "chat", rowsRead: 2, rowsDropped: 0 },
+    );
+    expect(out.vendors[0].latencyTrend.filter((x) => x != null)).toEqual([300]);
+  });
+
   it("a vendor that only ever 'did not run' has no latency — null, never 0 ms", () => {
     const out = aggregate(rows([{ provider: "cisco-ai-defense", dir: "reply", outcome: "not_run", ms: -1 }]), {
       hours: 1, now: NOW, source: "chat", rowsRead: 1, rowsDropped: 0,

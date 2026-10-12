@@ -42,6 +42,15 @@ describe("buildCiscoAidRequest", () => {
     });
   });
 
+  // Cisco's SDK inspect_response(): the reply alone, as the assistant message — so a finding is the reply's own,
+  // never the prompt's.
+  it("a reply check sends the reply alone as the assistant message, and not the prompt", () => {
+    const body = JSON.parse(buildCiscoAidRequest({ ...input, response: "The SSN on file is 078-05-1120." }).init.body as string);
+    expect(body.messages).toEqual([{ role: "assistant", content: "The SSN on file is 078-05-1120." }]);
+    expect(JSON.stringify(body)).not.toContain('"hello"');
+    expect(body.metadata).toEqual({ client_transaction_id: "ray123" });
+  });
+
   it("omits metadata entirely without a transaction id", () => {
     const body = JSON.parse(buildCiscoAidRequest({ ...input, transactionId: undefined }).init.body as string);
     expect(body).toEqual({ messages: [{ role: "user", content: "hello" }] });

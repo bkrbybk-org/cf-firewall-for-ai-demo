@@ -22,7 +22,7 @@
 //    has retention (90 days, newest 1,000 rows; src/promptlog.ts). When
 //    `retention.windowPartial` says the window reaches past what is kept, the
 //    redaction count is a floor too, and says "at least".
-import type { Analytics, PromptAnalytics } from "./types";
+import type { Analytics, ExternalGuardrailProvider, GuardrailAnalytics, PromptAnalytics } from "./types";
 import type { Evidence } from "./compliance";
 
 export type EvidenceStatus = "unconfigured" | "no-data" | "ok";
@@ -61,6 +61,39 @@ function unconfigured(win: string): EvidenceResult {
 }
 function noData(win: string): EvidenceResult {
   return { status: "no-data", windowLabel: win };
+}
+
+// The third-party line under MEASURE 2.7 (compliance.ts `thirdParty`): what the external guardrails decided about
+// chat prompts in the window, attributed per vendor. Never merged into Cloudflare's headline. Same statuses as the
+// Cloudflare evidence: unconfigured (nothing shown), no-data (no prompt checked — not "0 blocked"), ok.
+export function resolveThirdPartyEvidence(
+  g: GuardrailAnalytics | null,
+  label: (provider: ExternalGuardrailProvider) => string,
+  hours: number,
+): EvidenceResult {
+  const win = windowLabel(hours);
+  if (!g || g.configured === false || g.error || !Array.isArray(g.vendors)) return unconfigured(win);
+  const prompt = g.vendors.filter((v) => v.dir === "prompt");
+  const checked = prompt.reduce((n, v) => n + v.checked, 0);
+  if (checked === 0) return noData(win);
+  // "≈" when Analytics Engine sampled, "at least" when the read was capped — the tab's marks.
+  const mark = g.capped ? "at least " : g.sampled ? "≈" : "";
+  const blocked = prompt.reduce((n, v) => n + v.block, 0);
+  const by = prompt
+    .filter((v) => v.block > 0)
+    .sort((a, b) => b.block - a.block)
+    .map((v) => `${label(v.provider)} ${mark}${fmt(v.block)}`)
+    .join(", ");
+  const vendors = new Set(prompt.filter((v) => v.checked > 0).map((v) => v.provider)).size;
+  return {
+    status: "ok",
+    windowLabel: win,
+    headline: `External guardrails: ${mark}${plural(checked, "prompt check")} by ${plural(vendors, "vendor")} · ${mark}${fmt(blocked)} blocked${by ? ` (${by})` : ""}`,
+    floor: g.capped,
+    note:
+      "Third-party vendors this app forwards each chat prompt to — not Cloudflare controls, and not part of this control's coverage grade. Chat traffic only; Red Team runs are left out." +
+      (g.sampled ? " Counts are sampled estimates." : ""),
+  };
 }
 
 export function resolveEvidence(

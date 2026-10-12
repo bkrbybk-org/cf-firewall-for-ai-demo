@@ -172,6 +172,8 @@ alters what a customer sees in a demo. State it and let them choose.
   fake API key → 401, but a fake application key of the real 40-hex shape → 403 — so a probe proves the application
   key arrived, never the API key. Blocking is off by default in Datadog, so expect DENY with `is_blocking_enabled:
   false` (allow with alerts here), and REST evaluations never appear in Datadog's UI.
+  Cisco AI Defense likewise ships an open-source client, `cisco-ai-defense/ai-defense-python-sdk` — the source of record
+  for roles (`user`/`assistant`/`system`) and for reply checking (`inspect_response` sends the reply alone as `assistant`).
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

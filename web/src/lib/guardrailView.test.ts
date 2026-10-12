@@ -4,7 +4,7 @@
 // pin the places where a card could: crediting the wrong vendor with the stop, turning
 // an outage into a verdict, or reading a partial scan as a clean pass.
 import { describe, expect, it } from "vitest";
-import { pipelineView, vendorTableColumn } from "./guardrailView";
+import { detectionLabel, pipelineView, vendorTableColumn } from "./guardrailView";
 import type { ExternalGuardrailResult, GuardrailPipelineResult } from "./types";
 
 const AIRS = "prisma-airs" as const;
@@ -356,7 +356,7 @@ describe("rule 6: honesty notes", () => {
     const a = v.vendors[0]!;
     expect(a.stateLabel).toBe("allow");
     expect(a.partial).toBe(true);
-    expect(a.findings).toEqual(["prompt_attack", "pii/email"]);
+    expect(a.findings).toEqual(["Prompt attack", "PII: email"]);
     expect(a.notes).toContain("Detect mode — Lakera Guard logged 2 detections but its project only alerts, so it did not block");
   });
 
@@ -600,5 +600,18 @@ describe("design J: a reply-check card is worded for the reply", () => {
     const v = pipelineView(pipe({ stoppedBy: AIRS, results: [result({ provider: AIRS, outcome: "block" })] }), "blocked");
     expect(v.headline).toBe("Blocked by 1 of 1 guardrail");
     expect(v.subline.startsWith("reply check")).toBe(false);
+  });
+});
+
+// Lakera's `<category>/<type>` names: the two category prefixes it uses are read, the type is shown as sent.
+describe("detectionLabel — Lakera names", () => {
+  it("formats content moderation and PII types without guessing a name, and labels prompt_attack", () => {
+    expect(detectionLabel("moderated_content/crime")).toBe("Content moderation: crime");
+    expect(detectionLabel("moderated_content/self_harm")).toBe("Content moderation: self harm");
+    expect(detectionLabel("pii/email")).toBe("PII: email");
+    expect(detectionLabel("prompt_attack")).toBe("Prompt attack");
+  });
+  it("leaves anything else as sent — another category, odd characters, inherited keys", () => {
+    for (const d of ["custom/thing", "moderated_content/Crime!", "toString", "__proto__", "SSN"]) expect(detectionLabel(d)).toBe(d);
   });
 });

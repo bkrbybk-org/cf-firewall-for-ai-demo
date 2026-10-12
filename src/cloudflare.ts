@@ -11,7 +11,7 @@ import {
 import { markReadCoverage } from "./coverage";
 import { PublicError } from "./publicError";
 import { nearestRank } from "./percentile";
-import type { AnalyticsSummary, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
+import type { AnalyticsSummary, EdgeEstimate, EstimateCi, GatewayAnalytics, VerdictResult, NeuronUsage } from "./types";
 
 // Time-bucket scaffold shared by the zone analytics and the gateway analytics.
 // Width comes from bucketFor() (5-minute buckets at 1h, hourly to 48h, daily
@@ -441,6 +441,9 @@ type AnalyticsData = {
       fwPrev?: { action: string }[];
       httpPrev?: { firewallForAiPiiCategories: string[] | null }[];
       ruleGroups?: { count: number; avg?: { sampleInterval?: number }; dimensions?: { action?: string; description?: string; ruleId?: string } }[];
+      estTotal?: GroupCi[];
+      estActions?: (GroupCi & { dimensions?: { action?: string } })[];
+      estSeries?: { count: number; avg?: { sampleInterval?: number }; dimensions?: Record<string, string> }[];
       http?: {
         datetime: string;
         firewallForAiInjectionScore: number | null;
@@ -452,6 +455,47 @@ type AnalyticsData = {
     }[];
   };
 };
+
+type GroupCi = {
+  count: number;
+  avg?: { sampleInterval?: number };
+  confidence?: { count?: { estimate?: number; lower?: number; upper?: number; sampleSize?: number } };
+};
+
+// The grouped dataset's time dimension for each bucket width (fields checked live 2026-10-12 by introspection:
+// date, datetimeFiveMinutes, datetimeHour, …). A fixed map — the name is interpolated into the query.
+const SERIES_DIMENSION: Record<SeriesBucket, string> = { "5m": "datetimeFiveMinutes", hour: "datetimeHour", day: "date" };
+// 7 d hourly would be 168 buckets x ~5 actions; daily and 5-minute windows are far smaller. Headroom, not a cap
+// that bites — and hitting it drops the estimate series rather than drawing a partial one.
+const SERIES_GROUP_LIMIT = 2000;
+
+function ci(g: GroupCi | undefined): EstimateCi {
+  const c = g?.confidence?.count;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    estimate: Number(g?.count) || 0,
+    lower: n(c?.lower) == null ? null : Math.max(0, n(c?.lower)!),
+    upper: n(c?.upper),
+    sampleSize: n(c?.sampleSize),
+  };
+}
+
+// Estimated totals for the tiles: the total from its own group (with its interval); an action tile from the action
+// groups — with an interval only when exactly one group feeds it.
+export function edgeEstimateFrom(
+  total: GroupCi | undefined,
+  actions: (GroupCi & { dimensions?: { action?: string } })[],
+  isBlock: (a: string) => boolean,
+  isLog: (a: string) => boolean,
+): Pick<EdgeEstimate, "total" | "blocked" | "logged" | "sampled"> {
+  const pick = (test: (a: string) => boolean): EstimateCi => {
+    const hits = actions.filter((g) => test(String(g.dimensions?.action ?? "")));
+    if (hits.length === 1) return ci(hits[0]);
+    return { estimate: hits.reduce((n, g) => n + (Number(g.count) || 0), 0), lower: null, upper: null, sampleSize: null };
+  };
+  const sampled = [total, ...actions].some((g) => (Number(g?.avg?.sampleInterval) || 1) > 1);
+  return { total: ci(total), blocked: pick(isBlock), logged: pick(isLog), sampled };
+}
 
 const EVENT_LIMIT = 500;
 // One group per (action, rule) pair — a busy zone shows ~50 in 24 h; 1,000 is headroom,
@@ -470,7 +514,8 @@ export async function queryAnalytics(
   // windows ride on one round trip via aliased fields. Only the action tallies
   // are needed from it, so it selects the minimum columns.
   const prevSince = new Date(now - 2 * hours * 3_600_000).toISOString();
-  const query = `query($z:String!,$s:Time!,$e:Time!,$ps:Time!,$limit:Int!,$groupLimit:Int!){viewer{zones(filter:{zoneTag:$z}){
+  const dim = SERIES_DIMENSION[bucketFor(hours).bucket];
+  const query = `query($z:String!,$s:Time!,$e:Time!,$ps:Time!,$limit:Int!,$groupLimit:Int!,$seriesLimit:Int!){viewer{zones(filter:{zoneTag:$z}){
     fw:firewallEventsAdaptive(limit:$limit,filter:{datetime_geq:$s,datetime_leq:$e},orderBy:[datetime_DESC]){
       datetime action ruleId description
     }
@@ -489,6 +534,15 @@ export async function queryAnalytics(
     ruleGroups:firewallEventsAdaptiveGroups(limit:$groupLimit,filter:{datetime_geq:$s,datetime_leq:$e},orderBy:[count_DESC]){
       count avg { sampleInterval } dimensions { action description ruleId }
     }
+    estTotal:firewallEventsAdaptiveGroups(limit:1,filter:{datetime_geq:$s,datetime_leq:$e}){
+      count avg { sampleInterval } confidence(level:0.95){ count { estimate lower upper sampleSize } }
+    }
+    estActions:firewallEventsAdaptiveGroups(limit:50,filter:{datetime_geq:$s,datetime_leq:$e}){
+      count avg { sampleInterval } confidence(level:0.95){ count { estimate lower upper sampleSize } } dimensions { action }
+    }
+    estSeries:firewallEventsAdaptiveGroups(limit:$seriesLimit,filter:{datetime_geq:$s,datetime_leq:$e}){
+      count avg { sampleInterval } dimensions { ${dim} action }
+    }
   }}}`;
 
   const empty: AnalyticsSummary = {
@@ -499,6 +553,7 @@ export async function queryAnalytics(
 
   const j = await gqlFetch<AnalyticsData>(token, query, {
     z: zoneId, s: since, e: until, ps: prevSince, limit: EVENT_LIMIT, groupLimit: RULE_GROUP_LIMIT,
+    seriesLimit: SERIES_GROUP_LIMIT,
   });
   if (j.errors?.length) return { ...empty, error: j.errors[0].message };
 
@@ -582,6 +637,34 @@ export async function queryAnalytics(
   // Previous-window tallies for the trend deltas — same buckets the tiles show.
   const isBlock = (a: string) => /block|drop/.test(a.toLowerCase());
   const isLog = (a: string) => /log|link_maze/.test(a.toLowerCase()) && !isBlock(a);
+  // Estimated series on the same buckets as the raw one; dropped whole if its group read hit the limit (a partial
+  // estimate series would draw missing buckets as quiet ones).
+  const estRows = zone?.estSeries ?? [];
+  let estSeries: EdgeEstimate["series"] | null = null;
+  if (estRows.length < SERIES_GROUP_LIMIT) {
+    const est = makeBuckets(now, hours, (t) => ({ t, block: 0, log: 0, other: 0 }));
+    for (const g of estRows) {
+      const raw = g.dimensions?.[dim];
+      if (!raw) continue;
+      const row = est.series.get(est.floor(dim === "date" ? `${raw}T00:00:00Z` : raw));
+      if (!row) continue;
+      const n = Number(g.count) || 0;
+      const a = String(g.dimensions?.action ?? "");
+      if (isBlock(a)) row.block += n;
+      else if (isLog(a)) row.log += n;
+      else row.other += n;
+    }
+    estSeries = [...est.series.values()];
+  }
+  const estimate: EdgeEstimate | undefined =
+    zone?.estTotal || zone?.estActions
+      ? {
+          level: 0.95,
+          ...edgeEstimateFrom(zone?.estTotal?.[0], zone?.estActions ?? [], isBlock, isLog),
+          series: estSeries ?? [],
+        }
+      : undefined;
+
   const prev = {
     totalEvents: fwPrev.length,
     blocked: fwPrev.filter((e) => isBlock(e.action)).length,
@@ -593,6 +676,7 @@ export async function queryAnalytics(
     ...empty,
     totalEvents: fw.length,
     truncated,
+    ...(estimate ? { estimate } : {}),
     prev: prevTruncated ? undefined : prev,
     actions,
     topRules,

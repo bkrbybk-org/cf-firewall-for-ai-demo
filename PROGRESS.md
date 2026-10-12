@@ -626,6 +626,68 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-12 — Edge estimates with confidence intervals; vendor latency trend; Cisco reply checks; Lakera labels; third-party compliance line
+
+**Asked for:** "do 4-6, 9-10" from the suggestion table. Deploy `24d1a8e5-3b14-4662-bcdd-fe4dc75bfd5e`, then `5e77294d-7418-4c61-aa61-3ea6a3f1c31c` (openapi text only).
+
+**#5 Edge tab: estimates when the read is capped.** #23 (2026-10-05) rejected the grouped dataset as "exact counts"
+because adaptive datasets are sampled, leaving "estimates labelled as estimates, with their confidence interval" for
+later. Done that way:
+- Checked live 2026-10-12: `firewallEventsAdaptiveGroups` takes `confidence(level:0.95){count{estimate lower upper
+  sampleSize}}` (Cloudflare's GraphQL docs; the 2025-10-01 changelog), and introspection lists the time dimensions
+  `datetimeFiveMinutes`, `datetimeHour`, `date`. Real 24h answer: total **≈12,377 (95% CI 11,230–13,524, 3,513 samples)**
+  where the tile read "500+"; blocks ≈9,008; logs ≈840.
+- `src/cloudflare.ts`: three aliases in the same round trip (total with interval, per action with interval, per bucket ×
+  action); `edgeEstimateFrom()` gives the total its own interval and an action tile an interval **only when one action
+  feeds it** — "logged" sums `log` + `link_maze_injected`, and a sum of intervals is not one, so none is claimed. A
+  negative lower bound is clamped to 0; a series read that hits its limit is dropped, not drawn partial.
+- Edge tab, capped windows only: tiles "≈12,076 · 95% CI 10,936–13,216 · estimated", the chart drawn from the estimated
+  series ("estimated from Cloudflare's sampled data (≈)") instead of hatching 23 of 25 buckets "not read", and the note
+  says which numbers are estimates. Uncapped windows still show exact raw counts.
+- **Two more floors found and marked:** with the read capped, the "blocked" and "logged" tiles showed raw counts with no
+  floor mark (197 where ≈8,761 happened), and "prompts with PII" showed a capped count as exact — now "N+" when there is
+  no estimate. The empty state's "Firewall page" link now says "AI Guardrails Demo page".
+
+**#6 Latency per vendor over time.** The aggregate adds `latencyTrend` per vendor and check: each series bucket's p50
+(nearest rank) over its timed checks, null where none ran. The External guardrails table gets a "p50 trend" sparkline:
+one series (no legend, no categorical colour), a gap for an empty bucket (never 0 ms), a dot for a lone point, a hover
+title per point, an accessible summary.
+
+**#9 Lakera's reply blocks, explained.** The verdict data shows both withheld replies (2026-10-09, and again 2026-10-12)
+were `moderated_content/crime` on the reply to "What is a web application firewall?". Lakera's docs: the Crime detector
+covers "cyber crimes (e.g., phishing, hacking)", with L1–L4 thresholds set per project — a security explanation trips it
+on output. A Lakera policy choice, not a parser fault. `detectionLabel` now formats Lakera's `<category>/<type>` names
+("Content moderation: crime", "PII: email") for the two category prefixes it uses, type shown as sent (Lakera documents
+the types in prose only), and labels `prompt_attack`.
+
+**#10 Cisco reply checking.** Cisco's own SDK (`cisco-ai-defense/ai-defense-python-sdk`, `chat_models.py`,
+`chat_inspect.py`): roles `user` / `assistant` / `system`; `inspect_response(response)` sends `[{role: "assistant",
+content}]` — the reply alone. The client now does exactly that for a reply check (so a finding is the reply's own), and
+`replyCheck: true`. **Live on prod** (Cisco enabled, "Check replies too" on): two turns, two Cisco reply checks — HTTP
+200, parsed allows, ~160 ms. Cisco stays `verified: false` (no flagged reply seen yet).
+
+**#4 Compliance: a third-party line under MEASURE 2.7.** `compliance.ts` says new evidence is an editorial call; the
+user made it by picking #4. Kept minimal: one line, MEASURE 2.7 only, grey and labelled "third-party", attributed per
+vendor ("External guardrails: N prompt checks by M vendors · X blocked (Lakera Guard 5, Prisma AIRS 2)"), chat traffic
+only (Red Team excluded), "≈" / "at least" carried, no-data when no prompt was checked. It never touches Cloudflare's
+headline (a test pins that) or the coverage grade. PII and unsafe topics were left out — they would need each vendor's
+detector names classified. **GRC review is still owed** on this wording.
+
+**Verified:**
+- **Tests:** 833 (+14), 0 type errors, build clean. **Mutation-verified 13 of 13** — after a re-run: the first pass
+  counted a mutation as caught only because one new test was itself failing (its rows fell outside its 1-hour window).
+  The test was fixed, the mutation re-checked alone, and the whole pass re-run against a passing suite.
+- **Gate slip, recorded honestly:** the deploy command was chained with `;`, so `npm run deploy` ran while that one test
+  failed. The failure was in the test's fixture, not the code (the deployed code is what passed afterwards, unchanged),
+  but the gate was not respected; later commands stop on failure.
+- **Local browser** (real zone, real verdict data): edge 24h tiles and estimated chart (series sum = estimated total,
+  12,076 = 12,076), the whole day drawn including a block spike near 02:00 that the capped view hid; External guardrails
+  7d: labels "Prompt attack", "Content moderation: crime", lone-point sparklines; Compliance: the third-party line in
+  its no-data state (no chat checks in the last 24h at the time).
+- **Prod:** smoke passes; `/api/analytics?hours=24` carries `estimate` (≈11,809, CI 10,670–12,948; logged with no
+  interval); Cisco `replyCheck: true`; the bundle carries "p50 trend", "Content moderation", "third-party", "estimated
+  from Cloudflare".
+
 ### 2026-10-10 — Vendor health in Settings; External guardrails export; block reasons from the live rules
 
 **Asked for:** "do 2-3, 14" from the suggestion table (#2 vendor health, #3 export the External guardrails tab, #14

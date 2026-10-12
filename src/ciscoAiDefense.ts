@@ -32,7 +32,15 @@
 //     None is sent here: the key's connection carries the policy. Whether a connection
 //     key with no config applies its rules is UNVERIFIED — if every answer comes back
 //     is_safe with no rules, that is the first thing to check.
-//   - `messages[].role` values are not enumerated, so reply checking stays off (replyCheck).
+//   - `messages[].role` values are not enumerated on the DevNet page, so reply checking stayed off (replyCheck).
+//
+// Reply checking, 2026-10-12, from Cisco's own SDK (cisco-ai-defense/ai-defense-python-sdk,
+// aidefense/runtime/chat_models.py and chat_inspect.py — the shipping client, the strongest source as for Datadog):
+//   - Roles are `user`, `assistant` and `system` (`Role` enum; the client validates against exactly these).
+//   - `inspect_response(response)` sends `[{role: "assistant", content: response}]` — the reply ALONE — to the same
+//     /api/v1/inspect/chat. That is what a reply check sends here, so every finding is the reply's own (sending the
+//     prompt beside it is `inspect_conversation`, whose findings could be the prompt's). Documented by the vendor,
+//     not yet verified against a live reply verdict.
 //   - Live, no key → 401 {code, message:"Unauthorized", details:["…missing api key"]}; an
 //     obviously fake key → 401 with "…invalid api key" in details, so a dummy-key test
 //     proves the key arrived; a made-up path → 404 {code:5, message:"Not Found"}.
@@ -58,13 +66,17 @@ export interface CiscoAidScanInput {
   baseUrl: string;
   apiKey: string;
   prompt: string;
+  // The model's reply, for a reply check (design J): sent alone as the assistant message, as Cisco's SDK
+  // `inspect_response()` does. The prompt is then not sent.
+  response?: string;
   transactionId?: string; // the Cloudflare ray, so the two consoles can be joined
   timeoutMs?: number;
 }
 
 export function buildCiscoAidRequest(input: CiscoAidScanInput): { url: string; init: RequestInit } {
   const body = {
-    messages: [{ role: "user", content: input.prompt }],
+    messages:
+      input.response != null ? [{ role: "assistant", content: input.response }] : [{ role: "user", content: input.prompt }],
     // Only the correlation id. The documented `metadata` also takes user, src_ip,
     // user_agent… — deliberately none of them: the prompt already leaves Cloudflare
     // for a third party, and the person behind it does not need to as well. No

@@ -130,6 +130,9 @@ export interface VendorStats {
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
   lastTs: number | null; // the newest check that ran (not not_run), epoch ms — Settings' "last checked"
+  // p50 latency per series bucket (nearest rank over that bucket's timed checks), aligned with `series`; null where
+  // the bucket holds no timed check — a gap, never 0 ms.
+  latencyTrend: (number | null)[];
 }
 
 export interface SeriesPoint {
@@ -185,6 +188,7 @@ export function aggregate(
           provider: r.provider, dir: r.dir, checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
           error: 0, failedOpen: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
           lastTs: null,
+          latencyTrend: [],
         },
         ms: [],
         det: new Map(),
@@ -252,6 +256,26 @@ export function aggregate(
   for (let t = first; t <= opts.now; t += stepMs) {
     const k = new Date(t).toISOString();
     series.set(k, { t: k, block: 0, alerts: 0, allow: 0, error: 0 });
+  }
+  // Latency trend per vendor and check: the timed checks of each bucket, then that bucket's p50.
+  const keys = [...series.keys()];
+  const slot = new Map(keys.map((k, i) => [k, i]));
+  const timed = new Map<string, number[][]>();
+  for (const r of rows) {
+    if (r.ms == null) continue;
+    const i = slot.get(new Date(Math.floor(r.ts / stepMs) * stepMs).toISOString());
+    if (i == null) continue;
+    const k = `${r.provider}|${r.dir}`;
+    const per = timed.get(k) ?? keys.map(() => []);
+    per[i].push(r.ms);
+    timed.set(k, per);
+  }
+  for (const v of vendors) {
+    const per = timed.get(`${v.provider}|${v.dir}`);
+    v.latencyTrend = keys.map((_, i) => {
+      const ms = per?.[i];
+      return ms && ms.length ? pct([...ms].sort((a, b) => a - b), 50) : null;
+    });
   }
   for (const r of rows) {
     if (r.outcome === "not_run") continue;

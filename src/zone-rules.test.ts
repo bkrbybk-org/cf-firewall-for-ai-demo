@@ -5,7 +5,7 @@
 // misfiles a rule into "not AI Security" — the demo then reports that its own
 // controls did nothing, or credits them for a rule they never ran.
 import { describe, expect, it } from "vitest";
-import { aiManagedRules, flattenCustomRules, isLlmExpression, reasonCodeOf } from "./cloudflare";
+import { aiManagedRules, edgeEstimateFrom, flattenCustomRules, isLlmExpression, reasonCodeOf } from "./cloudflare";
 
 describe("isLlmExpression", () => {
   it("matches the cf.llm.* detection fields the demo's rules use", () => {
@@ -115,5 +115,33 @@ describe("reasonCodeOf", () => {
     const entry = [{ id: "x1", action: "execute", action_parameters: { id: "rs1" } }];
     const nested = new Map([["rs1", { name: "LLM Protection Ruleset", rules: [{ id: "b1", description: "Block LLM Injection", action: "block", expression: "cf.llm.prompt.injection_score le 15", action_parameters: { response: response(body) } }] }]]);
     expect(flattenCustomRules(entry, nested)[0]).toMatchObject({ reasonCode: "LLM_PROMPT_INJECTION_BLOCKED", ruleset: "LLM Protection Ruleset" });
+  });
+});
+
+// The grouped (sampled) firewall dataset, as it answered for the zone's last 24h (2026-10-12, real shape).
+describe("edgeEstimateFrom", () => {
+  const isBlock = (a: string) => /block|drop/.test(a);
+  const isLog = (a: string) => /log|link_maze/.test(a) && !isBlock(a);
+  const g = (action: string, count: number, lower: number, upper: number, si = 3) => ({
+    count, avg: { sampleInterval: si }, confidence: { count: { estimate: count, lower, upper, sampleSize: Math.round(count / si) } }, dimensions: { action },
+  });
+  const actions = [g("block", 9008, 7896.07, 10119.93), g("log", 840, 675.25, 1004.75), g("link_maze_injected", 2326, 2104.72, 2547.28), g("skip", 189, 132.13, 245.87)];
+  const total = { count: 12377, avg: { sampleInterval: 3.5 }, confidence: { count: { estimate: 12377, lower: 11229.84, upper: 13524.16, sampleSize: 3513 } } };
+
+  it("the total keeps its own interval; one action feeding a tile keeps that action's interval", () => {
+    const e = edgeEstimateFrom(total, actions, isBlock, isLog);
+    expect(e.total).toEqual({ estimate: 12377, lower: 11229.84, upper: 13524.16, sampleSize: 3513 });
+    expect(e.blocked).toEqual({ estimate: 9008, lower: 7896.07, upper: 10119.93, sampleSize: 3003 });
+    expect(e.sampled).toBe(true);
+  });
+  it("several actions feeding one tile: the sum, and NO interval — a sum of intervals is not one", () => {
+    expect(edgeEstimateFrom(total, actions, isBlock, isLog).logged).toEqual({ estimate: 3166, lower: null, upper: null, sampleSize: null });
+  });
+  it("unsampled groups say so; a missing total reads as 0 with no interval; a negative lower bound is clamped", () => {
+    const flat = [g("block", 4, -1.2, 9.2, 1)];
+    const e = edgeEstimateFrom(undefined, flat, isBlock, isLog);
+    expect(e.sampled).toBe(false);
+    expect(e.total).toEqual({ estimate: 0, lower: null, upper: null, sampleSize: null });
+    expect(e.blocked.lower).toBe(0);
   });
 });

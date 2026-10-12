@@ -371,6 +371,13 @@ export interface Neurons {
 }
 
 // GET /api/analytics — aggregated payload, see Worker AnalyticsSummary.
+export interface EstimateCi {
+  estimate: number;
+  lower: number | null;
+  upper: number | null;
+  sampleSize: number | null;
+}
+
 export interface Analytics {
   configured: boolean;
   rangeHours?: number;
@@ -388,6 +395,16 @@ export interface Analytics {
   // oldest row read — NOT READ, never draw it as zero; "partial" = its count is a floor.
   series?: { t: string; block: number; log: number; other: number; read?: "partial" | "none" }[];
   bucket?: "5m" | "hour" | "day";
+  // Estimates from the grouped (sampled) dataset, uncapped — shown instead of the capped raw counts when
+  // `truncated`, always marked as estimates. lower/upper null = no interval claimed (see src/types.ts).
+  estimate?: {
+    level: number;
+    sampled: boolean;
+    total: EstimateCi;
+    blocked: EstimateCi;
+    logged: EstimateCi;
+    series: { t: string; block: number; log: number; other: number }[];
+  };
   aiScored?: number;
   scoreBuckets?: { label: string; count: number }[];
   piiRequests?: number;
@@ -604,6 +621,7 @@ export interface GuardrailVendorStats {
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
   lastTs: number | null; // newest check that ran, epoch ms
+  latencyTrend?: (number | null)[]; // p50 per series bucket; null = no timed check there (absent from an older Worker)
 }
 
 export interface GuardrailAnalytics {

@@ -7,6 +7,7 @@ import { EventSeries, SERIES } from "./EventSeries";
 import { topicLabel } from "../../lib/format";
 import { classifyRule, useZoneRules } from "../../hooks/useZoneRules";
 import type { Analytics } from "../../lib/types";
+import { estRate, estValue } from "../../lib/edgeEstimate";
 
 const SCORE_BUCKET_CLS = ["bg-cf-red", "bg-cf-amber", "bg-subtle", "bg-cf-green"];
 
@@ -85,6 +86,11 @@ export function EdgeTab({
   const total = data?.totalEvents ?? 0;
   const zoneRules = useZoneRules();
   const capped = data?.truncated === true;
+  // Capped raw counts are floors; Cloudflare's grouped dataset is uncapped but sampled. So a capped window shows
+  // the ESTIMATES — marked "≈", with the 95% interval where one group answers (lib/edgeEstimate.ts) — and the
+  // chart switches to the estimated series rather than hatching most of the window "not read".
+  const est = capped ? (data?.estimate ?? null) : null;
+  const estSeries = est && est.series.length > 0 ? est.series : null;
   const prev = data?.prev;
   const pctOf = (n: number) => (capped || total === 0 ? undefined : `${Math.round((n / total) * 100)}% of events`);
   const deltaOf = (now: number, before?: number) => (prev && before != null ? now - before : null);
@@ -133,33 +139,34 @@ export function EdgeTab({
           <div className="flex flex-wrap gap-3">
             <Tile
               label={`security events · ${hours}h`}
-              // Exactly at the row cap means "at least this many" — say so
-              // rather than presenting a floor as an exact total.
-              value={capped ? `${total}+` : total}
-              rate={capped ? "row cap reached — see note below" : undefined}
+              // Exactly at the row cap means "at least this many" — say so rather than presenting a floor as an
+              // exact total; with an estimate, show that instead, marked as one.
+              value={est ? estValue(est.total) : capped ? `${total}+` : total}
+              rate={est ? estRate(est.total, est.level) : capped ? "row cap reached — see note below" : undefined}
               delta={deltaOf(total, prev?.totalEvents)}
               icon={<BarChart3 size={16} className="text-cf-blue" />}
               tone="border-cf-blue/40 bg-cf-blue/10"
             />
             <Tile
               label="blocked"
-              value={blocked}
-              rate={pctOf(blocked)}
+              value={est ? estValue(est.blocked) : capped ? `${blocked}+` : blocked}
+              rate={est ? estRate(est.blocked, est.level) : pctOf(blocked)}
               delta={deltaOf(blocked, prev?.blocked)}
               icon={<ShieldX size={16} className="text-cf-red" />}
               tone="border-cf-red/40 bg-cf-red/10"
             />
             <Tile
               label="logged"
-              value={logged}
-              rate={pctOf(logged)}
+              value={est ? estValue(est.logged) : capped ? `${logged}+` : logged}
+              rate={est ? estRate(est.logged, est.level) : pctOf(logged)}
               delta={deltaOf(logged, prev?.logged)}
               icon={<ShieldAlert size={16} className="text-cf-amber" />}
               tone="border-cf-amber/40 bg-cf-amber/10"
             />
             <Tile
               label="prompts with PII"
-              value={data.piiRequests ?? 0}
+              // From the same capped request read: a floor when capped (no grouped estimate exists for it).
+              value={capped ? `${data.piiRequests ?? 0}+` : (data.piiRequests ?? 0)}
               rate={
                 (data.aiScored ?? 0) > 0
                   ? `${Math.round(((data.piiRequests ?? 0) / (data.aiScored ?? 1)) * 100)}% of scored prompts`
@@ -178,7 +185,7 @@ export function EdgeTab({
                 <p>
                   Nothing recorded in the last {hours}h. Send a few attacks from the{" "}
                   <Link to="/" className="text-accent hover:underline">
-                    Firewall page
+                    AI Guardrails Demo page
                   </Link>{" "}
                   and come back — GraphQL ingestion lags ~1–2 minutes. Note: edge analytics only exist for the
                   production hostname, not local dev.
@@ -189,10 +196,12 @@ export function EdgeTab({
             <>
               <Card
                 title="Events over time"
-                subtitle={`per ${bucketLabel(data.bucket)} · block vs log vs other`}
+                subtitle={`per ${bucketLabel(data.bucket)} · block vs log vs other${
+                  estSeries ? " · estimated from Cloudflare's sampled data (≈)" : ""
+                }`}
               >
                 <EventSeries
-                  rows={data.series ?? []}
+                  rows={estSeries ?? data.series ?? []}
                   bucket={data.bucket}
                   defs={SERIES}
                   ariaLabel="Security events over time"
@@ -201,9 +210,19 @@ export function EdgeTab({
 
               {capped && (
                 <div className="rounded-xl border border-cf-amber/30 bg-cf-amber/[0.06] px-3.5 py-2 text-[11.5px] text-muted">
-                  This window returned the full {total}-row query cap, so counts are a{" "}
-                  <b className="text-text">floor, not a total</b>, and the trend vs the previous window is hidden —
-                  comparing two capped windows would be meaningless. Narrow the range to get exact numbers.
+                  This window returned the full {total}-row query cap, so the raw counts are a{" "}
+                  <b className="text-text">floor, not a total</b>, and the trend vs the previous window is hidden.{" "}
+                  {est ? (
+                    <>
+                      The tiles and chart show <b className="text-text">estimates</b> from Cloudflare's grouped
+                      firewall dataset instead, which counts the whole window but is{" "}
+                      {est.sampled ? "sampled" : "adaptive (sampled when busy)"} — so "≈", with a{" "}
+                      {Math.round(est.level * 100)}% interval where one is available. The rule lists below still come from
+                      the newest {total} events. Narrow the range for exact counts.
+                    </>
+                  ) : (
+                    <>Narrow the range to get exact numbers.</>
+                  )}
                 </div>
               )}
 

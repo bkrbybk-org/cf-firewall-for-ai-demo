@@ -154,7 +154,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
       ) : (
         <>
           <Card title="Verdicts per vendor" subtitle={`${window} · prompt and reply checks counted apart`}>
-            <VendorTable vendors={d.vendors} n={n} />
+            <VendorTable vendors={d.vendors} n={n} buckets={d.series.map((p) => p.t)} bucket={d.bucket} />
           </Card>
 
           <Card title="Verdicts over time" subtitle={`per ${bucketLabel(d.bucket)} · every vendor's verdicts, by outcome · ${window}`}>
@@ -214,12 +214,84 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
   );
 }
 
-function VendorTable({ vendors, n }: { vendors: GuardrailVendorStats[]; n: (v: number) => string }) {
+// p50 latency over the window for one vendor and check: one series, so no legend and no categorical colour — the
+// row names it. A bucket with no timed check is a GAP in the line (never 0 ms); a lone point gets a dot so it is
+// visible. Each point has its own hover title; the summary is the accessible name, and the p50 / p95 cells beside
+// it are the table view.
+export function LatencySparkline({
+  trend,
+  buckets,
+  bucket,
+}: {
+  trend: (number | null)[];
+  buckets: string[];
+  bucket: "5m" | "hour" | "day";
+}) {
+  const W = 104;
+  const H = 26;
+  const pad = 3;
+  const vals = trend.filter((x): x is number => x != null);
+  if (vals.length === 0) return <span className="text-subtle">—</span>;
+  const max = Math.max(...vals);
+  const min = Math.min(...vals);
+  const x = (i: number) => pad + (trend.length <= 1 ? (W - 2 * pad) / 2 : (i * (W - 2 * pad)) / (trend.length - 1));
+  // Baseline is 0 ms, so a line near the top is a slow vendor, not a magnified wobble.
+  const y = (v: number) => H - pad - (max === 0 ? 0 : (v / max) * (H - 2 * pad));
+  const segments: string[] = [];
+  let cur: string[] = [];
+  trend.forEach((v, i) => {
+    if (v == null) {
+      if (cur.length) segments.push(cur.join(" "));
+      cur = [];
+    } else cur.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+  });
+  if (cur.length) segments.push(cur.join(" "));
+  const when = (i: number) => {
+    const d = new Date(buckets[i]);
+    return bucket === "day" ? d.toLocaleDateString() : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+  const label = `p50 latency over time: ${vals.length} of ${trend.length} time buckets had timed checks, ${Math.round(min)}–${Math.round(max)} ms`;
+  return (
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} className="block overflow-visible text-cf-blue">
+      <title>{label}</title>
+      {segments.map((pts, k) =>
+        pts.includes(" ") ? (
+          <polyline key={k} points={pts} fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        ) : null,
+      )}
+      {trend.map((v, i) => {
+        if (v == null) return null;
+        const lone = (i === 0 || trend[i - 1] == null) && (i === trend.length - 1 || trend[i + 1] == null);
+        return (
+          <g key={i}>
+            {lone && <circle cx={x(i)} cy={y(v)} r={2.5} fill="currentColor" />}
+            {/* A hit target larger than the mark, carrying the point's own tooltip. */}
+            <circle cx={x(i)} cy={y(v)} r={6} fill="transparent">
+              <title>{`${when(i)} — p50 ${Math.round(v)} ms`}</title>
+            </circle>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+function VendorTable({
+  vendors,
+  n,
+  buckets,
+  bucket,
+}: {
+  vendors: GuardrailVendorStats[];
+  n: (v: number) => string;
+  buckets: string[];
+  bucket: "5m" | "hour" | "day";
+}) {
   const ms = (v: number | null) => (v == null ? "—" : `${Math.round(v)} ms`);
   return (
     // `relative`: the scroll box must contain its own absolutely positioned children (house style).
     <div className="relative overflow-x-auto">
-      <table className="w-full min-w-[760px] border-collapse text-[12px]">
+      <table className="w-full min-w-[880px] border-collapse text-[12px]">
         <thead>
           <tr className="border-b border-line text-left text-[11px] text-subtle">
             <th className="py-1.5 pr-3 font-semibold">Vendor</th>
@@ -229,6 +301,9 @@ function VendorTable({ vendors, n }: { vendors: GuardrailVendorStats[]; n: (v: n
             <th className="py-1.5 pr-3 text-right font-semibold" title="Errors: fail closed stopped the turn, fail open let it go on unchecked">no verdict</th>
             <th className="py-1.5 pr-3 text-right font-semibold" title="Skipped: an earlier vendor stopped the turn, or the vendor does not check replies">not run</th>
             <th className="py-1.5 pr-3 text-right font-semibold" title="Nearest rank over the verdicts that ran">p50 / p95</th>
+            <th className="py-1.5 pr-3 font-semibold" title={`p50 per ${bucketLabel(bucket)}; a gap is a ${bucketLabel(bucket)} with no timed check`}>
+              p50 trend
+            </th>
             <th className="py-1.5 font-semibold">top detections</th>
           </tr>
         </thead>
@@ -259,6 +334,9 @@ function VendorTable({ vendors, n }: { vendors: GuardrailVendorStats[]; n: (v: n
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-subtle">{n(v.notRun)}</td>
               <td className="py-2 pr-3 text-right font-mono whitespace-nowrap tabular-nums text-muted" title={`${v.latencyN} timed`}>
                 {ms(v.p50Ms)} / {ms(v.p95Ms)}
+              </td>
+              <td className="py-2 pr-3">
+                <LatencySparkline trend={v.latencyTrend ?? []} buckets={buckets} bucket={bucket} />
               </td>
               <td className="py-2 text-muted">
                 {v.topDetections.length === 0 ? (

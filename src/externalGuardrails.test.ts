@@ -676,6 +676,7 @@ describe("executePipeline — reply direction", () => {
     expect(PROVIDER_IDS.filter((p) => PROVIDERS[p].replyCheck)).toEqual([
       "prisma-airs",
       "crowdstrike-aidr",
+      "cisco-ai-defense",
       "lakera-guard",
       "datadog-ai-guard",
     ]);

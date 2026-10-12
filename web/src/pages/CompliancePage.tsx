@@ -14,10 +14,11 @@
 // chip disappears.
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Activity, ArrowRight, ExternalLink, Info, ShieldCheck } from "lucide-react";
+import { Activity, ArrowRight, ExternalLink, Info, ShieldCheck, ShieldHalf } from "lucide-react";
 import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { getAnalytics, getPromptAnalytics } from "../lib/api";
+import { getAnalytics, getGuardrailAnalytics, getPromptAnalytics } from "../lib/api";
+import { providerLabel } from "../lib/guardrailView";
 import {
   COVERAGE_HELP,
   COVERAGE_LABEL,
@@ -28,8 +29,8 @@ import {
   type Evidence,
   type Product,
 } from "../lib/compliance";
-import { resolveEvidence } from "../lib/complianceEvidence";
-import type { Analytics, PromptAnalytics } from "../lib/types";
+import { resolveEvidence, resolveThirdPartyEvidence } from "../lib/complianceEvidence";
+import type { Analytics, GuardrailAnalytics, PromptAnalytics } from "../lib/types";
 
 // Fixed rather than user-picked: this page is an audit artifact, not a
 // dashboard, and a moving range would make "what did the reviewer see"
@@ -93,22 +94,29 @@ function EvidenceChip({
   evidence,
   analytics,
   promptAnalytics,
+  guardrails,
 }: {
   evidence: Evidence;
   analytics: Analytics | null;
   promptAnalytics: PromptAnalytics | null;
+  guardrails: GuardrailAnalytics | null;
 }) {
   const r = resolveEvidence(evidence, analytics, promptAnalytics, EVIDENCE_HOURS);
-  if (r.status === "unconfigured") return null;
+  const third = evidence.thirdParty ? <ThirdPartyChip g={guardrails} /> : null;
+  if (r.status === "unconfigured") return third;
   if (r.status === "no-data") {
     return (
-      <div className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[11px] text-subtle">
-        <Activity size={12} className="mt-0.5 shrink-0" />
-        <span>No traffic to measure in the {r.windowLabel} — not exercised yet, not a failed control.</span>
-      </div>
+      <>
+        <div className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[11px] text-subtle">
+          <Activity size={12} className="mt-0.5 shrink-0" />
+          <span>No traffic to measure in the {r.windowLabel} — not exercised yet, not a failed control.</span>
+        </div>
+        {third}
+      </>
     );
   }
   return (
+    <>
     <div
       className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-cf-blue/30 bg-cf-blue/[0.06] px-2.5 py-1.5 text-[11px] text-cf-blue"
       title={r.floor ? "Row cap reached in this window — counts are a floor, not an exact total." : undefined}
@@ -121,6 +129,31 @@ function EvidenceChip({
         {r.note && <span className="mt-0.5 block text-[10.5px] text-muted">{r.note}</span>}
       </span>
     </div>
+    {third}
+    </>
+  );
+}
+
+// The external guardrails' line: neutral grey, not Cloudflare's blue, and labelled third-party — so it can never
+// be read as part of Cloudflare's evidence for the control.
+function ThirdPartyChip({ g }: { g: GuardrailAnalytics | null }) {
+  const r = resolveThirdPartyEvidence(g, providerLabel, EVIDENCE_HOURS);
+  if (r.status === "unconfigured") return null;
+  return (
+    <div className="mt-1.5 flex items-start gap-1.5 rounded-lg border border-line bg-surface-2 px-2.5 py-1.5 text-[11px] text-muted">
+      <ShieldHalf size={12} className="mt-0.5 shrink-0" />
+      <span>
+        <span className="mr-1 rounded-full border border-line px-1.5 text-[10px] font-semibold text-subtle">third-party</span>
+        {r.status === "no-data" ? (
+          <>No external guardrail checked a chat prompt in the {r.windowLabel}.</>
+        ) : (
+          <>
+            <b className="font-semibold text-text">{r.headline}</b> · {r.windowLabel}
+            {r.note && <span className="mt-0.5 block text-[10.5px] text-subtle">{r.note}</span>}
+          </>
+        )}
+      </span>
+    </div>
   );
 }
 
@@ -128,6 +161,7 @@ export function CompliancePage() {
   const [active, setActive] = useState(FRAMEWORKS[0].id);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [promptAnalytics, setPromptAnalytics] = useState<PromptAnalytics | null>(null);
+  const [guardrails, setGuardrails] = useState<GuardrailAnalytics | null>(null);
 
   // Fetched once, best-effort. Either call failing must not surface as an
   // error state or a zero — it just leaves analytics/promptAnalytics null,
@@ -139,6 +173,10 @@ export function CompliancePage() {
       .catch(() => {});
     getPromptAnalytics({ hours: EVIDENCE_HOURS })
       .then((d) => !cancelled && setPromptAnalytics(d))
+      .catch(() => {});
+    // Chat traffic only: Red Team runs are a benchmark, not evidence of protection in use.
+    getGuardrailAnalytics(EVIDENCE_HOURS, "chat")
+      .then((d) => !cancelled && setGuardrails(d))
       .catch(() => {});
     return () => {
       cancelled = true;
@@ -294,7 +332,12 @@ export function CompliancePage() {
                 </div>
                 <p className="mt-2 flex-1 text-[12.5px] leading-relaxed text-muted">{c.how}</p>
                 {c.evidence && (
-                  <EvidenceChip evidence={c.evidence} analytics={analytics} promptAnalytics={promptAnalytics} />
+                  <EvidenceChip
+                    evidence={c.evidence}
+                    analytics={analytics}
+                    promptAnalytics={promptAnalytics}
+                    guardrails={guardrails}
+                  />
                 )}
                 <div className="mt-3 flex flex-wrap items-center gap-1.5">
                   <ProductBadge p={c.product} />

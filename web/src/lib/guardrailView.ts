@@ -59,6 +59,8 @@ export const DETECTION_LABELS: Record<string, string> = {
   topic_violation: "Topic violation",
   // CrowdStrike AIDR detector names (result.detectors keys in its OpenAPI spec).
   malicious_prompt: "Malicious prompt",
+  // Lakera Guard's prompt-defense detector (seen live, 2026-10-09).
+  prompt_attack: "Prompt attack",
   confidential_and_pii_entity: "Confidential / PII",
   malicious_entity: "Malicious entity",
   custom_entity: "Custom entity",
@@ -115,8 +117,17 @@ export function noVerdictReason(r: Pick<ExternalGuardrailResult, "httpStatus">):
   return `Returned HTTP ${r.httpStatus}`;
 }
 
+// Lakera Guard names detectors `<category>/<type>` (seen live: `moderated_content/crime`, `pii/email`; plus the bare
+// `prompt_attack`). Lakera documents its content-moderation types in prose only (docs.lakera.ai/docs/content-moderation:
+// crime, hate, profanity, sexual, violence, weapons, self harm), so the type is shown as sent — formatted, never
+// mapped to a guessed name — and only the two category prefixes it uses are read.
+const LAKERA_CATEGORY: Record<string, string> = { moderated_content: "Content moderation", pii: "PII" };
+
 export function detectionLabel(d: string): string {
-  return DETECTION_LABELS[d] ?? d;
+  if (Object.hasOwn(DETECTION_LABELS, d)) return DETECTION_LABELS[d];
+  const m = /^([a-z_]+)\/([a-z0-9_]+)$/.exec(d);
+  if (m && Object.hasOwn(LAKERA_CATEGORY, m[1])) return `${LAKERA_CATEGORY[m[1]]}: ${m[2].replace(/_/g, " ")}`;
+  return d;
 }
 
 export const GUARDRAIL_ONLY_HEADLINE = "Model skipped — guardrail-only mode";

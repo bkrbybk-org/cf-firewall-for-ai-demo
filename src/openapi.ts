@@ -994,6 +994,18 @@ export const openapi = {
           customTopics: arr(obj({ label: str(), count: int(), avgStrength: num("Mean of (100 − score); higher = stronger match.") }, ["label", "count", "avgStrength"])),
           scannedRequests: int("`/api/chat` rows seen in the window."),
           labeledRequests: int("…of those, rows carrying the `cf-llm` label."),
+          estimate: obj(
+            {
+              level: num("Confidence level of the intervals (0.95)."),
+              sampled: bool("Any group's average sample interval was above 1."),
+              total: ref("EstimateCi"),
+              blocked: ref("EstimateCi"),
+              logged: ref("EstimateCi"),
+              series: arr(obj({ t: str(), block: num(), log: num(), other: num() })),
+            },
+            ["level", "sampled", "total", "blocked", "logged", "series"],
+            "Estimates from `firewallEventsAdaptiveGroups` — uncapped by the 500-row read, but **sampled**. Shown instead of the capped counts when `truncated`, always as estimates. A 95% interval comes from GraphQL `confidence()`, only where one group answers (the total; a tile fed by one action); `series` is empty when its group read hit its limit.",
+          ),
           aiSecurity: obj(
             {
               blocked: int("AI Security rule events that blocked."),
@@ -1019,6 +1031,15 @@ export const openapi = {
           ),
         },
         ["configured", "rangeHours", "since", "until", "totalEvents", "actions", "topRules", "series", "bucket", "aiScored", "scoreBuckets", "piiRequests", "unsafeTopics", "piiCategories", "customTopics", "scannedRequests", "labeledRequests"],
+      ),
+      EstimateCi: obj(
+        {
+          estimate: num(),
+          lower: nullable("number", "null: no interval claimed (a sum of several groups' intervals is not an interval)."),
+          upper: nullable("number"),
+          sampleSize: nullable("integer"),
+        },
+        ["estimate", "lower", "upper", "sampleSize"],
       ),
       GuardrailAnalyticsResponse: obj(
         {
@@ -1051,6 +1072,7 @@ export const openapi = {
               p95Ms: nullable("number"),
               topDetections: arr(obj({ name: str(), count: num() })),
               lastTs: nullable("integer", "Epoch ms of the newest check that ran; null when none did."),
+              latencyTrend: arr({ type: ["number", "null"] }),
             }),
           ),
           bucket: { type: "string", enum: ["5m", "hour", "day"] },

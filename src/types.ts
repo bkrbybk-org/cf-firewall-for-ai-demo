@@ -167,6 +167,22 @@ export interface PromptLogRow {
 // Aggregated security analytics for the dashboard page (GET /api/analytics).
 // Raw events are fetched from GraphQL and aggregated Worker-side so the
 // client gets one small ready-to-render payload.
+export interface EstimateCi {
+  estimate: number;
+  lower: number | null; // null: no interval for this one (see EdgeEstimate)
+  upper: number | null;
+  sampleSize: number | null;
+}
+
+export interface EdgeEstimate {
+  level: number; // 0.95
+  sampled: boolean; // any group's average sample interval was above 1
+  total: EstimateCi;
+  blocked: EstimateCi;
+  logged: EstimateCi;
+  series: { t: string; block: number; log: number; other: number }[];
+}
+
 export interface AnalyticsSummary {
   rangeHours: number;
   since: string;
@@ -199,6 +215,11 @@ export interface AnalyticsSummary {
   // not capped at 500 rows, but estimates when Cloudflare sampled (`sampled`). What
   // any "AI Security blocked N" claim must use; `actions` above is zone-wide.
   aiSecurity?: AiSecurityTally;
+  // Estimates from Cloudflare's grouped (sampled) dataset, uncapped by the 500-row read: what the tiles and chart
+  // show when `truncated` — always as estimates ("≈"), never as counts (bug #23's rule). A 95% interval comes from
+  // GraphQL's confidence(); it is given only where one group answers the question (the total; an action tile fed by
+  // a single action) — a sum of several groups' intervals is not an interval, so none is claimed.
+  estimate?: EdgeEstimate;
   ruleGroups?: RuleGroup[]; // internal hand-off to the handler; never sent to the client
   ruleGroupsCapped?: boolean; // internal: the group query hit its limit (smallest groups dropped)
   error?: string;

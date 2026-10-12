@@ -30,6 +30,11 @@
 //    traffic in the window vs. a genuine zero vs. a truncated/floor count).
 //    This file never fetches or computes; it only says which control a
 //    metric belongs to.
+//  - `thirdParty` (decided with the user, 2026-10-12): ONE control, MEASURE 2.7, also shows what the external
+//    guardrails this app forwards prompts to decided. It is a separate line, labelled third-party and attributed per
+//    vendor; it never adds to Cloudflare's numbers or changes a coverage grade (which describe Cloudflare's products
+//    only). PII and unsafe topics were left out on purpose: they would need each vendor's detector names classified,
+//    which is guessing. Extending it is the same editorial call as adding evidence — not a formatting one.
 // ============================================================================
 
 export type Coverage = "full" | "partial" | "supporting" | "none";
@@ -63,6 +68,8 @@ export type EvidenceMetric = "injection-scoring" | "pii-detection" | "unsafe-top
 
 export interface Evidence {
   metric: EvidenceMetric;
+  // Also show the external guardrails' verdicts (third-party, never Cloudflare's) — see the header.
+  thirdParty?: "external-guardrails";
 }
 
 export interface Control {
@@ -206,7 +213,7 @@ export const FRAMEWORKS: Framework[] = [
         product: "ai-security",
         refs: ["LLM01", "AML.T0051"],
         demo: { label: "See it on the chat demo", to: "/" },
-        evidence: { metric: "injection-scoring" },
+        evidence: { metric: "injection-scoring", thirdParty: "external-guardrails" },
       },
       {
         id: "MEASURE 2.10",
