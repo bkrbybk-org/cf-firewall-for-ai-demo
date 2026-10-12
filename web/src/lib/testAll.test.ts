@@ -18,16 +18,16 @@ function ok(r: Partial<ExternalGuardrailResult>, over: Partial<ExternalGuardrail
 }
 
 describe("testPlan", () => {
-  it("runs the three prompt samples per testable vendor, reply samples only where replyCheck is true", () => {
+  it("runs the four prompt samples per testable vendor, reply samples only where replyCheck is true", () => {
     const plan = testPlan([
       cfg({ provider: "prisma-airs", label: "Prisma", replyCheck: true }),
       cfg({ provider: "lakera-guard", label: "Lakera", replyCheck: false }),
       cfg({ provider: "cato-ai-security", label: "Cato" }), // replyCheck absent
     ]);
     expect(plan.runs.map((r) => `${r.provider}:${r.sample}`)).toEqual([
-      "prisma-airs:benign", "prisma-airs:attack", "prisma-airs:pii", "prisma-airs:reply-benign", "prisma-airs:reply-pii",
-      "lakera-guard:benign", "lakera-guard:attack", "lakera-guard:pii",
-      "cato-ai-security:benign", "cato-ai-security:attack", "cato-ai-security:pii",
+      "prisma-airs:benign", "prisma-airs:attack", "prisma-airs:pii", "prisma-airs:thai", "prisma-airs:reply-benign", "prisma-airs:reply-pii",
+      "lakera-guard:benign", "lakera-guard:attack", "lakera-guard:pii", "lakera-guard:thai",
+      "cato-ai-security:benign", "cato-ai-security:attack", "cato-ai-security:pii", "cato-ai-security:thai",
     ]);
     expect(plan.skipped).toEqual([]);
   });
@@ -53,9 +53,9 @@ describe("testPlan", () => {
 
   it("a vendor with two keys is testable only when both are saved; no profile needed when none is required", () => {
     const base = { requiresProfile: false, profileName: "", secondKeyLabel: "Application key" };
-    expect(testPlan([cfg({ ...base, secondKeySet: true })]).runs).toHaveLength(3);
+    expect(testPlan([cfg({ ...base, secondKeySet: true })]).runs).toHaveLength(4);
     expect(testPlan([cfg({ ...base, secondKeySet: false })]).runs).toHaveLength(0);
-    expect(testPlan([cfg({ ...base, secondKeyLabel: null })]).runs).toHaveLength(3);
+    expect(testPlan([cfg({ ...base, secondKeyLabel: null })]).runs).toHaveLength(4);
   });
 
   it("words the skipped heading so it is true of every entry", () => {
@@ -147,12 +147,12 @@ describe("rows and report", () => {
   const rows = rowsFor(plan.runs, results);
 
   it("counts answered, errors and not run separately", () => {
-    expect(countRows(rows)).toEqual({ total: 5, notRun: 2, answered: 2, errors: 1 });
+    expect(countRows(rows)).toEqual({ total: 6, notRun: 3, answered: 2, errors: 1 });
   });
 
   it("reports every row, '—' for the ones not run, the error text in the table, and the shape JSON", () => {
     const t = reportText(rows, { skipped: plan.skipped, generatedAt: "2026-10-12T00:00:00Z" });
-    expect(t).toContain("Ran 3 of 5 tests: 2 verdicts, 1 errors, 2 not run.");
+    expect(t).toContain("Ran 3 of 6 tests: 2 verdicts, 1 errors, 3 not run.");
     expect(t).toContain("Skipped (no key saved): Lakera — no API key saved.");
     expect(t).toContain("| Prisma | Connection works | allow | 300 ms | 200 |");
     expect(t).toContain("| Prisma | Attack prompt | block | 250 ms | 200 |");

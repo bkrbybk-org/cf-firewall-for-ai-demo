@@ -275,7 +275,7 @@ CrowdStrike specifics that are easy to get wrong, each checked against the live 
 - **Status.** Both clients are written and tested (`src/ciscoAiDefense.ts`, `src/lakeraGuard.ts`) and wired into the pipeline. On Settings → System they can be configured, tested and enabled like the other two, but carry an amber **unverified** badge (`verified: false`): their parsers follow the vendors' docs, and no real verdict has been checked against them yet. Both earlier vendors' docs were wrong in places.
 - **How one gets verified** (only a guardrail admin can do this; see below):
   1. Save the key, and Lakera's Project ID, with the guardrail **disabled**.
-  2. Press **Test connection** (a benign prompt), **Test with an attack prompt** (a fixed, well-known injection, so the *block* response is seen) and **Test with a PII prompt** (the example SSN from Cato's API docs — PII is where a vendor may answer with neither allow nor block).
+  2. Press **Test connection** (a benign prompt), **Test with an attack prompt** (a fixed, well-known injection, so the *block* response is seen), **Test with a PII prompt** (the example SSN from Cato's API docs — PII is where a vendor may answer with neither allow nor block) and **Test with a Thai prompt** (a harmless Thai question from the Han Instruct dataset, for vendors' language rules; anything but an allow is a false block — Prisma AIRS answered `topic_violation` on 2026-10-12).
   3. After each test the card opens a **Response shape** panel: the vendor response's field names, types and true/false values, **never text** (`src/responseShape.ts`). Copy both shapes and hand them back.
   4. The shapes are compared with what the parser expects, the parser is fixed if they differ, and the provider is marked `verified`.
 - **Already proven without a real key** (2026-10-06, local `wrangler dev` with a dummy key). Unlike Prisma AIRS and CrowdStrike, both vendors are reachable from local workerd, and both answer a *bad* key differently from a *missing* one, so the key demonstrably arrives.
@@ -527,7 +527,17 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 
 **AI Security rules are shown separately from unrelated zone rules.** On real traffic `(P) AI Red Team`, `Geography-based rule` and `cw-lab-kali OWASP ZAP` outrank the `cf.llm.*` rules by event count; listing them together reads as though AI Security fired them. `isLlmRule()` matches the `ZONE_RULES` mirror by name with a `\bLLM\b` fallback, and the tab renders two labelled groups. The account-level rule "Monitor Likely Attacks (Score GE 20 AND LE 50)" is a **red herring** — it fires on a non-LLM attack score despite the name, and now lands in the "not AI Security" group.
 
-**External guardrails tab** — `GET /api/guardrail-analytics?hours=1|24|168&source=chat|redteam|all` (since 2026-10-09; **Report (.md)** and **Data (.json)** downloads since 2026-10-10, carrying the window, traffic and the same "≈" / "≥" marks). Since 2026-10-12:
+**Scheduled checks** (since 2026-10-12, two Cron Triggers in `wrangler.jsonc`; Settings → Deployment shows both):
+- **Re-run, every 6 hours** (`src/scheduledRerun.ts`).
+  - **What it sends:** 12 fixed prompts (the first 6 built-in attacks and 6 harmless Thai) to every enabled external guardrail at once. There is no model call and no edge (the cron runs inside the Worker).
+  - **Where it shows:** as **scheduled re-runs** on the External guardrails tab. The same prompts every time, so a change between runs is drift.
+  - **Cost:** about 12 calls per enabled vendor per run.
+- **Outage alerts, hourly** (`src/vendorAlerts.ts`).
+  - **Down:** a vendor is down when at least 50% of at least 3 checks in the last hour got no verdict. With fewer checks the state is unknown and kept.
+  - **When it alerts:** only when the state changes (down, then recovered). The state is kept in D1 (`0011`).
+  - **Where it goes:** `npx wrangler secret put ALERT_WEBHOOK_URL` (an https URL, e.g. a Slack incoming webhook) receives `{text, alerts[]}` with vendor names and counts only. Unset, alerts are only logged (`event: "guardrail_alert"`).
+
+**External guardrails tab** — `GET /api/guardrail-analytics?hours=1|24|168&source=chat|redteam|scheduled|all` (since 2026-10-09; **Report (.md)** and **Data (.json)** downloads since 2026-10-10, carrying the window, traffic and the same "≈" / "≥" marks). Since 2026-10-12:
 - Blocks show how many were **outvoted** (quorum mode), and allows split redactions into **applied** and **not applied**.
 - With Red Team or all traffic selected, a **"Red Team: false blocks and catches"** card shows each vendor's blocks on the Red Team's harmless prompts ÷ its verdicts on them, and the same rate for attacks.
 - The Red Team page labels each prompt with `x-demo-expect: benign|attack`, kept only on Red Team turns. Errors are not verdicts and are left out. The card reads "—" with no data and "small sample" under 10 verdicts.
@@ -662,6 +672,9 @@ This is a sample prompt,Optional goal text (leave empty for AI-generated goal)
 - **Severity and scan ASR columns disappear** for a CSV corpus, and the by-severity breakdown is dropped from the scorecard. Those are Prisma's assessments; filling them in with plausible-looking values would launder a guess into something that renders like scan data.
 - Capped at **200 prompts** — each one is a real inference call against the Neuron budget, sent sequentially. Beyond that a "corpus" is a load test, which this page is not. Rows over the cap and rows with a blank prompt are reported, not silently dropped.
 - Parsing happens **in the browser**; the file is never uploaded. Prompts reach the Worker only by being sent as ordinary chat requests, which is exactly what subjects them to the real edge scan.
+- **Built-in harmless Thai prompts** (since 2026-10-12). With the built-in corpus selected, **+ harmless Thai (20)** adds 20 harmless prompts from the **Han Instruct Dataset v4.0** (PyThaiNLP, CC BY-SA 4.0), scored exactly like CSV harmless rows (below).
+  - **Chosen by a fixed rule**, not by hand: in the train split, rows 0–1999, the first single-turn Thai user message of 20–160 characters in each block of 100 (`web/src/lib/thaiHarmless.ts`).
+  - Toggling it changes the corpus, so the results reset.
 - **Optional `expected` column: harmless prompts, for false blocks** (since 2026-10-06). It is not part of Prisma's shape. A value of `allow` marks a harmless prompt; `block` or an empty cell marks an attack, which is the default. Any other value skips the row with a warning naming it, so "safe" or "no" is never guessed the wrong way round.
   - **Why:** catch rate alone rewards a control that blocks everything.
   - **What harmless rows get:** a green **harmless** pill in the table, and the Run button says "prompts" instead of "attacks".

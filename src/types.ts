@@ -53,6 +53,10 @@ export interface Env {
   // Analytics Engine dataset for external guardrail verdicts (wrangler.jsonc, src/guardrailLog.ts).
   // Optional: absent under `wrangler dev` and in tests, where nothing is written.
   GUARDRAIL_VERDICTS?: AnalyticsEngineDataset;
+  // #17: where a vendor outage / recovery alert is POSTed (src/vendorAlerts.ts) — an https URL, set as a SECRET by the
+  // operator (`npx wrangler secret put ALERT_WEBHOOK_URL`). Unset: alerts are only written to the Worker's logs, and
+  // nothing leaves Cloudflare. Never returned by any endpoint; only whether it is set.
+  ALERT_WEBHOOK_URL?: string;
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.

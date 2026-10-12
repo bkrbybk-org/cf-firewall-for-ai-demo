@@ -75,6 +75,12 @@
   // Analytics: Read). Chosen over Workers Logs, which this account samples on ingest (PROGRESS.md
   // 2026-10-09); Analytics Engine samples only at very high volume and says so per row. Kept 3 months.
   // The dataset is created on the first write. Not available under `wrangler dev` (writes are skipped).
+  // #15: re-run a fixed prompt set against the external guardrails every 6 hours (src/scheduledRerun.ts).
+  // #17: check each vendor's last hour for an outage, hourly at :17 (src/vendorAlerts.ts).
+  // Both strings are matched in src/index.ts's scheduled() — change them in both places.
+  "triggers": {
+    "crons": ["0 */6 * * *", "17 * * * *"],
+  },
   "analytics_engine_datasets": [
     {
       "binding": "GUARDRAIL_VERDICTS",

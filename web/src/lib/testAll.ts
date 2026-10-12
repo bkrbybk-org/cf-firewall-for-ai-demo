@@ -20,12 +20,13 @@ export const TEST_ALL_SAMPLE_LABEL: Record<GuardrailTestSample, string> = {
   benign: "Connection works",
   attack: "Attack prompt",
   pii: "PII prompt",
+  thai: "Thai prompt (harmless)",
   "reply-benign": "Harmless reply",
   "reply-pii": "Reply with PII",
 };
 
 // Order of a vendor's tests: the prompt samples first, the reply samples after.
-const PROMPT_SAMPLES: GuardrailTestSample[] = ["benign", "attack", "pii"];
+const PROMPT_SAMPLES: GuardrailTestSample[] = ["benign", "attack", "pii", "thai"];
 const REPLY_SAMPLES: GuardrailTestSample[] = ["reply-benign", "reply-pii"];
 
 export interface TestRun {

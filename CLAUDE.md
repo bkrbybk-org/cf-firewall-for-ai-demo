@@ -223,6 +223,11 @@ alters what a customer sees in a demo. State it and let them choose.
   in `.env` can read but every write is a 403). To see it enforcing locally, start **`wrangler-dev-guardrail-admins`**
   (port 8789): local requests carry no Access JWT, so every guardrail write is a 403 and Settings → System is read-only (Your preferences still work — they never touch the server).
   Setting that secret on prod changes who can edit a live demo's guardrails — ask first.
+- **Cron Triggers** (`wrangler.jsonc` `triggers.crons`, matched in `src/index.ts`'s `scheduled()`): the 6-hourly re-run
+  and the hourly outage check. Locally, start **`wrangler-dev-scheduled`** (port 8790, `--test-scheduled`) and fire one with
+  `curl "localhost:8790/__scheduled?cron=0+*/6+*+*+*"` (or `17+*+*+*+*`); the summary lines are in the server log. On prod
+  there is no "run now": watch `npx wrangler tail cf-ai-waf-demo --format json` across the cron's minute (macOS has no
+  `timeout`; start the tail detached and `pkill -f "wrangler tail"` after).
   **Consequence for you:** prod guardrail writes — saving a key, *Test connection*, toggling guardrail-only — can
   no longer be done with the service token. They need the user in their browser (or the user adding an admin).
   Plan prod guardrail verification around that.

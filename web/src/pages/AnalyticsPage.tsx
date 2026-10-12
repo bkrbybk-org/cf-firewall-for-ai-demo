@@ -411,7 +411,7 @@ export function AnalyticsPage() {
             )}
             {tab === "guardrails" && (
               <div className="flex overflow-hidden rounded-full border border-line" role="group" aria-label="Traffic">
-                {(["chat", "redteam", "all"] as const).map((s) => (
+                {(["chat", "redteam", "scheduled", "all"] as const).map((s) => (
                   <button
                     key={s}
                     type="button"

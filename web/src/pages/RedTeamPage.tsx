@@ -32,6 +32,7 @@ import { getModels } from "../lib/api";
 import { CSV_TEMPLATE, parseAttackCsv } from "../lib/attackCsv";
 import { TECHNIQUE_LABEL, TECHNIQUES, type Technique } from "../lib/techniques";
 import { expandWithVariants, TECHNIQUE_HINT } from "../lib/variants";
+import { RT_THAI_HARMLESS, THAI_HARMLESS_SOURCE } from "../lib/thaiHarmless";
 import { customCorpusStore } from "../lib/customCorpus";
 import { downloadFile } from "../lib/export";
 import { PROVIDER_LABELS } from "../lib/guardrailView";
@@ -217,7 +218,10 @@ export function RedTeamPage() {
   const [useCustom, setUseCustom] = useState(false);
   const [csvError, setCsvError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const baseCorpus = useCustom && custom ? custom.attacks : RT_CORPUS;
+  // #16: the built-in corpus is attacks only, so it can measure catches but never false blocks. The harmless Thai
+  // set (lib/thaiHarmless.ts, a public dataset) is an explicit add-on — it changes the corpus, and so its fingerprint.
+  const [withHarmless, setWithHarmless] = useState(false);
+  const baseCorpus = useCustom && custom ? custom.attacks : withHarmless ? [...RT_CORPUS, ...RT_THAI_HARMLESS] : RT_CORPUS;
   // Open item G: rewritten variants of each attack (lib/variants.ts), none by default.
   // Each technique multiplies the run — and the bill — so it is an explicit choice.
   const [techniques, setTechniques] = useState<Technique[]>([]);
@@ -304,7 +308,14 @@ export function RedTeamPage() {
       })
     | null
   >(null);
-  const corpusName = isCustom ? custom!.name : "AI Red Team Sample";
+  const corpusName = isCustom ? custom!.name : withHarmless ? "AI Red Team Sample + harmless Thai" : "AI Red Team Sample";
+
+  // Same rule as switching corpora: results and the selection belong to the old set.
+  function toggleHarmless(next: boolean) {
+    reset();
+    setSelected(new Set());
+    setWithHarmless(next);
+  }
 
   function startRun() {
     const cfg = {
@@ -608,6 +619,22 @@ export function RedTeamPage() {
                 Custom CSV{custom ? ` (${custom.attacks.length})` : ""}
               </button>
             </div>
+
+            {!isCustom && (
+              <label
+                className="inline-flex items-center gap-1.5 text-[12px] text-muted"
+                title={`Adds ${RT_THAI_HARMLESS.length} harmless Thai prompts from ${THAI_HARMLESS_SOURCE.dataset} (${THAI_HARMLESS_SOURCE.author}, ${THAI_HARMLESS_SOURCE.license}), chosen by a fixed rule — scored only as false blocks, never as attacks`}
+              >
+                <input
+                  type="checkbox"
+                  checked={withHarmless}
+                  disabled={running}
+                  onChange={(e) => toggleHarmless(e.target.checked)}
+                  className="accent-[var(--color-accent)]"
+                />
+                + harmless Thai ({RT_THAI_HARMLESS.length})
+              </label>
+            )}
 
             <input
               ref={fileRef}

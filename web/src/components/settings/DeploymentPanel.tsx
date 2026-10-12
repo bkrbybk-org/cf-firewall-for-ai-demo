@@ -108,6 +108,55 @@ export function DeploymentPanel({
         setBy={<>D1 binding {code("DB")} and secret {code("GUARDRAIL_SECRET_KEY")}</>}
       />
 
+      {/* #15 / #17. Both run on Cloudflare's schedule, not on a page load — so the panel says what is set up, and the
+          last state the outage check stored, never a live "it ran". */}
+      <Row
+        label="Scheduled checks"
+        value={
+          !state?.automation ? (
+            <Value tone="unknown">{state ? "not reported" : "loading…"}</Value>
+          ) : (
+            <span className="flex flex-wrap items-center gap-1.5">
+              <Value tone="on">Re-run every 6h</Value>
+              <Value tone={state.automation.alerts.webhook === "set" ? "on" : "off"}>
+                Outage alerts:{" "}
+                {state.automation.alerts.webhook === "set"
+                  ? "webhook"
+                  : state.automation.alerts.webhook === "invalid"
+                    ? "webhook invalid — logs only"
+                    : "logs only"}
+              </Value>
+            </span>
+          )
+        }
+        detail={
+          state?.automation ? (
+            <>
+              Re-run: {state.automation.rerun.prompts} fixed prompts to every enabled guardrail (no model, no edge), shown as
+              "scheduled re-runs" on Analytics. Outage check: hourly, a vendor is <b>down</b> when at least{" "}
+              {Math.round(state.automation.alerts.noVerdictRate * 100)}% of at least {state.automation.alerts.minChecks} checks
+              in the last {state.automation.alerts.windowHours}h got no verdict; an alert is sent when that changes.
+              {state.automation.alerts.states.length > 0 && (
+                <>
+                  {" "}
+                  Last stored:{" "}
+                  {state.automation.alerts.states
+                    .map((s) => `${s.provider} ${s.state} since ${new Date(s.since).toLocaleString()}`)
+                    .join(" · ")}
+                  .
+                </>
+              )}
+            </>
+          ) : undefined
+        }
+        setBy={
+          <>
+            Cron Triggers in {code("wrangler.jsonc")}; secret {code("ALERT_WEBHOOK_URL")} (https) for alerts, unset = Worker
+            logs only
+          </>
+        }
+      />
+
       <Row
         label="Who can change system settings"
         value={

@@ -14,7 +14,7 @@ export const GUARDRAIL_REPORT_SCHEMA = "cf-ai-guardrail-verdicts/1";
 export interface GuardrailReport {
   schema: typeof GUARDRAIL_REPORT_SCHEMA;
   generatedAt: string; // ISO, UTC
-  window: { hours: number; since: string; until: string; traffic: "chat" | "redteam" | "all" };
+  window: { hours: number; since: string; until: string; traffic: "chat" | "redteam" | "scheduled" | "all" };
   // How far the numbers can be trusted — the same flags the page shows as a banner.
   quality: { sampled: boolean; capped: boolean; rowsRead: number; rowsDropped: number };
   totals: GuardrailAnalytics["totals"];
@@ -56,7 +56,8 @@ export function buildGuardrailReport(
 const TRAFFIC: Record<GuardrailReport["window"]["traffic"], string> = {
   chat: "chat traffic (Red Team runs excluded)",
   redteam: "Red Team runs only",
-  all: "all traffic (chat and Red Team runs)",
+  scheduled: "scheduled re-runs only (the same 12 prompts every 6 hours — vendors only, no model, no edge)",
+  all: "all traffic (chat, Red Team runs and scheduled re-runs)",
 };
 
 function table(head: string[], rows: string[][], right: number[] = []): string[] {

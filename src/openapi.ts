@@ -280,8 +280,8 @@ export const openapi = {
             name: "source",
             in: "query",
             required: false,
-            schema: { type: "string", enum: ["chat", "redteam", "all"], default: "chat" },
-            description: "`redteam` = turns the Red Team page sent; `chat` = everything else (the chat page, the API, external scanners).",
+            schema: { type: "string", enum: ["chat", "redteam", "scheduled", "all"], default: "chat" },
+            description: "`redteam` = turns the Red Team page sent; `scheduled` = the Worker's own 6-hourly re-run (12 fixed prompts to the enabled vendors, no model; set in code, never from a header); `chat` = everything else (the chat page, the API, external scanners).",
           },
         ],
         responses: {
@@ -454,7 +454,7 @@ export const openapi = {
               schema: obj(
                 {
                   provider: ref("ExternalGuardrailProvider"),
-                  sample: { type: "string", enum: ["benign", "attack", "pii", "reply-benign", "reply-pii"], description: "Which FIXED prompt to scan (`pii` carries the example SSN from Cato's API docs); anything else is `benign`. No prompt text is accepted. `reply-benign` and `reply-pii` send a fixed prompt WITH a fixed model reply, as the reply check does (design J); `reply-pii`'s reply carries the void sample SSN 078-05-1120. A provider with `replyCheck: false` refuses them (400)." },
+                  sample: { type: "string", enum: ["benign", "attack", "pii", "thai", "reply-benign", "reply-pii"], description: "Which FIXED prompt to scan (`pii` carries the example SSN from Cato's API docs; `thai` is a harmless Thai question from the Han Instruct dataset, for vendors' language rules); anything else is `benign`. No prompt text is accepted. `reply-benign` and `reply-pii` send a fixed prompt WITH a fixed model reply, as the reply check does (design J); `reply-pii`'s reply carries the void sample SSN 078-05-1120. A provider with `replyCheck: false` refuses them (400)." },
                 },
                 ["provider"],
               ),
@@ -468,7 +468,7 @@ export const openapi = {
               {
                 ok: bool(),
                 result: ref("ExternalGuardrailResult"),
-                sample: { type: "string", enum: ["benign", "attack", "pii", "reply-benign", "reply-pii"] },
+                sample: { type: "string", enum: ["benign", "attack", "pii", "thai", "reply-benign", "reply-pii"] },
                 verified: bool("This provider's parser has been checked against a real payload."),
                 replyCheck: bool("The vendor documents checking a model reply and this client sends one (not yet verified)."),
                 responseShape: {
@@ -865,6 +865,29 @@ export const openapi = {
           setupHint: str(),
           error: str(),
           access: ref("GuardrailAccess"),
+          automation: obj(
+            {
+              rerun: obj({ cron: str(), prompts: int(), setVersion: int("Bumped whenever the fixed prompt set changes.") }, ["cron", "prompts", "setVersion"]),
+              alerts: obj(
+                {
+                  cron: str(),
+                  windowHours: int(),
+                  minChecks: int("Fewer checks in the window = unknown, never ok."),
+                  noVerdictRate: num("A vendor is down at or above this share of checks with no verdict."),
+                  webhook: { type: "string", enum: ["set", "unset", "invalid"], description: "Whether `ALERT_WEBHOOK_URL` is set (and an https URL). Never the URL." },
+                  states: arr(
+                    obj(
+                      { provider: ref("ExternalGuardrailProvider"), state: { type: "string", enum: ["ok", "down"] }, since: int("Epoch ms."), updatedAt: int("Epoch ms.") },
+                      ["provider", "state", "since", "updatedAt"],
+                    ),
+                  ),
+                },
+                ["cron", "windowHours", "minChecks", "noVerdictRate", "webhook", "states"],
+              ),
+            },
+            ["rerun", "alerts"],
+            "The two Cron Triggers: the 6-hourly re-run (#15) and the hourly vendor outage check (#17), with the states it last stored.",
+          ),
         },
         ["configured", "providers", "pipeline"],
       ),
@@ -1073,7 +1096,7 @@ export const openapi = {
           rangeHours: int(),
           since: str(),
           until: str(),
-          source: { type: "string", enum: ["chat", "redteam", "all"] },
+          source: { type: "string", enum: ["chat", "redteam", "scheduled", "all"] },
           rowsRead: int(),
           rowsDropped: int("Rows of a shape this reader does not know — dropped, never guessed at."),
           capped: bool("10,000 rows read: totals are a floor."),

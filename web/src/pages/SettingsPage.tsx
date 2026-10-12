@@ -204,6 +204,7 @@ const TEST_SAMPLE_LABEL: Record<GuardrailTestSample, string> = {
   benign: "Connection works",
   attack: "Attack prompt",
   pii: "PII prompt",
+  thai: "Thai prompt (harmless)",
   "reply-pii": "Reply with PII",
   "reply-benign": "Harmless reply",
 };
@@ -762,6 +763,17 @@ function ProviderCard({
           className={BTN_CLS}
         >
           Test with a PII prompt
+        </button>
+        {/* #16: a harmless Thai question — what a vendor's language rule does with it (Cato's Non-English rule is on
+            Monitor in this demo's policy). Anything but an allow is a false block. */}
+        <button
+          type="button"
+          onClick={() => void runTest("thai")}
+          title="Scans a fixed harmless Thai question (from the Han Instruct dataset) with the saved configuration"
+          disabled={testing || saving || busy || dirty || !keysSet}
+          className={BTN_CLS}
+        >
+          Test with a Thai prompt
         </button>
         {/* Design J's verification: a fixed prompt WITH a fixed model reply, sent as the
             reply check sends it — the payload that turns "documented" into "verified".

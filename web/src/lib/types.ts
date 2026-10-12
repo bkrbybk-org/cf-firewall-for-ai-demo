@@ -313,6 +313,20 @@ export interface ExternalGuardrailsState {
   // Who may change these settings (src/accessAuth.ts). mode "open" = no admin list
   // is set, so anything Access lets in can write. Absent from an older Worker.
   access?: GuardrailAccess;
+  // #15 / #17: the two Cron Triggers (src/vendorAlerts.ts automationStatus). Absent from an older Worker.
+  automation?: GuardrailAutomation;
+}
+
+export interface GuardrailAutomation {
+  rerun: { cron: string; prompts: number; setVersion: number };
+  alerts: {
+    cron: string;
+    windowHours: number;
+    minChecks: number;
+    noVerdictRate: number; // 0.5 = half the checks
+    webhook: "set" | "unset" | "invalid"; // never the URL itself
+    states: { provider: ExternalGuardrailProvider; state: "ok" | "down"; since: number; updatedAt: number }[];
+  };
 }
 
 export type GuardrailAccess =
@@ -335,7 +349,7 @@ export interface ExternalGuardrailUpdate {
 
 // Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an
 // action neither other prompt triggers (Cato: "anonymize_action", seen 2026-10-06).
-export type GuardrailTestSample = "benign" | "attack" | "pii" | "reply-benign" | "reply-pii";
+export type GuardrailTestSample = "benign" | "attack" | "pii" | "thai" | "reply-benign" | "reply-pii";
 
 // POST /api/external-guardrails/test — scans a fixed prompt with the
 // SAVED configuration (it never sends an unsaved key).
@@ -658,7 +672,7 @@ export interface GuardrailAnalytics {
   rangeHours: number;
   since: string;
   until: string;
-  source: "chat" | "redteam" | "all";
+  source: "chat" | "redteam" | "scheduled" | "all"; // "scheduled": the Worker's 6-hourly re-run (#15)
   rowsRead: number;
   rowsDropped: number;
   capped: boolean; // counts are a floor

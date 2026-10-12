@@ -20,6 +20,8 @@ import { handleGuardrailAnalytics } from "./guardrailAnalytics";
 import { openapi } from "./openapi";
 import { openapi30For } from "./openapi30";
 import type { Env } from "./types";
+import { RERUN_CRON, runScheduledRerun } from "./scheduledRerun";
+import { ALERT_CRON, runVendorAlerts } from "./vendorAlerts";
 
 export default {
   async fetch(request, env, ctx): Promise<Response> {
@@ -68,5 +70,13 @@ export default {
       default:
         return env.ASSETS.fetch(request);
     }
+  },
+
+  // Cron Triggers (wrangler.jsonc `triggers.crons`): the 6-hourly re-run (#15) and the hourly outage check (#17).
+  // Each logs its own summary line; an unexpected cron string does nothing rather than guess.
+  async scheduled(controller, env, ctx): Promise<void> {
+    if (controller.cron === RERUN_CRON) ctx.waitUntil(runScheduledRerun(env));
+    else if (controller.cron === ALERT_CRON) ctx.waitUntil(runVendorAlerts(env));
+    else console.log({ event: "scheduled_unknown_cron", cron: controller.cron });
   },
 } satisfies ExportedHandler<Env>;

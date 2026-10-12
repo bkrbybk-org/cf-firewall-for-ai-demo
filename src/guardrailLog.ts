@@ -28,8 +28,9 @@ export const VERDICT_SCHEMA = 1;
 
 export type VerdictOutcome = "block" | "allow" | "error" | "failed_open" | "not_run";
 // Where the turn came from. "redteam" is the app's own Red Team page (it says so in a request header);
+// "scheduled" is the Worker's own 6-hourly re-run (src/scheduledRerun.ts) — set in code only, never from a header;
 // everything else — the chat page, the API, an external scanner — is "chat".
-export type VerdictSource = "chat" | "redteam";
+export type VerdictSource = "chat" | "redteam" | "scheduled";
 // What the Red Team page says a prompt IS (#13): "benign" for its harmless rows — a block there is a false block —
 // "attack" for the rest. "" for anything else (chat, the API), where nobody has labelled the prompt.
 export type VerdictExpect = "benign" | "attack" | "";
@@ -77,9 +78,9 @@ export function verdictLines(
   // The bare ray id ("8f1c…", not "8f1c…-SIN"): the form the edge's firewall events carry as rayName, so
   // a line joins to the edge verdict; the prompt log's full cf-ray starts with it.
   const rayId = ray ? ray.split("-")[0].trim() || null : null;
-  // A label only counts on the Red Team's own turns: "benign" on a chat turn would be a client's say-so about a
-  // prompt nobody curated.
-  const label: VerdictExpect = src === "redteam" ? expect : "";
+  // A label only counts on curated prompts — the Red Team's own turns and the scheduled re-run's fixed set: "benign"
+  // on a chat turn would be a client's say-so about a prompt nobody curated.
+  const label: VerdictExpect = src === "redteam" || src === "scheduled" ? expect : "";
   const base = {
     event: VERDICT_EVENT,
     v: VERDICT_SCHEMA,

@@ -69,7 +69,10 @@ export async function getGatewayAnalytics(gatewayId: string, hours: number): Pro
 }
 
 // External guardrail verdicts per vendor (Analytics Engine). `source` keeps Red Team runs apart from chat.
-export async function getGuardrailAnalytics(hours: number, source: "chat" | "redteam" | "all"): Promise<GuardrailAnalytics> {
+export async function getGuardrailAnalytics(
+  hours: number,
+  source: "chat" | "redteam" | "scheduled" | "all",
+): Promise<GuardrailAnalytics> {
   const r = await fetch("/api/guardrail-analytics?" + new URLSearchParams({ hours: String(hours), source }));
   return r.json();
 }

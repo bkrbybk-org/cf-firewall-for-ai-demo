@@ -22,11 +22,12 @@ export const GUARDRAIL_SERIES: SeriesDef[] = [
   { key: "error", label: "no verdict", cls: "fill-subtle", stroke: "stroke-subtle", dot: "bg-subtle" },
 ];
 
-export type GuardrailSource = "chat" | "redteam" | "all";
+export type GuardrailSource = "chat" | "redteam" | "scheduled" | "all";
 
 export const SOURCE_LABEL: Record<GuardrailSource, string> = {
   chat: "chat traffic",
   redteam: "Red Team runs",
+  scheduled: "scheduled re-runs",
   all: "all traffic",
 };
 
@@ -148,7 +149,10 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
       {t.verdicts === 0 && d.vendors.length === 0 ? (
         <Card title="No guardrail verdicts in this window" subtitle={window}>
           <p className="text-sm text-muted">
-            No external guardrail checked a {d.source === "redteam" ? "Red Team prompt" : "prompt"} in the {rangeLabel(d.rangeHours)}.
+            No external guardrail checked a{" "}
+            {d.source === "redteam" ? "Red Team prompt" : d.source === "scheduled" ? "scheduled re-run prompt" : "prompt"} in the{" "}
+            {rangeLabel(d.rangeHours)}.
+            {d.source === "scheduled" && " The re-run sends its 12 fixed prompts every 6 hours (00, 06, 12, 18 UTC) from 2026-10-12 on, while a guardrail is enabled."}{" "}
             Verdicts are recorded from 2026-10-09 on, while at least one guardrail is enabled in Settings.
           </p>
         </Card>
@@ -159,6 +163,15 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
           </Card>
 
           {d.source !== "chat" && <FalseBlocks vendors={d.vendors} n={n} window={window} />}
+          {d.source === "scheduled" && (
+            // #15: the point of this source. Every re-run is the same 12 prompts to every enabled vendor at once, so a
+            // change from one bucket to the next is the vendor changing, not the traffic.
+            <p className="text-[11.5px] leading-relaxed text-muted">
+              <b className="text-text">Reading drift:</b> each re-run sends the same 12 prompts (6 attacks, 6 harmless Thai)
+              to every enabled guardrail at once, with no model and no edge. A bucket's block count moving between runs is a
+              vendor changing its answer to the same prompt.
+            </p>
+          )}
 
           <Card title="Verdicts over time" subtitle={`per ${bucketLabel(d.bucket)} · every vendor's verdicts, by outcome · ${window}`}>
             <EventSeries rows={d.series} bucket={d.bucket} defs={GUARDRAIL_SERIES} ariaLabel="External guardrail verdicts over time" />

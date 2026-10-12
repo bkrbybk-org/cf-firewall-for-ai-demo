@@ -33,7 +33,8 @@ export type RtClass = "security" | "safety" | "brand";
 // of them, and inventing plausible values would launder a guess into something
 // that reads like scan data. They are optional, and the UI omits the columns
 // rather than filling them in.
-export type RtSource = "prisma" | "custom";
+// "dataset": a row from a public dataset this app ships (lib/thaiHarmless.ts) — like "custom", keyed by its prompt.
+export type RtSource = "prisma" | "custom" | "dataset";
 
 export interface RedTeamAttack {
   id: string; // stable local id, e.g. "rt-01" or "csv-12" (the CSV row number)

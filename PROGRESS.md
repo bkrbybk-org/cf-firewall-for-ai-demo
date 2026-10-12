@@ -626,6 +626,87 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-12 — Scheduled re-runs; vendor outage alerts; harmless Thai prompts
+
+**Asked for:** "do 15-17". Decided with the user: re-run **every 6 hours, 12 prompts, no model**; alerts go to a
+**webhook secret, log-only until it is set**. Migration `0011_guardrail_alert_state.sql` (a new table, purely
+additive), applied to prod before the Worker. Deploy `ab64e622-a096-4570-8097-53a8a720cdfc`, which also added the
+two Cron Triggers (`0 */6 * * *`, `17 * * * *`).
+
+**#16 Harmless Thai prompts.** They are sourced, not written here; that rule stands (2026-10-06: "no harmless
+prompts are supplied by this app").
+- **Source:** Han Instruct Dataset v4.0 (PyThaiNLP, Hugging Face `pythainlp/han-instruct-dataset-v4.0`),
+  **CC BY-SA 4.0**. The rows were read through the Hugging Face dataset-viewer API; no file was downloaded.
+- **Rejected first:** WangchanThaiInstruct. Its card says CC BY-SA 4.0, but every row's own `License` field (1,000
+  rows read) says **cc-by-nc-4.0**, which is non-commercial and wrong for a customer demo.
+- **Selection rule, fixed so nobody picked friendly prompts:** in the train split, rows 0–1999, take the first row
+  of each block of 100 that is a single-turn chat whose user message is 20–160 characters, Thai, and one line.
+  - That gives exactly 20. All were read and judged harmless; none was dropped.
+  - They include one about Islam and pork, a respectful factual question, kept because the rule picked it.
+  - The dataset mixes human-written and model-generated rows, as its card says.
+- **Red Team:** "+ harmless Thai (20)" adds them to the built-in corpus (36 attacks + 20 = 56). They are
+  `expected: allow` and source `dataset`, so `attackKey` hashes the prompt and the corpus fingerprint changes.
+  Turning it on or off resets results, like switching corpora. They are scored only as false blocks.
+- **Test connection / Test all:** a new **Thai prompt** sample, row 700, "สังคมพหุวัฒนธรรมมีลักษณะอย่างไร" ("What are the
+  characteristics of a multicultural society?"). It shows what each vendor's language rule does.
+- **Live finding, 2026-10-12 (prod chat, `includeRaw`, kept out of the log):**
+  - **Prisma AIRS blocked that harmless question: `topic_violation`.** This is a real false block, and a policy
+    question for the AIRS profile.
+  - AIDR allowed it, noting `language`. Cisco and Lakera allowed it.
+  - **Cato allowed it with `required_action: null` and no detections.** The user's Non-English Language Detection
+    Monitor rule did not answer `monitor_action` here, the same as a Thai greeting earlier that day.
+
+**#15 Scheduled re-runs** (`src/scheduledRerun.ts`, `src/scheduledCorpus.ts`).
+- **What runs:** every 6 hours a cron sends 12 fixed prompts to every enabled vendor **at once** (forced parallel,
+  whatever the chat mode, so every vendor sees every prompt), with **guardrail-only**: no model and no edge. The
+  prompts go one after another, 2 s apart, and the whole run takes about 24 s.
+- **The set:** the first 6 built-in attacks and 6 of the harmless Thai rows (rows 0, 300, 600, 900, 1200, 1500).
+  - The Worker's copies are data only, and a web test pins them **verbatim** to `RT_CORPUS` and `RT_THAI_HARMLESS`.
+  - `SCHEDULED_SET_VERSION` is to be bumped if the set ever changes.
+- **Logging:** each verdict is logged as source **`scheduled`**, with its label and a per-prompt run id `sch…` in the
+  ray column. Real rays are hex only, so the two cannot be confused. `scheduled` is set in code; no request header can
+  claim it.
+- **Where it shows:** Analytics has a fourth traffic filter, **scheduled re-runs**. Its false-block and catch card
+  applies, and a "Reading drift" note says why a moved bucket is the vendor changing, not the traffic.
+- **Outages:** an outage during a run is a verdict row (error / failed_open), never a skipped prompt.
+
+**#17 Vendor outage alerts** (`src/vendorAlerts.ts`).
+- **The check:** hourly at :17, read the last hour of verdicts from AE for every source (the same SQL and
+  aggregation as the page).
+- **Down:** at least 50 % no verdict (error + fail-open, prompt and reply checks together) over at least 3 checks.
+  Fewer checks is **unknown, never ok**, and keeps the stored state.
+- **Alert on a change only:** ok → down, and down → ok. The state is kept in D1, and `since` is kept while the state
+  holds; that upsert was checked on real local D1, not only the fake. A vendor first seen healthy is recorded
+  silently; one first seen down alerts.
+- **Delivery:** a POST to `ALERT_WEBHOOK_URL` (an https URL to a public host, else refused) with
+  `{text, alerts[], windowHours, at}`. The text is Slack-style, and holds vendor names, counts, the rate and the
+  window only. Unset means a log line `guardrail_alert` only. The URL is never logged or returned; Settings shows
+  set / unset / invalid.
+- **A failed AE read** is logged as a skipped check and changes no state.
+- **Settings → Deployment** gets a "Scheduled checks" row: the re-run, the alert target, the thresholds, and the last
+  stored states.
+
+**Verified:**
+- **Tests:** 897 (+15), 0 type errors, build clean. **Mutation-verified 14 of 14**: the thresholds and their
+  boundaries, no change means silent, the first-seen rule, unknown is silent, the webhook host check, a failed POST
+  reported as failed, forced parallel, the 2 s gap, the labels, scheduled labels kept, `scheduled` rows accepted by
+  the reader, the Thai sample in Test all, and harmless rows being `expected: allow`.
+- **Local (`--test-scheduled`, a new `wrangler-dev-scheduled` launch config on port 8790):**
+  - The re-run cron sent all 12 prompts to Lakera in 23.8 s. Every line read `src: scheduled`, `mode: parallel`, a
+    `sch…` id and its label.
+  - The alert cron read real prod AE: no checks in that hour, so no vendors, no state and no alert.
+  - Settings showed the Scheduled checks row and "Run all tests (6)" for Lakera (4 prompts + 2 replies).
+  - The Red Team toggle gave "Run 56 prompts" with 20 "Harmless (Thai)" rows. Analytics showed the scheduled
+    empty state; a missing space was fixed. No console errors.
+- **Prod:**
+  - Smoke passes.
+  - `/api/external-guardrails` returns `automation` (webhook `unset`, no states yet).
+  - `source=scheduled` is accepted, and the bundle carries the new strings.
+  - The Thai probe above.
+  - **The alert cron fired on prod** at 10:17 UTC (`wrangler tail`): `outcome: ok`, and the log read
+    `guardrail_alert_check`, no vendors (no checks in the last hour), no alert.
+  - **The first scheduled re-run** is due at 12:00 UTC and had not been seen when this was written.
+
 ### 2026-10-12 — Quorum mode; applying a vendor's redaction; "Test all vendors"; Cato monitor_action; Red Team false-block rate
 
 **Asked for:** "do 7-8, 11-13" from the suggestion table. Migration `0010_quorum_and_redaction.sql` (purely additive: three
@@ -1705,7 +1786,8 @@ control that blocks everything. Deploy `4a96d738-d8aa-4e1b-b95b-47718be6bef3`. F
     greener is better in both views, and the last column becomes "Blocked by any".
   - The card now shows when only the edge ran but harmless rows exist, because the edge's false blocks are news.
 - **No harmless prompts are supplied by this app.** They must come from a real source, and ThaiSafetyBench has
-  only harmful ones. Still open: a sourced harmless Thai set.
+  only harmful ones. ~~Still open: a sourced harmless Thai set.~~ **Done 2026-10-12:** 20 rows from Han Instruct v4.0
+  (CC BY-SA 4.0), chosen by a fixed rule.
 - **Verified:**
   - **Gates:** 638 across 41 files (+7).
   - **Mutations,** all caught:

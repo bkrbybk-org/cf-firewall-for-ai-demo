@@ -26,6 +26,7 @@ export const AE_DATASET = "cf_ai_waf_demo_guardrail_verdicts";
 export const ROW_CAP = 10_000;
 export const RANGE_HOURS = [1, 24, 168] as const;
 export type SourceFilter = VerdictSource | "all";
+const SOURCES: readonly string[] = ["chat", "redteam", "scheduled", "all"];
 
 const OUTCOMES: readonly VerdictOutcome[] = ["block", "allow", "error", "failed_open", "not_run"];
 
@@ -33,7 +34,7 @@ const OUTCOMES: readonly VerdictOutcome[] = ["block", "allow", "error", "failed_
 // ever interpolated — the SQL API takes a plain statement, with no bound parameters.
 export function buildSql(hours: (typeof RANGE_HOURS)[number], source: SourceFilter): string {
   if (!(RANGE_HOURS as readonly number[]).includes(hours)) throw new Error(`bad hours ${hours}`);
-  if (source !== "chat" && source !== "redteam" && source !== "all") throw new Error(`bad source ${source}`);
+  if (!SOURCES.includes(source)) throw new Error(`bad source ${source}`);
   return [
     "SELECT timestamp AS ts, _sample_interval AS si,",
     "blob2 AS src, blob3 AS dir, blob4 AS provider, blob5 AS outcome, blob6 AS detected, blob7 AS ray,",
@@ -93,7 +94,7 @@ export function parseRow(r: unknown): VerdictRow | null {
   const outcome = o.outcome as VerdictOutcome;
   if (!Number.isFinite(ts) || !PROVIDER_IDS.includes(provider) || !OUTCOMES.includes(outcome)) return null;
   if (o.dir !== "prompt" && o.dir !== "reply") return null;
-  if (o.src !== "chat" && o.src !== "redteam") return null;
+  if (o.src !== "chat" && o.src !== "redteam" && o.src !== "scheduled") return null;
   const si = num(o.si);
   const ms = num(o.ms);
   return {
@@ -113,8 +114,8 @@ export function parseRow(r: unknown): VerdictRow | null {
     decided: num(o.decided) === 1,
     quorum: o.mode === "quorum",
     applied: outcome === "allow" && num(o.applied) === 1,
-    // Only on the Red Team's own turns, as written; re-checked so a stray label can never reach the rate.
-    expect: o.src === "redteam" && (o.expect === "benign" || o.expect === "attack") ? o.expect : "",
+    // Only on curated prompts (Red Team, scheduled re-run), as written; re-checked so a stray label never reaches a rate.
+    expect: (o.src === "redteam" || o.src === "scheduled") && (o.expect === "benign" || o.expect === "attack") ? o.expect : "",
   };
 }
 
@@ -350,7 +351,7 @@ export async function handleGuardrailAnalytics(url: URL, env: Env, fetchImpl: ty
   const h = Number(url.searchParams.get("hours") ?? 24);
   const hours = ((RANGE_HOURS as readonly number[]).includes(h) ? h : 24) as (typeof RANGE_HOURS)[number];
   const s = url.searchParams.get("source");
-  const source: SourceFilter = s === "redteam" || s === "all" ? s : "chat";
+  const source: SourceFilter = s === "redteam" || s === "scheduled" || s === "all" ? s : "chat";
   try {
     const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`, {
       method: "POST",
