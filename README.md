@@ -23,9 +23,9 @@ Day-to-day engineering state — decisions, open bugs, next tasks — lives in [
 | Route | What it shows |
 |---|---|
 | `/` | Chat demo. System Prompt + AI Gateway settings (left) · chat (center) · Attack Library (right). Nav-tab label is "AI Guardrails Demo". |
-| `/analytics` | **edge** (zone WAF + AI Security), **AI Gateway** (account gateway logs) and **external guardrails** (per-vendor verdicts, Analytics Engine), plus **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
+| `/analytics` | Vendor-agnostic (since 2026-10-12): **All vendors**, a side-by-side table, then one page per vendor — **Cloudflare · AI Security (edge)** (zone WAF + AI Security), **Cloudflare · AI Gateway** (account gateway logs), and each **external guardrail** (its own verdicts, Analytics Engine) — plus the app's **prompt log** (D1) when `PROMPT_LOG_ENABLED` is on. |
 | `/redteam` | Replays a curated 36-attack subset of a Prisma AIRS scan corpus — **or your own prompts from a CSV** — through the real `/api/chat` and scores what the edge did. Tick rows to run just a subset; choose the route, gateway and an optional Dynamic Route. |
-| `/compliance` | Coverage matrix + framework tabs mapping the controls to six AI risk frameworks. |
+| `/compliance` | Vendor-agnostic (since 2026-10-12): **All vendors**, **Cloudflare** (graded) and each external guardrail (observed), over the same capabilities and six AI risk frameworks. |
 | `/settings` | **Settings**, in two sections that are never mixed. **Your preferences** (this browser only): theme, guardrail card layout, turn details, raw vendor responses. **System settings** (shared by every user): who may change them, the **traffic flow** diagram (sequential / parallel / quorum with its votes-to-stop, order, guardrail-only, check replies), each **external guardrail** provider (Prisma AIRS, CrowdStrike Falcon AIDR, Cisco, Lakera, Cato, Datadog) as a collapsible list — closed by default, each row summarising key, region, profile, fail mode and last save, with the enable switch on the row — a **Test all vendors** panel, and a read-only **Deployment** panel of the Worker's vars, secrets and bindings. `/guardrails` (its name until 2026-10-07) redirects to `/settings#system`. |
 
 `/gateway` redirects to `/` — AI Gateway is merged into the chat page as a route selector, not a separate page.
@@ -518,6 +518,13 @@ Every blocked card has a **▸ View raw response** toggle showing exactly what t
 
 ## Analytics page (`/analytics`)
 
+**Vendor-agnostic** (since 2026-10-12). One picker: **All vendors**, then **Cloudflare · AI Security (edge)**, **Cloudflare · AI Gateway** and each external guardrail, then the app's own **Prompt log**, set apart because it is no vendor's data. Cloudflare is listed first because the demo runs on it, under the same rules as everyone else.
+- **All vendors** is one table with the same columns for every vendor: checked · blocked · flagged, not blocked · no verdict · p50.
+  - A column a vendor's data cannot answer is **"—" with the reason on hover, never 0**. The edge logs only matched requests, so it has no "checked", and its rules act inline with no outage or latency. AI Gateway Guardrails' verdicts are not in its logs API.
+  - The edge's blocks are the AI Security rules' own, never zone-wide.
+  - The traffic filter (chat / Red Team / scheduled / all) narrows the external guardrails only; the edge and gateway see every source.
+- **A vendor's page** (`/api/guardrail-analytics?provider=<id>`) shows only that vendor's counts, series, latency and detections. Its "disagreed" list keeps the turns it took part in, with the other vendors' verdicts.
+
 **Edge tab** — `GET /api/analytics?hours=1|24|168`. The Worker pulls the latest 500 raw rows per dataset (`firewallEventsAdaptive`, and `httpRequestsAdaptive` filtered to `/api/chat`) plus the **immediately preceding window** via aliased fields, aggregates server-side, and returns one payload: action totals, top fired rules, a time series, an injection-score histogram, PII/unsafe/custom-topic breakdowns, and scanned-vs-labeled request counts.
 
 Two honesty rules are enforced server-side and must not be "simplified" away:
@@ -708,7 +715,14 @@ Local dev has no `cf-ray`, so verdicts never resolve there — only the runner m
 
 ## Compliance page (`/compliance`)
 
-Maps the two products to six AI risk frameworks: **NIST AI RMF**, **ISO/IEC 42001**, **OWASP LLM Top 10 (2025)**, **MITRE ATLAS**, and two Thai ones — the **Bank of Thailand AI risk management policy (2025)** and the **NCSA AI Security Guidelines (2025)**. Layout: coverage matrix (capability × framework) on top, then framework tabs with one detail card per control.
+**Vendor-agnostic** (since 2026-10-12). One picker over the same capabilities and the same controls: **All vendors**, **Cloudflare**, then each external guardrail.
+- **Every vendor is observed** (`web/src/lib/vendorCapabilities.ts`, last 7 days, every source): for each of the 8 capabilities (prompt injection, PII, unsafe topics, custom topics, output moderation, rate limiting/caching, logging, provider abstraction), whether its own data in this demo shows it.
+  - **The states:** **seen** comes with the detector names and counts as evidence. **Not seen** is never "does not have it". **N/a / not observable** is never folded into "not seen".
+  - **Classification** is an exact-name table of detector names. Lakera's documented `pii/` and `moderated_content/` prefixes and Cato's built-in policy types are the only patterns, and anything else is listed as "other, not mapped".
+- **Only Cloudflare is graded**, with the hand-written mapping below. The other vendors are not graded, because a grade would be a claim about their products this app cannot check.
+- **Views:** *All vendors* shows a capability × vendor matrix, plus each control's observed vendors. *Cloudflare* is the graded page. *A vendor's view* shows its capabilities with evidence, the controls they reach, and the rest folded with the reason. MEASURE 2.7 also carries that vendor's own chat "in use" line (24 h).
+
+Cloudflare's graded view maps the two products to six AI risk frameworks: **NIST AI RMF**, **ISO/IEC 42001**, **OWASP LLM Top 10 (2025)**, **MITRE ATLAS**, and two Thai ones — the **Bank of Thailand AI risk management policy (2025)** and the **NCSA AI Security Guidelines (2025)**. Layout: coverage matrix (capability × framework) on top, then framework tabs with one detail card per control.
 
 Coverage is **graded, not inflated**:
 

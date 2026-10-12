@@ -1,5 +1,10 @@
 // Security analytics dashboard shell: shared range picker, per-tab filters, and
 // the fetch/refresh cycle. The tabs themselves live in components/analytics/.
+//
+// Vendor-agnostic since 2026-10-12 (decided with the user): one picker — "All vendors" (a side-by-side table), then
+// one page per vendor: Cloudflare's two products first (the demo runs on them), then each external guardrail, every
+// one from its own data and under the same honesty rules. The prompt log is this app's own record, not a vendor's,
+// so it stays apart at the end.
 import { useCallback, useEffect, useState } from "react";
 import { CalendarClock, Crosshair, RefreshCw, X } from "lucide-react";
 import { Header } from "../components/Header";
@@ -8,6 +13,9 @@ import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";
 import { GatewayTab } from "../components/analytics/GatewayTab";
 import { GuardrailsTab, SOURCE_LABEL, type GuardrailSource } from "../components/analytics/GuardrailsTab";
 import { PromptLogTab, type PromptLogView } from "../components/analytics/PromptLogTab";
+import { VendorsOverview, type VendorTab } from "../components/analytics/VendorsOverview";
+import { providerLabel } from "../lib/guardrailView";
+import { EXTERNAL_VENDORS } from "../lib/vendorCapabilities";
 import {
   clearPromptLog,
   getAnalytics,
@@ -22,6 +30,7 @@ import { fmtTime } from "../lib/format";
 import type {
   Analytics,
   GatewayAnalytics as GatewayAnalyticsData,
+  ExternalGuardrailProvider,
   GatewayOption,
   GuardrailAnalytics,
   PromptAnalytics,
@@ -63,10 +72,11 @@ const OUTCOME_FILTERS = [
 const PLOG_RANGES = [...RANGES, { label: "all", hours: 0 }];
 const REFRESH_MS = 60_000;
 
-type Tab = "edge" | "gateway" | "guardrails" | "promptlog";
+type Tab = "all" | VendorTab | "promptlog";
+const isGuardrail = (t: Tab): t is ExternalGuardrailProvider => (EXTERNAL_VENDORS as string[]).includes(t);
 
 export function AnalyticsPage() {
-  const [tab, setTab] = useState<Tab>("edge");
+  const [tab, setTab] = useState<Tab>("all");
   // Prompt log feature flag (PROMPT_LOG_ENABLED + a bound D1), served by
   // /api/models. Off means the tab does not exist — not that it renders a
   // setup hint — and the edge tab's drill-through has nowhere to land, so it
@@ -164,10 +174,10 @@ export function AnalyticsPage() {
     }
   }, []);
 
-  const loadGr = useCallback(async (h: number, source: GuardrailSource) => {
+  const loadGr = useCallback(async (h: number, source: GuardrailSource, provider?: ExternalGuardrailProvider) => {
     setLoading(true);
     try {
-      setGr(await getGuardrailAnalytics(h, source));
+      setGr(await getGuardrailAnalytics(h, source, provider));
       setFetchedAt(fmtTime());
     } catch {
       setGr({ configured: true, error: "network error" } as GuardrailAnalytics);
@@ -188,7 +198,7 @@ export function AnalyticsPage() {
         // Deep links and a remembered tab can both point at a tab that no
         // longer exists; fall back rather than rendering an empty shell.
         if (!enabled) {
-          setTab((cur) => (cur === "promptlog" ? "edge" : cur));
+          setTab((cur) => (cur === "promptlog" ? "all" : cur));
           setDrill(null);
         }
       })
@@ -225,9 +235,13 @@ export function AnalyticsPage() {
   }, []);
 
   const refresh = useCallback(() => {
-    if (tab === "edge") load(hours);
+    if (tab === "all") {
+      load(hours);
+      loadGw(gatewayId, hours);
+      loadGr(hours, grSource);
+    } else if (tab === "edge") load(hours);
     else if (tab === "gateway") loadGw(gatewayId, hours);
-    else if (tab === "guardrails") loadGr(hours, grSource);
+    else if (isGuardrail(tab)) loadGr(hours, grSource, tab);
     else loadPlog(plogRoute, plogOutcomes, plogWindow, plogView);
     // plogWindow is a fresh object every render, so its own primitive inputs
     // — not the object itself — are the real dependencies here. plogOutcomes
@@ -246,12 +260,7 @@ export function AnalyticsPage() {
     <div className="flex h-full flex-col">
       <Header
         title="Security Analytics"
-        subtitle={
-          <>
-            Zone WAF events + <code className="font-mono">cf.llm.*</code> scores via GraphQL Analytics · aggregated at
-            the Worker
-          </>
-        }
+        subtitle={<>Every security layer in this demo, each from its own data — side by side, or one vendor at a time</>}
         actions={<ThemeToggle />}
       />
 
@@ -263,33 +272,56 @@ export function AnalyticsPage() {
           off the viewport. */}
       <main className="relative min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
-          {/* Tab strip: edge (zone-scoped) vs AI Gateway (account-scoped). */}
-          <div className="flex overflow-hidden rounded-full border border-line text-[12.5px] self-start">
+          {/* Vendor picker: All vendors, then one page per vendor (Cloudflare's products first), then the app's own
+              prompt log, set apart — it is no vendor's data. */}
+          <div className="flex flex-wrap items-center gap-1.5 text-[12.5px]" role="tablist" aria-label="Vendor">
             {(
               [
-                { id: "edge" as const, label: "AI Security (edge)" },
-                { id: "gateway" as const, label: "AI Gateway" },
-                { id: "guardrails" as const, label: "External guardrails" },
-                // Only offered when there is a log to look at.
-                ...(promptLogEnabled ? [{ id: "promptlog" as const, label: "Prompt log" }] : []),
-              ]
+                { id: "all" as Tab, label: "All vendors" },
+                { id: "edge" as Tab, label: "Cloudflare · AI Security (edge)" },
+                { id: "gateway" as Tab, label: "Cloudflare · AI Gateway" },
+                ...EXTERNAL_VENDORS.map((p) => ({ id: p as Tab, label: providerLabel(p) })),
+              ] as { id: Tab; label: string }[]
             ).map((t) => (
               <button
                 key={t.id}
                 type="button"
+                role="tab"
+                aria-selected={tab === t.id}
                 onClick={() => {
                   // Switching tabs by hand ends the drill context — the banner
                   // would otherwise outlive the click that created it.
-                  if (t.id !== "promptlog") setDrill(null);
+                  setDrill(null);
                   setTab(t.id);
                 }}
-                className={`px-4 py-1.5 transition ${
-                  tab === t.id ? "bg-accent/15 font-bold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                className={`rounded-full border px-3 py-1.5 transition ${
+                  tab === t.id
+                    ? "border-accent bg-accent/15 font-bold text-accent"
+                    : "border-line bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
                 {t.label}
               </button>
             ))}
+            {/* Only offered when there is a log to look at. */}
+            {promptLogEnabled && (
+              <>
+                <span aria-hidden className="mx-1 h-5 w-px bg-line" />
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === "promptlog"}
+                  onClick={() => setTab("promptlog")}
+                  className={`rounded-full border px-3 py-1.5 transition ${
+                    tab === "promptlog"
+                      ? "border-accent bg-accent/15 font-bold text-accent"
+                      : "border-line bg-surface text-muted hover:bg-surface-hover"
+                  }`}
+                >
+                  Prompt log (this app)
+                </button>
+              </>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 text-[12.5px] text-muted">
@@ -409,7 +441,7 @@ export function AnalyticsPage() {
                 </select>
               </label>
             )}
-            {tab === "guardrails" && (
+            {(tab === "all" || isGuardrail(tab)) && (
               <div className="flex overflow-hidden rounded-full border border-line" role="group" aria-label="Traffic">
                 {(["chat", "redteam", "scheduled", "all"] as const).map((s) => (
                   <button
@@ -516,8 +548,18 @@ export function AnalyticsPage() {
             />
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />
-          ) : tab === "guardrails" ? (
-            <GuardrailsTab d={gr} hours={hours} />
+          ) : tab === "all" ? (
+            <VendorsOverview
+              edge={data}
+              gateway={gw}
+              // Only an all-vendor read: a vendor page's filtered numbers must never fill the comparison while it loads.
+              guardrails={gr && (gr.provider ?? null) === null ? gr : null}
+              window={RANGES.find((r) => r.hours === hours)?.label === "7d" ? "last 7 days" : `last ${hours}h`}
+              onPick={(t) => setTab(t)}
+            />
+          ) : isGuardrail(tab) ? (
+            // Only this vendor's read — never another vendor's numbers under this vendor's name while loading.
+            <GuardrailsTab d={gr && gr.provider === tab ? gr : null} hours={hours} />
           ) : (
             /* Withholding onDrill (rather than passing a no-op) also drops
                EdgeTab's "click to inspect prompts" affordance, so the rows

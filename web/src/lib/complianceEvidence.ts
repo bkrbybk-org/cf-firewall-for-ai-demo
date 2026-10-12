@@ -63,36 +63,28 @@ function noData(win: string): EvidenceResult {
   return { status: "no-data", windowLabel: win };
 }
 
-// The third-party line under MEASURE 2.7 (compliance.ts `thirdParty`): what the external guardrails decided about
-// chat prompts in the window, attributed per vendor. Never merged into Cloudflare's headline. Same statuses as the
-// Cloudflare evidence: unconfigured (nothing shown), no-data (no prompt checked — not "0 blocked"), ok.
-export function resolveThirdPartyEvidence(
+// One external vendor's "protection in use" line (compliance.ts `vendorInUse`), shown on that vendor's own view of the
+// Compliance page: how many chat prompts it checked in the window and how many it blocked. Its own numbers only —
+// never added to another vendor's. Same statuses as the Cloudflare evidence: unconfigured (nothing shown), no-data (no
+// prompt checked — not "0 blocked"), ok. Chat traffic only: Red Team runs and scheduled re-runs are benchmarks.
+export function resolveVendorEvidence(
   g: GuardrailAnalytics | null,
+  provider: ExternalGuardrailProvider,
   label: (provider: ExternalGuardrailProvider) => string,
   hours: number,
 ): EvidenceResult {
   const win = windowLabel(hours);
   if (!g || g.configured === false || g.error || !Array.isArray(g.vendors)) return unconfigured(win);
-  const prompt = g.vendors.filter((v) => v.dir === "prompt");
-  const checked = prompt.reduce((n, v) => n + v.checked, 0);
-  if (checked === 0) return noData(win);
+  const prompt = g.vendors.find((v) => v.dir === "prompt" && v.provider === provider);
+  if (!prompt || prompt.checked === 0) return noData(win);
   // "≈" when Analytics Engine sampled, "at least" when the read was capped — the tab's marks.
   const mark = g.capped ? "at least " : g.sampled ? "≈" : "";
-  const blocked = prompt.reduce((n, v) => n + v.block, 0);
-  const by = prompt
-    .filter((v) => v.block > 0)
-    .sort((a, b) => b.block - a.block)
-    .map((v) => `${label(v.provider)} ${mark}${fmt(v.block)}`)
-    .join(", ");
-  const vendors = new Set(prompt.filter((v) => v.checked > 0).map((v) => v.provider)).size;
   return {
     status: "ok",
     windowLabel: win,
-    headline: `External guardrails: ${mark}${plural(checked, "prompt check")} by ${plural(vendors, "vendor")} · ${mark}${fmt(blocked)} blocked${by ? ` (${by})` : ""}`,
+    headline: `${label(provider)}: ${mark}${plural(prompt.checked, "chat prompt")} checked · ${mark}${fmt(prompt.block)} blocked`,
     floor: g.capped,
-    note:
-      "Third-party vendors this app forwards each chat prompt to — not Cloudflare controls, and not part of this control's coverage grade. Chat traffic only; Red Team runs are left out." +
-      (g.sampled ? " Counts are sampled estimates." : ""),
+    note: "Chat traffic only; Red Team runs and scheduled re-runs are left out." + (g.sampled ? " Counts are sampled estimates." : ""),
   };
 }
 

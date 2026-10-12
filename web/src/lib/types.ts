@@ -657,6 +657,8 @@ export interface GuardrailVendorStats {
   p50Ms: number | null; // null when nothing was timed — never 0
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
+  // Every detector name in the window, most first (capped at 50). Absent from a Worker before 2026-10-12.
+  detections?: { name: string; count: number }[];
   lastTs: number | null; // newest check that ran, epoch ms
   latencyTrend?: (number | null)[]; // p50 per series bucket; null = no timed check there (absent from an older Worker)
   // Absent from a Worker before 2026-10-12:
@@ -673,6 +675,8 @@ export interface GuardrailAnalytics {
   since: string;
   until: string;
   source: "chat" | "redteam" | "scheduled" | "all"; // "scheduled": the Worker's 6-hourly re-run (#15)
+  // The one vendor these numbers are about, or null for every vendor. Absent from an older Worker (= every vendor).
+  provider?: ExternalGuardrailProvider | null;
   rowsRead: number;
   rowsDropped: number;
   capped: boolean; // counts are a floor

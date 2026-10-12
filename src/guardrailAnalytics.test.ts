@@ -4,7 +4,16 @@
 // unknown shape is dropped, never counted; sampling and caps are reported; no data is never 0 ms; and an
 // Analytics Engine error passes on its status only.
 import { describe, expect, it } from "vitest";
-import { ROW_CAP, aggregate, buildSql, handleGuardrailAnalytics, parseAeTime, parseRow, type VerdictRow } from "./guardrailAnalytics";
+import {
+  ROW_CAP,
+  aggregate,
+  buildSql,
+  forProvider,
+  handleGuardrailAnalytics,
+  parseAeTime,
+  parseRow,
+  type VerdictRow,
+} from "./guardrailAnalytics";
 import type { Env } from "./types";
 
 const NOW = Date.parse("2026-10-09T12:00:00Z");
@@ -261,5 +270,43 @@ describe("handleGuardrailAnalytics", () => {
     expect(j.error).toBe("Analytics Engine returned HTTP 400");
     const denied = await handleGuardrailAnalytics(url(), env(), (async () => new Response("no", { status: 403 })) as typeof fetch);
     expect(((await denied.json()) as { error: string }).error).toMatch(/Account Analytics: Read/);
+  });
+});
+
+// Vendor-agnostic Analytics (2026-10-12): one vendor's page. Hand-computed from FIXTURE.
+describe("forProvider", () => {
+  const opts = { hours: 24, now: NOW, source: "all" as const, rowsRead: FIXTURE.length, rowsDropped: 0 };
+  it("counts only that vendor, but keeps the disagreements it took part in (which need the others' verdicts)", () => {
+    const lakera = forProvider(rows(FIXTURE), opts, "lakera-guard");
+    expect(lakera.provider).toBe("lakera-guard");
+    expect(lakera.vendors.map((v) => v.provider)).toEqual(["lakera-guard"]);
+    expect(lakera.totals).toMatchObject({ verdicts: 3, block: 1, alerts: 1, error: 0 });
+    // Turn A: AIRS blocked, Lakera allowed — a disagreement Lakera took part in, carrying AIRS's verdict too.
+    expect(lakera.disagreements.count).toBe(1);
+    expect(lakera.disagreements.latest[0].verdicts.map((v) => v.provider)).toEqual(["prisma-airs", "lakera-guard"]);
+    // Cato never gave a verdict in a split turn: no disagreements, and only its own rows.
+    const cato = forProvider(rows(FIXTURE), opts, "cato-ai-security");
+    expect(cato.disagreements).toEqual({ count: 0, latest: [] });
+    expect(cato.totals).toMatchObject({ verdicts: 1, error: 1 });
+    // No filter: every vendor, provider null.
+    expect(forProvider(rows(FIXTURE), opts, null)).toMatchObject({ provider: null, disagreements: { count: 1 } });
+  });
+
+  it("lists every detection, not only the top five, most first", () => {
+    const many = rows(["a", "b", "c", "d", "e", "f", "f"].map((d) => ({ provider: "lakera-guard", outcome: "block", detected: d })));
+    const v = aggregate(many, opts).vendors[0];
+    expect(v.detections.map((x) => x.name)).toEqual(["f", "a", "b", "c", "d", "e"]);
+    expect(v.topDetections).toHaveLength(5);
+  });
+
+  it("the handler takes only a known provider id", async () => {
+    const seen: string[] = [];
+    const env = { CF_ANALYTICS_TOKEN: "t", CF_ACCOUNT_ID: "a" } as Env;
+    const fake = (async () => Response.json({ data: FIXTURE.map(raw) })) as typeof fetch;
+    for (const p of ["lakera-guard", "not-a-vendor", "LAKERA-GUARD"]) {
+      const res = await handleGuardrailAnalytics(new URL(`https://x/api/guardrail-analytics?source=all&provider=${p}`), env, fake);
+      seen.push(String(((await res.json()) as { provider: string | null }).provider));
+    }
+    expect(seen).toEqual(["lakera-guard", "null", "null"]);
   });
 });

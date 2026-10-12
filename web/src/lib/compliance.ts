@@ -30,11 +30,11 @@
 //    traffic in the window vs. a genuine zero vs. a truncated/floor count).
 //    This file never fetches or computes; it only says which control a
 //    metric belongs to.
-//  - `thirdParty` (decided with the user, 2026-10-12): ONE control, MEASURE 2.7, also shows what the external
-//    guardrails this app forwards prompts to decided. It is a separate line, labelled third-party and attributed per
-//    vendor; it never adds to Cloudflare's numbers or changes a coverage grade (which describe Cloudflare's products
-//    only). PII and unsafe topics were left out on purpose: they would need each vendor's detector names classified,
-//    which is guessing. Extending it is the same editorial call as adding evidence — not a formatting one.
+//  - `vendorInUse` (2026-10-12): ONE control, MEASURE 2.7, also carries each external vendor's own "protection in use"
+//    line (chat prompts checked and blocked) — shown on THAT vendor's view of the page only, never added to another
+//    vendor's numbers or to Cloudflare's grade. (It began the same day as a single "third-party" line under
+//    Cloudflare's card; the vendor-agnostic page gave each vendor its own view.) Extending it is the same editorial
+//    call as adding evidence — not a formatting one.
 // ============================================================================
 
 export type Coverage = "full" | "partial" | "supporting" | "none";
@@ -68,8 +68,8 @@ export type EvidenceMetric = "injection-scoring" | "pii-detection" | "unsafe-top
 
 export interface Evidence {
   metric: EvidenceMetric;
-  // Also show the external guardrails' verdicts (third-party, never Cloudflare's) — see the header.
-  thirdParty?: "external-guardrails";
+  // Also show each external vendor's own in-use line on that vendor's view — see the header.
+  vendorInUse?: true;
 }
 
 export interface Control {
@@ -98,99 +98,113 @@ export interface Framework {
 }
 
 // --- Overview matrix ------------------------------------------------------
-// Rows are Cloudflare capabilities; `cells` maps a framework id to the
-// identifiers that capability maps to. Keep row order = rough demo order.
+// Rows are CAPABILITIES, vendor-neutral (since 2026-10-12): what a control needs, not who sells it. `cells` maps a
+// framework id to the identifiers that capability maps to — the same for every vendor. `cloudflare` is how Cloudflare
+// implements it and Cloudflare's own graded coverage (the only vendor graded here — see ./vendorCapabilities.ts for
+// why the others are shown as observed, not graded). Keep row order = rough demo order.
+
+export type CapabilityId =
+  | "prompt-injection"
+  | "pii"
+  | "unsafe-topics"
+  | "custom-topics"
+  | "output-moderation"
+  | "rate-limiting"
+  | "logging"
+  | "provider-abstraction";
 
 export interface MatrixRow {
-  capability: string;
-  detail: string;
-  product: Product;
-  coverage: Coverage;
+  id: CapabilityId;
+  capability: string; // vendor-neutral name
+  cloudflare: { detail: string; product: Product; coverage: Coverage };
   cells: Record<string, string[]>;
 }
 
 export const MATRIX: MatrixRow[] = [
   {
-    capability: "Prompt injection scoring",
-    detail: "cf.llm.prompt.injection_score",
-    product: "ai-security",
-    coverage: "partial",
+    id: "prompt-injection",
+    capability: "Prompt injection detection",
+    cloudflare: { detail: "cf.llm.prompt.injection_score", product: "ai-security", coverage: "partial" },
     cells: {
       nist: ["MEASURE 2.7"], iso: ["A.6"], owasp: ["LLM01", "LLM07"], atlas: ["AML.T0051", "AML.T0056"],
-      bot: ["P2 §3.1"], ncsa: ["Ph.4", "§2.6"],
+      bot: ["Part 2 · 3.1"], ncsa: ["Phase 4", "§2.6 threats"],
     },
   },
   {
+    id: "pii",
     capability: "PII detection",
-    detail: "cf.llm.prompt.pii_categories",
-    product: "ai-security",
-    coverage: "full",
+    cloudflare: { detail: "cf.llm.prompt.pii_categories", product: "ai-security", coverage: "full" },
     cells: {
       nist: ["MEASURE 2.10"], iso: ["A.7"], owasp: ["LLM02"], atlas: ["AML.T0057"],
-      bot: ["P2 §1.3"], ncsa: ["§4.3"],
+      bot: ["Part 2 · 1.3"], ncsa: ["§4.3 PDPA"],
     },
   },
   {
+    id: "unsafe-topics",
     capability: "Unsafe topic detection",
-    detail: "S1–S14 taxonomy",
-    product: "ai-security",
-    coverage: "full",
+    cloudflare: { detail: "S1–S14 taxonomy", product: "ai-security", coverage: "full" },
     cells: {
       nist: ["MEASURE 2.6"], iso: ["A.9"], owasp: ["LLM01"], atlas: ["AML.T0054"],
-      bot: ["P2 §3.1"], ncsa: ["Ph.4"],
+      bot: ["Part 2 · 3.1"], ncsa: ["Phase 4"],
     },
   },
   {
+    id: "custom-topics",
     capability: "Custom topic detection",
-    detail: "your own prohibited subjects",
-    product: "ai-security",
-    coverage: "partial",
+    cloudflare: { detail: "your own prohibited subjects", product: "ai-security", coverage: "partial" },
     cells: {
       nist: ["GOVERN 1.2"], iso: ["A.2", "A.9"], owasp: [], atlas: [],
-      bot: ["P1 §2"], ncsa: ["Ph.1"],
+      bot: ["Part 1 · 2"], ncsa: ["Phase 1"],
     },
   },
   {
-    capability: "Guardrails moderation",
-    detail: "prompt and response screening",
-    product: "ai-gateway",
-    coverage: "partial",
+    id: "output-moderation",
+    capability: "Output moderation",
+    cloudflare: { detail: "prompt and response screening", product: "ai-gateway", coverage: "partial" },
     cells: {
       nist: ["MANAGE 2.3"], iso: ["A.9"], owasp: ["LLM05", "LLM09"], atlas: ["AML.T0054"],
-      bot: ["P2 §3.1"], ncsa: ["Ph.4"],
+      bot: ["Part 2 · 3.1"], ncsa: ["Phase 4"],
     },
   },
   {
+    id: "rate-limiting",
     capability: "Rate limiting and caching",
-    detail: "cost and volume control",
-    product: "ai-gateway",
-    coverage: "full",
+    cloudflare: { detail: "cost and volume control", product: "ai-gateway", coverage: "full" },
     cells: {
       nist: ["MANAGE 2.2"], iso: ["A.6"], owasp: ["LLM10"], atlas: ["AML.T0029"],
-      bot: [], ncsa: ["Ph.5"],
+      bot: [], ncsa: ["Phase 5"],
     },
   },
   {
+    id: "logging",
     capability: "Logging and analytics",
-    detail: "per-request evidence trail",
-    product: "both",
-    coverage: "full",
+    cloudflare: { detail: "per-request evidence trail", product: "both", coverage: "full" },
     cells: {
       nist: ["MANAGE 4.1", "MEASURE 2.8"], iso: ["A.6", "A.5"], owasp: [], atlas: [],
-      bot: ["P1 §3.1"], ncsa: ["Ph.5", "§4.2"],
+      bot: ["Part 1 · 3.1"], ncsa: ["Phase 5", "§4.2 risk"],
     },
   },
   {
+    id: "provider-abstraction",
     capability: "Provider abstraction",
-    detail: "fallbacks, retries, one egress point",
-    product: "ai-gateway",
-    coverage: "supporting",
+    cloudflare: { detail: "fallbacks, retries, one egress point", product: "ai-gateway", coverage: "supporting" },
     cells: {
       nist: ["MAP 4.1"], iso: ["A.10"], owasp: ["LLM03"], atlas: ["AML.T0040"],
-      bot: [], ncsa: ["Ph.1"],
+      bot: [], ncsa: ["Phase 1"],
     },
   },
 ];
+
+// The overview grid's narrow columns show a control id in short form ("Part 2 · 3.1" → "P2 §3.1", "Phase 4" →
+// "Ph.4", "§4.3 PDPA" → "§4.3"). Display only: MATRIX holds the real ids, so a cell always names a real control.
+export function shortControlId(id: string): string {
+  const part = /^Part (\d+) · (.+)$/.exec(id);
+  if (part) return `P${part[1]} §${part[2]}`;
+  const phase = /^Phase (\d+)$/.exec(id);
+  if (phase) return `Ph.${phase[1]}`;
+  const sec = /^(§[\d.]+) .+$/.exec(id);
+  return sec ? sec[1] : id;
+}
 
 // --- Per-framework detail -------------------------------------------------
 
@@ -202,7 +216,7 @@ export const FRAMEWORKS: Framework[] = [
     full: "NIST AI Risk Management Framework 1.0 (AI 100-1)",
     blurb:
       "Voluntary US framework organized into four functions — govern, map, measure, manage — with roughly 72 subcategories.",
-    note: "Curated: the subcategories these two products meaningfully support, not all 72.",
+    note: "Curated: the subcategories an AI security layer — the edge, a gateway or a guardrail — can meaningfully support, not all 72.",
     url: "https://www.nist.gov/itl/ai-risk-management-framework",
     controls: [
       {
@@ -213,7 +227,7 @@ export const FRAMEWORKS: Framework[] = [
         product: "ai-security",
         refs: ["LLM01", "AML.T0051"],
         demo: { label: "See it on the chat demo", to: "/" },
-        evidence: { metric: "injection-scoring", thirdParty: "external-guardrails" },
+        evidence: { metric: "injection-scoring", vendorInUse: true },
       },
       {
         id: "MEASURE 2.10",
@@ -463,7 +477,7 @@ export const FRAMEWORKS: Framework[] = [
     full: "MITRE ATLAS — adversarial threat landscape for AI systems",
     blurb:
       "Adversary tactics and techniques observed against AI systems, structured like MITRE ATT&CK.",
-    note: "Curated: the LLM-facing techniques these products detect or mitigate, not the whole matrix.",
+    note: "Curated: the LLM-facing techniques an AI security layer can detect or mitigate, not the whole matrix.",
     url: "https://atlas.mitre.org/",
     controls: [
       {

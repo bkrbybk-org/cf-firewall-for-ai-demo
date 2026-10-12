@@ -626,6 +626,67 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-12 — Analytics and Compliance made vendor-agnostic
+
+**Asked for:** "review analytics and compliance pages, make them vendor agnostic - you may separate for each vendor".
+**Decided with the user:**
+- External vendors are shown as **observed capabilities with live evidence**, not graded.
+- Cloudflare is **one vendor among equals, listed first**.
+- Analytics gets a **vendor picker plus a comparison**.
+
+Deploy `e42d2d72-3b98-4f41-9844-a37e2c1cbb15`. No migration.
+
+**What the review found:**
+- **Analytics** mixed product and source: the "AI Security (edge)" and "AI Gateway" tabs, against one "External guardrails" tab for six vendors. No vendor had its own series, latency or detections, and nothing compared all of them, Cloudflare included.
+- **Compliance** was written as Cloudflare's alone: "Cloudflare provides…", "Cloudflare capability", grades describing Cloudflare. Other vendors had one grey line under MEASURE 2.7.
+- **A latent bug:** the BoT and NCSA matrix cells used compact labels ("P2 §3.1", "Ph.4") that are not the controls' ids ("Part 2 · 3.1", "Phase 4"). Mapping a control back to its capabilities silently missed both frameworks. A new test caught it.
+
+**Analytics:**
+- **The picker:** **All vendors** · Cloudflare · AI Security (edge) · Cloudflare · AI Gateway · each external guardrail · then the app's own **Prompt log**, set apart because it is no vendor's data.
+- **All vendors:** one comparison table (`VendorsOverview`), the same columns for every vendor: checked · blocked · flagged, not blocked · no verdict · p50.
+  - A column a vendor's data cannot answer is **"—" with the reason on hover, never 0**.
+  - The edge has no "checked" (it logs only matches), no outage and no call latency.
+  - The gateway's Guardrails verdicts are not in its logs API.
+  - The edge's blocks come from the AI Security rules' own tally, never the zone-wide one.
+  - The traffic filter narrows the external guardrails only, and the note says so.
+- **An external vendor's page** is the guardrail tab filtered by `provider` (new on `/api/guardrail-analytics`, allowlisted). Every count, the series and the latency are that vendor's alone.
+  - **Disagreements** still need the other vendors' verdicts on the same turn. They come from every row and keep the turns this vendor took part in (`forProvider`, an `involving` option on `aggregate`).
+  - **The payload names its vendor** (`provider`), and the page shows a vendor read only under that vendor's name. Neither page can render another view's numbers while loading.
+  - Downloads name the vendor.
+
+**Compliance:**
+- **Model:** the eight MATRIX rows became vendor-neutral capabilities (`id`, generic name), with Cloudflare's implementation and grade as one attribute (`cloudflare: {detail, product, coverage}`).
+- **Observation** (`lib/vendorCapabilities.ts`, every vendor including Cloudflare, last 7 days, every source):
+  - **seen:** the vendor's data shows it, with the detector names and counts as evidence.
+  - **not seen:** it could show and did not. Never "does not have it".
+  - **unobservable:** nothing this app records could show it, e.g. a guardrail API's rate limiting, or AI Gateway Guardrails' verdicts. Never folded into "not seen".
+- **Classification:** an exact-name table of detector names, from the parsers and the live data.
+  - **Two documented category prefixes:** Lakera's `pii/` and `moderated_content/`.
+  - **Cato:** matched only by the built-in policy type inside "<guard> - <type> - <type>".
+  - **Anything else** is listed as "other, not mapped", never guessed into a capability.
+- **Views:**
+  - **All vendors:** a capability × vendor matrix, plus each control card with the vendors observed for it (and Cloudflare's grade, labelled).
+  - **Cloudflare:** the graded page as before, plus its observed capabilities.
+  - **Each external vendor:** its capability list with evidence, the controls its observed capabilities reach, and the rest folded with the reason (not seen / not observable / governance).
+- **No grades for external vendors:** a grade would be a claim about their products this app cannot check.
+- **The single "third-party" line is gone.** Each vendor's own "in use" line (chat prompts checked and blocked, 24 h) shows on that vendor's view under the same one control, MEASURE 2.7 (`vendorInUse`, `resolveVendorEvidence`).
+- **Cloudflare wording removed from shared copy:** the page title and banner, and two framework notes ("these two products" became "an AI security layer"). Demo links stay on the Cloudflare and All views only, because they show Cloudflare's features.
+
+**Verified:**
+- **Tests:** 914 (+17), 0 type errors, build clean. **Mutation-verified 15 of 15**, after one fix: a reply row holding only "not run" entries (Cato cannot check replies) counted as output moderation. A test was added and the mutation re-run.
+- **Local browser, real prod data via `.env` tokens:**
+  - **Analytics, All vendors, 24h chat:** edge 0 blocked / 31 logged (rules on Log); gateway idle; the five vendors' rows.
+  - **A bug, fixed:** the gateway note read "p50 0 ms" with no calls.
+  - **Lakera's page (7 days, all traffic):** ≈13 prompt and ≈11 reply checks, 8 disagreements it took part in.
+  - **Compliance, All vendors:** Cloudflare observed for every capability except output moderation (unobservable). Prisma, CrowdStrike and Cisco observed for injection; CrowdStrike for custom topics; Lakera for injection, unsafe topics and output moderation; Cato and Datadog not seen.
+  - **Lakera's view:** MEASURE 2.6 (moderated_content/crime 4), 2.7 (prompt_attack 5, plus its in-use line "2 chat prompts checked · 0 blocked"), MANAGE 2.3 (11 replies checked, 4 withheld). Seven NIST controls are folded as not observed.
+  - **Themes:** dark and light. No console errors.
+- **Prod:** smoke passes.
+  - `provider=lakera-guard` returns only Lakera's rows (13 prompt / 11 reply, with detections) and 8 disagreements.
+  - An unknown provider returns every vendor.
+  - The bundle carries the new strings.
+- **Data note:** Prisma AIRS's PII (dlp) and topic_violation detections were seen only in probes kept out of the log (`excludeFromLog`). So Prisma's "PII detection" reads **not seen** on prod, which is true of the logged traffic.
+
 ### 2026-10-12 — Scheduled re-runs; vendor outage alerts; harmless Thai prompts
 
 **Asked for:** "do 15-17". Decided with the user: re-run **every 6 hours, 12 prompts, no model**; alerts go to a

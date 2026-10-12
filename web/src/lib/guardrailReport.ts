@@ -15,6 +15,8 @@ export interface GuardrailReport {
   schema: typeof GUARDRAIL_REPORT_SCHEMA;
   generatedAt: string; // ISO, UTC
   window: { hours: number; since: string; until: string; traffic: "chat" | "redteam" | "scheduled" | "all" };
+  // The one vendor the report is about (a vendor's own Analytics page), or null for every vendor.
+  vendor: { provider: ExternalGuardrailProvider; label: string } | null;
   // How far the numbers can be trusted — the same flags the page shows as a banner.
   quality: { sampled: boolean; capped: boolean; rowsRead: number; rowsDropped: number };
   totals: GuardrailAnalytics["totals"];
@@ -36,6 +38,7 @@ export function buildGuardrailReport(
     schema: GUARDRAIL_REPORT_SCHEMA,
     generatedAt: now.toISOString(),
     window: { hours: d.rangeHours, since: d.since, until: d.until, traffic: d.source },
+    vendor: d.provider ? { provider: d.provider, label: label(d.provider) } : null,
     quality: { sampled: d.sampled, capped: d.capped, rowsRead: d.rowsRead, rowsDropped: d.rowsDropped },
     totals: d.totals,
     vendors: d.vendors.map((v) => ({ ...v, label: label(v.provider) })),
@@ -77,8 +80,12 @@ export function guardrailReportToMarkdown(r: GuardrailReport, detectionLabel: (n
   const t = r.totals;
   const L: string[] = [];
 
-  L.push(`# External guardrail verdicts — last ${r.window.hours === 168 ? "7 days" : `${r.window.hours}h`}`, "");
   L.push(
+    `# ${r.vendor ? `${mdText(r.vendor.label)} verdicts` : "External guardrail verdicts"} — last ${r.window.hours === 168 ? "7 days" : `${r.window.hours}h`}`,
+    "",
+  );
+  L.push(
+    `- **Vendor:** ${r.vendor ? `${mdText(r.vendor.label)} only (disagreements: the turns it took part in)` : "every external guardrail"}`,
     `- **Window:** ${r.window.since} → ${r.window.until} (UTC)`,
     `- **Traffic:** ${TRAFFIC[r.window.traffic]}`,
     `- **Report generated:** ${r.generatedAt} (UTC)`,
@@ -182,5 +189,5 @@ export function guardrailReportToMarkdown(r: GuardrailReport, detectionLabel: (n
 
 export function guardrailReportFilename(r: GuardrailReport, ext: "md" | "json"): string {
   const stamp = r.generatedAt.slice(0, 16).replace(/[-:]/g, "").replace("T", "-");
-  return `guardrail-verdicts-${r.window.hours}h-${r.window.traffic}-${stamp}.${ext}`;
+  return `guardrail-verdicts-${r.vendor ? `${r.vendor.provider}-` : ""}${r.window.hours}h-${r.window.traffic}-${stamp}.${ext}`;
 }

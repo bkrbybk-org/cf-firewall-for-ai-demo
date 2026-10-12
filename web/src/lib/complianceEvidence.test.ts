@@ -6,7 +6,7 @@
 // apart from "the row cap was hit, this number is a floor" is worse than no
 // chip at all — it reads as a compliance claim the data doesn't back up.
 import { describe, expect, it } from "vitest";
-import { resolveEvidence, resolveThirdPartyEvidence } from "./complianceEvidence";
+import { resolveEvidence, resolveVendorEvidence } from "./complianceEvidence";
 import type { Analytics, GuardrailAnalytics, GuardrailVendorStats, PromptAnalytics } from "./types";
 
 const analytics = (over: Partial<Analytics> = {}): Analytics => ({
@@ -284,8 +284,8 @@ describe("resolveEvidence", () => {
   });
 });
 
-// The third-party line under MEASURE 2.7 (compliance.ts `thirdParty`).
-describe("resolveThirdPartyEvidence", () => {
+// One external vendor's in-use line under MEASURE 2.7 on its own view (compliance.ts `vendorInUse`).
+describe("resolveVendorEvidence", () => {
   const label = (p: string) => ({ "prisma-airs": "Prisma AIRS", "lakera-guard": "Lakera Guard", "cato-ai-security": "Cato AI Security" } as Record<string, string>)[p] ?? p;
   const v = (over: Partial<GuardrailVendorStats>): GuardrailVendorStats => ({
     provider: "prisma-airs", dir: "prompt", checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
@@ -298,40 +298,39 @@ describe("resolveThirdPartyEvidence", () => {
     disagreements: { count: 0, latest: [] }, ...over,
   });
 
-  it("prompt checks and blocks, attributed per vendor, biggest first — reply checks not counted", () => {
-    const r = resolveThirdPartyEvidence(
-      g([
-        v({ checked: 10, block: 2, allow: 8 }),
-        v({ provider: "lakera-guard", checked: 10, block: 5, allow: 5 }),
-        v({ provider: "cato-ai-security", checked: 10, allow: 10 }),
-        v({ provider: "lakera-guard", dir: "reply", checked: 9, block: 9 }),
-      ]),
-      label,
-      24,
-    );
+  it("that vendor's own prompt checks and blocks — never another vendor's, never its reply checks", () => {
+    const all = g([
+      v({ checked: 10, block: 2, allow: 8 }),
+      v({ provider: "lakera-guard", checked: 10, block: 5, allow: 5 }),
+      v({ provider: "cato-ai-security", checked: 10, allow: 10 }),
+      v({ provider: "lakera-guard", dir: "reply", checked: 9, block: 9 }),
+    ]);
+    const r = resolveVendorEvidence(all, "lakera-guard", label, 24);
     expect(r).toMatchObject({ status: "ok", windowLabel: "last 1 day", floor: false });
-    expect(r.headline).toBe("External guardrails: 30 prompt checks by 3 vendors · 7 blocked (Lakera Guard 5, Prisma AIRS 2)");
-    expect(r.note).toMatch(/not Cloudflare controls, and not part of this control's coverage grade/);
+    expect(r.headline).toBe("Lakera Guard: 10 chat prompts checked · 5 blocked");
+    expect(r.note).toMatch(/Chat traffic only/);
+    expect(resolveVendorEvidence(all, "prisma-airs", label, 24).headline).toBe("Prisma AIRS: 10 chat prompts checked · 2 blocked");
   });
 
   it("no prompt checked is no-data — never '0 blocked'; unreadable or not set up shows nothing", () => {
-    expect(resolveThirdPartyEvidence(g([v({ dir: "reply", checked: 4 }), v({ provider: "cato-ai-security", notRun: 3 })]), label, 24).status).toBe("no-data");
+    expect(resolveVendorEvidence(g([v({ dir: "reply", checked: 4 })]), "prisma-airs", label, 24).status).toBe("no-data");
+    expect(resolveVendorEvidence(g([v({ checked: 4 })]), "lakera-guard", label, 24).status).toBe("no-data"); // only others checked
     for (const bad of [null, { configured: false } as GuardrailAnalytics, g([], { error: "Analytics Engine returned HTTP 502" })]) {
-      expect(resolveThirdPartyEvidence(bad, label, 24).status).toBe("unconfigured");
+      expect(resolveVendorEvidence(bad, "prisma-airs", label, 24).status).toBe("unconfigured");
     }
   });
 
   it("carries ≈ when sampled and 'at least' when capped", () => {
-    const sampled = resolveThirdPartyEvidence(g([v({ checked: 4, block: 1 })], { sampled: true }), label, 24);
-    expect(sampled.headline).toBe("External guardrails: ≈4 prompt checks by 1 vendor · ≈1 blocked (Prisma AIRS ≈1)");
+    const sampled = resolveVendorEvidence(g([v({ checked: 4, block: 1 })], { sampled: true }), "prisma-airs", label, 24);
+    expect(sampled.headline).toBe("Prisma AIRS: ≈4 chat prompts checked · ≈1 blocked");
     expect(sampled.note).toMatch(/sampled estimates/);
-    const capped = resolveThirdPartyEvidence(g([v({ checked: 4, block: 0, allow: 4 })], { capped: true }), label, 24);
-    expect(capped).toMatchObject({ floor: true, headline: "External guardrails: at least 4 prompt checks by 1 vendor · at least 0 blocked" });
+    const capped = resolveVendorEvidence(g([v({ checked: 4, block: 0, allow: 4 })], { capped: true }), "prisma-airs", label, 24);
+    expect(capped).toMatchObject({ floor: true, headline: "Prisma AIRS: at least 4 chat prompts checked · at least 0 blocked" });
   });
 
   it("never touches Cloudflare's own MEASURE 2.7 headline", () => {
     const a = { configured: true, aiScored: 10, truncated: false } as Analytics;
-    expect(resolveEvidence({ metric: "injection-scoring", thirdParty: "external-guardrails" }, a, null, 24)).toEqual(
+    expect(resolveEvidence({ metric: "injection-scoring", vendorInUse: true }, a, null, 24)).toEqual(
       resolveEvidence({ metric: "injection-scoring" }, a, null, 24),
     );
   });

@@ -283,6 +283,13 @@ export const openapi = {
             schema: { type: "string", enum: ["chat", "redteam", "scheduled", "all"], default: "chat" },
             description: "`redteam` = turns the Red Team page sent; `scheduled` = the Worker's own 6-hourly re-run (12 fixed prompts to the enabled vendors, no model; set in code, never from a header); `chat` = everything else (the chat page, the API, external scanners).",
           },
+          {
+            name: "provider",
+            in: "query",
+            required: false,
+            schema: ref("ExternalGuardrailProvider"),
+            description: "One vendor only: every count, the series and the latency are that vendor's; `disagreements` keeps the turns it took part in (with the other vendors' verdicts). Anything but a known id = every vendor.",
+          },
         ],
         responses: {
           "200": json("Aggregates, or `configured: false`.", {
@@ -1097,6 +1104,7 @@ export const openapi = {
           since: str(),
           until: str(),
           source: { type: "string", enum: ["chat", "redteam", "scheduled", "all"] },
+          provider: { anyOf: [ref("ExternalGuardrailProvider"), { type: "null" }], description: "The vendor the numbers are about; null = every vendor." },
           rowsRead: int(),
           rowsDropped: int("Rows of a shape this reader does not know — dropped, never guessed at."),
           capped: bool("10,000 rows read: totals are a floor."),
@@ -1130,6 +1138,7 @@ export const openapi = {
               p50Ms: nullable("number", "Nearest rank over stored rows; null when none."),
               p95Ms: nullable("number"),
               topDetections: arr(obj({ name: str(), count: num() })),
+              detections: { ...arr(obj({ name: str(), count: num() })), description: "Every detector name in the window, most first (at most 50). topDetections is its first five." },
               lastTs: nullable("integer", "Epoch ms of the newest check that ran; null when none did."),
               latencyTrend: arr({ type: ["number", "null"] }),
             }),

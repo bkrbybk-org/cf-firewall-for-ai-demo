@@ -68,7 +68,9 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
   // "≈" estimated, "≥" a floor. Sampling wins the prefix: an estimate is not a floor.
   const mark = d.sampled ? "≈" : d.capped ? "≥" : "";
   const n = (v: number) => `${mark}${Math.round(v).toLocaleString()}`;
-  const window = `${rangeLabel(d.rangeHours ?? hours)} · ${SOURCE_LABEL[d.source ?? "chat"]}`;
+  // One vendor's page (Analytics → <vendor>): every number below is that vendor's alone, and the label says whose.
+  const who = d.provider ? providerFullLabel(d.provider) : null;
+  const window = `${who ? `${who} · ` : ""}${rangeLabel(d.rangeHours ?? hours)} · ${SOURCE_LABEL[d.source ?? "chat"]}`;
   const t = d.totals;
 
   return (
@@ -149,7 +151,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
       {t.verdicts === 0 && d.vendors.length === 0 ? (
         <Card title="No guardrail verdicts in this window" subtitle={window}>
           <p className="text-sm text-muted">
-            No external guardrail checked a{" "}
+            {who ?? "No external guardrail"} checked {who ? "no" : "a"}{" "}
             {d.source === "redteam" ? "Red Team prompt" : d.source === "scheduled" ? "scheduled re-run prompt" : "prompt"} in the{" "}
             {rangeLabel(d.rangeHours)}.
             {d.source === "scheduled" && " The re-run sends its 12 fixed prompts every 6 hours (00, 06, 12, 18 UTC) from 2026-10-12 on, while a guardrail is enabled."}{" "}
@@ -158,7 +160,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
         </Card>
       ) : (
         <>
-          <Card title="Verdicts per vendor" subtitle={`${window} · prompt and reply checks counted apart`}>
+          <Card title={who ? "Verdicts" : "Verdicts per vendor"} subtitle={`${window} · prompt and reply checks counted apart`}>
             <VendorTable vendors={d.vendors} n={n} buckets={d.series.map((p) => p.t)} bucket={d.bucket} />
           </Card>
 
@@ -173,12 +175,15 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
             </p>
           )}
 
-          <Card title="Verdicts over time" subtitle={`per ${bucketLabel(d.bucket)} · every vendor's verdicts, by outcome · ${window}`}>
+          <Card
+            title="Verdicts over time"
+            subtitle={`per ${bucketLabel(d.bucket)} · ${who ? "its" : "every vendor's"} verdicts, by outcome · ${window}`}
+          >
             <EventSeries rows={d.series} bucket={d.bucket} defs={GUARDRAIL_SERIES} ariaLabel="External guardrail verdicts over time" />
           </Card>
 
           <Card
-            title="Where the vendors disagreed"
+            title={who ? `Where ${who} and another vendor disagreed` : "Where the vendors disagreed"}
             subtitle={`turns one vendor blocked and another allowed · ${d.disagreements.count} in the ${rangeLabel(d.rangeHours)}${
               d.sampled ? " (stored rows only)" : ""
             }`}

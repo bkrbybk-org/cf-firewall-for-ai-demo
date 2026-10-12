@@ -144,6 +144,9 @@ export interface VendorStats {
   p50Ms: number | null;
   p95Ms: number | null;
   topDetections: { name: string; count: number }[];
+  // Every detector name this vendor reported in the window (weighted counts, most first, capped at DETECTIONS_CAP) —
+  // what the Compliance page's "observed capabilities" are read from. topDetections is its first five.
+  detections: { name: string; count: number }[];
   lastTs: number | null; // the newest check that ran (not not_run), epoch ms — Settings' "last checked"
   // p50 latency per series bucket (nearest rank over that bucket's timed checks), aligned with `series`; null where
   // the bucket holds no timed check — a gap, never 0 ms.
@@ -184,10 +187,19 @@ export interface GuardrailAnalyticsBody {
 }
 
 const pct = (sorted: number[], p: number) => sorted[nearestRank(sorted.length, p) - 1];
+export const DETECTIONS_CAP = 50;
 
 export function aggregate(
   rows: VerdictRow[],
-  opts: { hours: number; now: number; source: SourceFilter; rowsRead: number; rowsDropped: number },
+  // `involving`: keep only the disagreements this vendor took part in (a vendor's own page).
+  opts: {
+    hours: number;
+    now: number;
+    source: SourceFilter;
+    rowsRead: number;
+    rowsDropped: number;
+    involving?: ExternalGuardrailProvider;
+  },
 ): GuardrailAnalyticsBody {
   const sinceMs = opts.now - opts.hours * 3_600_000;
   const byKey = new Map<string, { s: VendorStats; ms: number[]; det: Map<string, number> }>();
@@ -202,7 +214,7 @@ export function aggregate(
         s: {
           provider: r.provider, dir: r.dir, checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
           error: 0, failedOpen: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
-          lastTs: null, redactionApplied: 0, outvoted: 0,
+          lastTs: null, redactionApplied: 0, outvoted: 0, detections: [],
           labelled: { benign: { verdicts: 0, block: 0 }, attack: { verdicts: 0, block: 0 } },
           latencyTrend: [],
         },
@@ -258,15 +270,17 @@ export function aggregate(
   const vendors = [...byKey.values()]
     .map(({ s, ms, det }) => {
       const sorted = [...ms].sort((a, b) => a - b);
+      const detections = [...det.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+        .slice(0, DETECTIONS_CAP)
+        .map(([name, count]) => ({ name, count }));
       return {
         ...s,
         latencyN: sorted.length,
         p50Ms: sorted.length ? pct(sorted, 50) : null,
         p95Ms: sorted.length ? pct(sorted, 95) : null,
-        topDetections: [...det.entries()]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-          .slice(0, 5)
-          .map(([name, count]) => ({ name, count })),
+        topDetections: detections.slice(0, 5),
+        detections,
       };
     })
     .sort((a, b) => order(a.provider) - order(b.provider) || (a.dir === b.dir ? 0 : a.dir === "prompt" ? -1 : 1));
@@ -324,6 +338,7 @@ export function aggregate(
   }
   const split = [...turns.values()]
     .filter((d) => d.verdicts.some((v) => v.outcome === "block") && d.verdicts.some((v) => v.outcome === "allow"))
+    .filter((d) => !opts.involving || d.verdicts.some((v) => v.provider === opts.involving))
     .map((d) => ({ ...d, verdicts: [...d.verdicts].sort((a, b) => order(a.provider) - order(b.provider)) }))
     .sort((a, b) => b.ts - a.ts);
 
@@ -344,6 +359,19 @@ export function aggregate(
   };
 }
 
+// One vendor's view: every count, the series and the latency are that vendor's rows alone — but a disagreement needs
+// the OTHER vendors' verdicts on the same turn, so those come from every row, kept only where this vendor took part.
+// `provider` echoes the filter, so a page can never show one vendor's numbers under another's name.
+export function forProvider(
+  rows: VerdictRow[],
+  opts: Parameters<typeof aggregate>[1],
+  provider: ExternalGuardrailProvider | null,
+): GuardrailAnalyticsBody & { provider: ExternalGuardrailProvider | null } {
+  if (!provider) return { ...aggregate(rows, opts), provider: null };
+  const own = aggregate(rows.filter((r) => r.provider === provider), opts);
+  return { ...own, provider, disagreements: aggregate(rows, { ...opts, involving: provider }).disagreements };
+}
+
 // ── handler ──────────────────────────────────────────────────────────────────
 export async function handleGuardrailAnalytics(url: URL, env: Env, fetchImpl: typeof fetch = fetch): Promise<Response> {
   // (No "is this Worker writing?" flag: `wrangler dev` provides a stand-in binding, so its presence proves nothing.)
@@ -352,6 +380,9 @@ export async function handleGuardrailAnalytics(url: URL, env: Env, fetchImpl: ty
   const hours = ((RANGE_HOURS as readonly number[]).includes(h) ? h : 24) as (typeof RANGE_HOURS)[number];
   const s = url.searchParams.get("source");
   const source: SourceFilter = s === "redteam" || s === "scheduled" || s === "all" ? s : "chat";
+  // One vendor's page (Analytics, vendor-agnostic since 2026-10-12): an allowlisted provider id, else every vendor.
+  const p = url.searchParams.get("provider");
+  const provider = p && (PROVIDER_IDS as string[]).includes(p) ? (p as ExternalGuardrailProvider) : null;
   try {
     const res = await fetchImpl(`https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/analytics_engine/sql`, {
       method: "POST",
@@ -368,13 +399,8 @@ export async function handleGuardrailAnalytics(url: URL, env: Env, fetchImpl: ty
     const body = JSON.parse(text) as { data?: unknown[] };
     const raw = Array.isArray(body.data) ? body.data : [];
     const rows = raw.map(parseRow).filter((r): r is VerdictRow => r != null);
-    return Response.json(
-      {
-        configured: true,
-        ...aggregate(rows, { hours, now: Date.now(), source, rowsRead: raw.length, rowsDropped: raw.length - rows.length }),
-      },
-      { headers: { "cache-control": "no-store" } },
-    );
+    const opts = { hours, now: Date.now(), source, rowsRead: raw.length, rowsDropped: raw.length - rows.length };
+    return Response.json({ configured: true, ...forProvider(rows, opts, provider) }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     return Response.json({ configured: true, error: clientError(err, "Guardrail analytics") }, { status: 502 });
   }
