@@ -626,6 +626,44 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-14 — Settings: console and docs links for every product
+
+**Asked for:** "add link to console … and to docs … on every product in setting page so i can quickly access". Deploy
+`559e4dc0-9ece-44d7-9061-b031f4c62277`. No migration, no API change.
+
+**Where the links appear:**
+- **One table:** `web/src/lib/productLinks.ts`, rendered by `components/ProductLinks.tsx`. Each link opens in a new tab,
+  and its accessible name names the product ("Cisco AI Defense Console").
+- **Each vendor row:** on the header beside the switch, outside the accordion button and outside the locked fieldset,
+  so a read-only viewer can use them too. On a phone they sit on their own line under the title.
+- **The edge WAF box** in Traffic flow.
+- **The Deployment rows** for D1 (twice), Cron Triggers, Access, AI Gateway and Workers AI.
+
+**Every URL was opened on 2026-10-14 (curl).** Each docs page answered 200. Each console answered 200, or a 302 to that
+vendor's own login.
+- **Where the vendor documents a deep link, it is used:**
+  - Falcon's `…/aidr/visibility`, from aidr-docs get-started;
+  - Strata Cloud Manager's `/settings/products`, from the user;
+  - Cloudflare's `dash.cloudflare.com/?to=/:account/…` forms, each from a docs page.
+- **Where it documents none, the link is the console's front door** and its tooltip says so: Cisco's Security Cloud
+  Control (`security.cisco.com`), Cato's Management Application (`cc.catonetworks.com`), Lakera's platform.
+- **Workers AI has no documented deep link:** docs and the model catalog only. Cato publishes no API reference, so it
+  has no API link.
+- **Per-region consoles follow the saved region**, never an unsaved pick:
+  - **Falcon** has one host per cloud (US-1, US-2, EU-1, all three redirecting to their own login). A region it does
+    not know gets no console link.
+  - **Datadog's** API base is the site's app host, so it doubles as the console.
+- **Prisma AIRS's API link is `pan.dev/airs/`.** `pan.dev/prisma-airs/` is a 404.
+
+**Verified:**
+- **Gates:** 918 tests (+4 in `productLinks.test.ts`), 0 type errors, build clean.
+- **The test caught a real bug:** a region of `"toString"` returned a function from the host table and built a junk URL.
+  Fixed with `Object.hasOwn`.
+- **Local browser, `/settings`:** 46 links. The phone copies are hidden on desktop (checked through `offsetParent`).
+  Dark and light, and 375 px with no sideways scroll. No console errors.
+- **Prod:** smoke passes, and bundle `index-CfMDTimU.js` carries the Strata Cloud Manager, `falcon.us-2`, Lakera, Cato
+  and AI Gateway URLs.
+
 ### 2026-10-12 — Analytics and Compliance made vendor-agnostic
 
 **Asked for:** "review analytics and compliance pages, make them vendor agnostic - you may separate for each vendor".

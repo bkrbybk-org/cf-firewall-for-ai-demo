@@ -23,6 +23,8 @@ import {
   Merge,
   Split,
 } from "lucide-react";
+import { CLOUDFLARE_LINKS } from "../lib/productLinks";
+import { ProductLinks } from "./ProductLinks";
 import { Switch } from "./Switch";
 import type {
   ExternalGuardrailConfig,
@@ -293,6 +295,8 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
           <div className="mt-1 text-[11px] leading-snug text-muted">
             Runs at Cloudflare's edge, before the Worker — it cannot be moved from here.
           </div>
+          {/* Its rules live in the zone, not here: the console is where they are switched between Log and Block. */}
+          <ProductLinks product="Cloudflare AI Security for Apps" links={CLOUDFLARE_LINKS.edge} className="mt-1.5" />
         </div>
         <Arrow />
 

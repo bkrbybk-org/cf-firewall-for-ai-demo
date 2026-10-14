@@ -22,6 +22,7 @@ import { PreferencesSection } from "../components/settings/PreferencesSection";
 import { Group, SectionHeader } from "../components/settings/primitives";
 import { Header } from "../components/Header";
 import { PipelineDiagram } from "../components/PipelineDiagram";
+import { ProductLinks } from "../components/ProductLinks";
 import { Switch } from "../components/Switch";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { scanIdLabel } from "../lib/guardrailView";
@@ -46,6 +47,7 @@ import type {
   ModelsResponse,
 } from "../lib/types";
 import { healthText, vendorHealth, type VendorHealth } from "../lib/vendorHealth";
+import { vendorLinks } from "../lib/productLinks";
 import { TestAllVendors } from "../components/settings/TestAllVendors";
 
 const INPUT_CLS =
@@ -452,6 +454,9 @@ function ProviderCard({
     config.failMode === "block" ? "fail closed" : "fail open",
     config.applyRedaction ? "redaction applied" : null,
   ].filter(Boolean) as string[];
+  // The vendor's console and docs. The console follows the SAVED region (Falcon and Datadog have one per region), like
+  // the summary: an unsaved pick must not send the operator to another region's console.
+  const links = vendorLinks(p, config.region, savedRegion?.url);
 
   return (
     <section className="rounded-xl border border-line bg-surface shadow-sm">
@@ -508,6 +513,9 @@ function ProviderCard({
             </span>
           </button>
         </h4>
+        {/* Outside the button (a link cannot sit inside one) and outside the locked fieldset: a read-only viewer can
+            still open the vendor's console and docs. On a phone they wrap to their own line below. */}
+        <ProductLinks product={config.label} links={links} className="hidden shrink-0 sm:flex" />
         {/* Not a guardrail admin: a disabled fieldset turns off the switch, and the body's
             own fieldset below does the same for the form (the page banner says why). */}
         <fieldset disabled={locked} className="m-0 shrink-0 border-0 p-0">
@@ -520,6 +528,8 @@ function ProviderCard({
           />
         </fieldset>
       </div>
+      {/* The same links on a phone, under the title (pl-9 lines them up with it past the chevron). */}
+      <ProductLinks product={config.label} links={links} className="-mt-1 pr-3 pb-2.5 pl-9 sm:hidden" />
       {/* Outside the body: a failed toggle in a closed row must still be seen. */}
       <div aria-live="polite" className="px-4 empty:hidden">
         {toggleErr && (

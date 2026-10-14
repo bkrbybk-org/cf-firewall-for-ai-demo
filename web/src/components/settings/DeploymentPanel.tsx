@@ -7,6 +7,8 @@
 // CF_AIG_TOKEN is set is not exposed, so it is not listed.
 import { useState, type ReactNode } from "react";
 import type { ExternalGuardrailsState, GatewayOption, ModelsResponse } from "../../lib/types";
+import { CLOUDFLARE_LINKS, type ProductLink } from "../../lib/productLinks";
+import { ProductLinks } from "../ProductLinks";
 import { PANEL } from "./primitives";
 
 type Tone = "on" | "off" | "neutral" | "unknown";
@@ -23,10 +25,30 @@ function Value({ tone, children }: { tone: Tone; children: ReactNode }) {
   return <span className={`inline-block rounded-full border px-2.5 py-0.5 text-[11.5px] font-semibold ${cls}`}>{children}</span>;
 }
 
-function Row({ label, value, detail, setBy }: { label: string; value: ReactNode; detail?: ReactNode; setBy: ReactNode }) {
+function Row({
+  label,
+  value,
+  detail,
+  setBy,
+  product,
+}: {
+  label: string;
+  value: ReactNode;
+  detail?: ReactNode;
+  setBy: ReactNode;
+  product?: { name: string; links: ProductLink[] }; // the Cloudflare product behind the setting: console and docs
+}) {
   return (
     <div className="grid gap-1.5 border-t border-line px-4 py-3 first:border-t-0 sm:grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,16rem)] sm:gap-4">
-      <div className="text-[13px] font-semibold text-text">{label}</div>
+      <div className="min-w-0">
+        <div className="text-[13px] font-semibold text-text">{label}</div>
+        {product && (
+          <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 text-[11px] text-subtle">
+            {product.name}
+            <ProductLinks product={`Cloudflare ${product.name}`} links={product.links} />
+          </div>
+        )}
+      </div>
       <div className="min-w-0">
         {value}
         {detail && <div className="mt-1 text-[11.5px] leading-relaxed text-muted">{detail}</div>}
@@ -106,6 +128,7 @@ export function DeploymentPanel({
             : "Provider keys are stored encrypted in D1; they are never sent back to the browser."
         }
         setBy={<>D1 binding {code("DB")} and secret {code("GUARDRAIL_SECRET_KEY")}</>}
+        product={{ name: "D1", links: CLOUDFLARE_LINKS.d1 }}
       />
 
       {/* #15 / #17. Both run on Cloudflare's schedule, not on a page load — so the panel says what is set up, and the
@@ -155,6 +178,7 @@ export function DeploymentPanel({
             logs only
           </>
         }
+        product={{ name: "Cron Triggers", links: CLOUDFLARE_LINKS.cron }}
       />
 
       <Row
@@ -175,6 +199,7 @@ export function DeploymentPanel({
             {code("ACCESS_AUD")})
           </>
         }
+        product={{ name: "Access", links: CLOUDFLARE_LINKS.access }}
       />
 
       <Row
@@ -188,6 +213,7 @@ export function DeploymentPanel({
             : undefined
         }
         setBy={<>Var {code("PROMPT_LOG_ENABLED")} (exactly {code('"true"')}) and D1 binding {code("DB")}</>}
+        product={{ name: "D1", links: CLOUDFLARE_LINKS.d1 }}
       />
 
       <Row
@@ -215,6 +241,7 @@ export function DeploymentPanel({
             that fails, vars {code("CF_AI_GATEWAY_ID")} and {code("CF_AI_GATEWAY_GUARDED_ID")}
           </>
         }
+        product={{ name: "AI Gateway", links: CLOUDFLARE_LINKS.aiGateway }}
       />
 
       <Row
@@ -222,6 +249,7 @@ export function DeploymentPanel({
         value={!models ? unknown : <Value tone="neutral">{models.default}</Value>}
         detail={models ? `${models.models.length} models are allowed; the chat page picks among them.` : undefined}
         setBy={<>Code: {code("MODEL_REGISTRY")} in {code("src/models.ts")}</>}
+        product={{ name: "Workers AI", links: CLOUDFLARE_LINKS.workersAi }}
       />
     </div>
   );
