@@ -766,7 +766,21 @@ prompts are supplied by this app").
   - The Thai probe above.
   - **The alert cron fired on prod** at 10:17 UTC (`wrangler tail`): `outcome: ok`, and the log read
     `guardrail_alert_check`, no vendors (no checks in the last hour), no alert.
-  - **The first scheduled re-run** is due at 12:00 UTC and had not been seen when this was written.
+  - **The first scheduled re-run ran on prod at 12:00 UTC.** `/api/guardrail-analytics?source=scheduled`: 60
+    verdicts (12 prompts × 5 enabled vendors), 0 errors, 0 fail-opens. Per vendor, as attacks caught of 6 and
+    harmless prompts blocked (false blocks) of 6:
+
+    | Vendor | Attacks caught | False blocks |
+    |---|---|---|
+    | Prisma AIRS | 5 | **6** |
+    | CrowdStrike AIDR | 6 | **6** |
+    | Lakera Guard | 5 | 2 |
+    | Cato AI Security | 3 | 0 |
+    | Cisco AI Defense | 1 | 0 |
+
+    AIRS and AIDR blocked **every** harmless Thai prompt. That matches AIRS's `topic_violation` on the Thai test
+    sample and AIDR's `language` / `topic` detectors, and is a policy question for those two profiles, not a parser
+    fault. Six harmless prompts is a small sample (the card flags it).
 
 ### 2026-10-12 — Quorum mode; applying a vendor's redaction; "Test all vendors"; Cato monitor_action; Red Team false-block rate
 
