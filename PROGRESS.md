@@ -3725,8 +3725,9 @@ exercised):
     to Block.
 29. ~~CrowdStrike AIDR has never returned a real verdict~~ — **resolved 2026-10-05**: real `block` and
     `allow` verdicts on prod with the user's collector token (see that entry), which also proves the token
-    is delivered. Still open: AIDR returned `transformed: true` on the PII prompt, and the app does **not**
-    apply AIDR's redaction — on a turn AIDR allows-but-redacts, the model receives the original prompt (the
+    is delivered. **The redaction decision has since been made (2026-10-12, #11):** applying AIDR's redaction is a
+    per-vendor opt-in, off on prod. The rest of this note describes the default. AIDR returned `transformed: true` on
+    the PII prompt, and the app does **not** apply AIDR's redaction — on a turn AIDR allows-but-redacts, the model receives the original prompt (the
     chip says so in amber). Whether to apply it is an unmade design decision. The block card's rendering of
     AIDR detectors has not been seen in a browser on prod.
 30. ~~**🟠 AI Gateway Guardrails does not block a streamed reply here, and the README says it does**~~ **FIXED
@@ -3755,8 +3756,60 @@ exercised):
       - (a) force `stream: false` when the guarded gateway is picked;
       - (b) keep streaming and label it "replies checked and logged, not blocked, while streaming";
       - (c) both, as a switch.
+31. **🔴 Cato AI Security answers HTTP 401 to every check, since 2026-10-13 06:00 UTC: live on prod. Needs the user.**
+    - **The evidence:** an Analytics Engine query on 2026-10-14 of Cato's prompt rows by hour, outcome and `double2`
+      (the HTTP status).
+      - **Up to 2026-10-13 00:00:** every scheduled run was HTTP 200, with 3 blocks and 9 allows of 12.
+      - **From the 06:00 run:** all 12 of every run are `failed_open` with status 401. That is 59 rows to 2026-10-14
+        06:00, plus one 5 s timeout (status 0).
+      - **Over 24 h:** `/api/guardrail-analytics?provider=cato-ai-security` shows 48 checks, 48 failed open, 0 verdicts.
+    - **What it means:** Cato's fail mode is `allow`, so since then every chat turn and Red Team prompt has gone on
+      **without a Cato verdict**. The UI says "failed open" on each turn; nothing reads it as an allow.
+    - **The cause is most likely the key** (revoked, expired or rotated in Cato's console). It is not proven: no error
+      text is stored. Cato answers a bad key with 401 `{detail}`, as recorded in CLAUDE.md, and nothing in this app
+      changed between the 00:00 and 06:00 runs:
+      - no deploy after `e42d2d72` on 2026-10-12 (`wrangler deployments list`);
+      - Cato's row in `external_guardrails` was last updated 2026-10-06 13:09 UTC (read-only D1 query of `updated_at`).
+
+      So the stored key is the same one that worked, and the change is on Cato's side.
+    - **The outage check worked:** `automation.alerts.states` shows Cato `down` since 2026-10-13 06:17:31 UTC, the first
+      hourly check after the failure. But `ALERT_WEBHOOK_URL` is unset, so the alert went only to the Worker log, and
+      nobody saw it for a day. This is the first live case for setting the webhook.
+    - **Fix (the user, admin gate):** Settings → Cato → save a new key (or disable Cato) → *Test connection*. The next
+      6-hourly run then shows whether it recovered, and the outage check marks it `ok` with a "recovered" alert.
 
 ## Next tasks
+
+**Backlog status, checked 2026-10-14** against prod (`/api/guardrail-analytics` 24 h and 7 days, `/api/zone-rules`,
+`/api/redteam-runs`, `/api/external-guardrails`, and an Analytics Engine query of Cato's HTTP statuses). The plans
+below are kept as written. Items they still list as open but that are done are ticked in place with the evidence.
+
+- **🔴 Cato has answered HTTP 401 since 2026-10-13 06:00 UTC** (Open bugs #31). Every check since then fails open, so
+  live chat runs without Cato. **Needs the user:** a new key in Settings.
+- **Needs the user** (the admin gate, credentials, or a policy call):
+  - **Set `ALERT_WEBHOOK_URL`.** The outage check marked Cato `down` 17 minutes after it broke, and no one saw it.
+  - **Quorum and redaction on prod:** the pipeline is still parallel, and no vendor has `applyRedaction` on.
+  - **Run *Test all vendors*** and paste the report.
+  - **Prisma AIRS's and CrowdStrike AIDR's topic and language policies:** both block every harmless Thai prompt in the
+    scheduled re-runs.
+  - **Lakera's Crime threshold:** 4 of 11 replies were withheld in 7 days, all `moderated_content/crime`, including the
+    reply to a harmless question.
+  - **Datadog keys** (Datadog plan, step 6).
+  - **The Access restructuring** (Open bugs #2).
+  - **The Self-criticism custom topic** (it changes a live zone rule).
+  - **GRC review of the Compliance wording**, and a legal look at ThaiSafetyBench's "academic purposes only" note.
+  - **A working `.env` `CF_AIG_TOKEN`** for local gateway testing.
+- **Self, but it spends money on prod or touches it:**
+  - **The Red Team corpus on prod, twice, compared:** `/api/redteam-runs` still lists 0 saved runs on prod.
+  - **`npm run corpus:thai` on prod.**
+  - **Dynamic Route with `tier=free`.**
+  - **Whether custom metadata lands in the gateway logs.**
+- **Self, code, small:** set `verified: true` for Lakera Guard. Real prompt and reply blocks have been seen and parsed
+  (`prompt_attack`, `moderated_content/*`), but the "unverified" badge is still on.
+  - **Cisco:** real prompt blocks have been seen (`Prompt Injection`, `General Harms`), but never a flagged reply.
+  - **Cato:** a real block was seen on 2026-10-09, but it can be re-tested only after the key is fixed.
+  - **Each flip needs** the response shape compared with the parser first (plan step 6). This is not a badge change by
+    itself.
 
 **Fix next, in this order** (who per CLAUDE.md's implementation approach):
 
@@ -3769,7 +3822,8 @@ exercised):
       user's choice over a presenter-wide D1 setting). See Implemented.
 
 **Plan: Cisco AI Defense + Check Point Lakera Guard as external guardrails 3 and 4** (written 2026-10-05,
-not started; **blocked on credentials, see 0**). Facts below are from each vendor's own docs, fetched
+then built. **Status 2026-10-14:** the keys are saved and both vendors are enabled on prod, with real verdicts. Only the
+`verified: true` flip is left, in step 6). Facts below are from each vendor's own docs, fetched
 2026-10-05. Both previous vendors' docs were wrong in places, so every one of these is *documented*, not
 *verified*, until a real payload is seen.
 
@@ -3786,7 +3840,7 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
 | Errors | 401 / 500, `{message}` | 400 / 401 / 429 / 500, `{error, code, request_id}` (per the API reference) |
 | Past-request lookup | possibly via the separate AI Defense *Management API* events (base URL and auth unverified) | none: `/v2/guard/results` runs a **new** scan with no decision; it is not a lookup |
 
-0. [ ] **You: credentials.** A Lakera project ID and an API key; a Cisco AI Defense tenant with an
+0. [x] **You: credentials.** Done: both are enabled on prod (`/api/external-guardrails`, 2026-10-14). A Lakera project ID and an API key; a Cisco AI Defense tenant with an
    application connection, its API key and region. **Without them, step 6 cannot happen and the
    providers ship as `supported: false`** (listed but impossible to enable), the same pattern used for
    CrowdStrike before it was verified. Lakera may have a free community tier (third-party sources say so;
@@ -3833,10 +3887,14 @@ not started; **blocked on credentials, see 0**). Facts below are from each vendo
    the admin gate is on and the service token can no longer write. Needs step 0.
    - [x] Unlock both: `supported: true`, `verified: false`, with an "unverified" badge (2026-10-06).
    - [x] *Test with an attack prompt*, and a **Response shape** readout (names, types, booleans — no text).
-   - [ ] **User:** save the key (and Lakera's Project ID) with the guardrail disabled, run both tests per
-     provider, and paste the two shapes.
+   - [x] **User:** save the key (and Lakera's Project ID) with the guardrail disabled, run both tests per
+     provider, and paste the two shapes. Done, and since then both have run live. Seen in 7 days to 2026-10-14:
+     - **Lakera:** prompt blocks with `prompt_attack` and `moderated_content/*`, and 11 reply checks with 4 withheld.
+     - **Cisco:** `Prompt Injection` and `General Harms` prompt blocks, and 3 reply checks, all allowed.
    - [ ] **Self:** compare the shapes with the parsers, fix any difference with a test built from that shape,
-     set `verified: true`, deploy, and then enable in a 4-way parallel run.
+     set `verified: true`, deploy, and then enable in a 4-way parallel run. **Partly done:** both are enabled and run
+     in the 5-way parallel pipeline. Both are still `verified: false`, and the flip is the open part. Lakera is ready
+     for it. Cisco has never flagged a reply.
 7. [ ] **Docs** (*self*): README provider tables, setup and screenshots of the wording, the openapi enum and
    schema, the CLAUDE.md vendor-spec note, and a PROGRESS entry recording what was verified and how.
 
@@ -3886,7 +3944,11 @@ Sources, strongest first:
   Local workerd cannot reach Cato, so there was no local dummy-key test through the Worker.
 - [x] 7a. **The real allow** (2026-10-06). The user saved the key (disabled) and ran both tests: both
   **allowed**. The allow is `required_action: null`. The parser was rebuilt from that shape (see Implemented).
-- [ ] 7b. **A real block.** The fixed injection prompt was not flagged by any of the Guard's three policies,
+- [ ] 7b. **A real block.** **Seen on 2026-10-09:** Cato blocked the fixed injection prompt and the block parsed as
+  one (see that day's entry). Analytics Engine counts 3 blocks in each 6-hourly scheduled run from 2026-10-12 12:00 to
+  2026-10-13 00:00 UTC.
+  **Still open:** comparing that shape with the parser, then `verified: true`. That is blocked by Open bugs #31 (HTTP
+  401 since 2026-10-13 06:00). Original note: the fixed injection prompt was not flagged by any of the Guard's three policies,
   so no block payload has been seen. Needs a prompt those policies act on (ask the user what they cover, e.g.
   PII). Then check `action_type`, the fired section's shape, `required_action.policy_name` and redaction, and
   set `verified: true`. Until then the badge stays, but Cato can be enabled: its allows are proven.
@@ -3907,7 +3969,7 @@ Sources, strongest first:
       `npm run smoke:prod`. Until then the gateway route errors in prod. **Do this before any demo.**
 - [x] ~~**Wire `RedTeamPage` to saved runs and `GapControls`** (#21, #17)~~ — done 2026-10-05, with #18 and
       #19.
-- [ ] **Run the corpus on prod twice and compare**: the first real before/after. Every verdict in the saved-run
+- [ ] **Run the corpus on prod twice and compare** (still 0 saved runs on prod, 2026-10-14): the first real before/after. Every verdict in the saved-run
       flow so far was local (pending/error) or seeded through the API.
 - [ ] Apply the recommended Zero Trust Access restructuring for the AI red-team service (Open bug
       #2): path-scoped `/api/chat` app, `Service Auth` + service token, `Allow` policy alongside it
@@ -3922,7 +3984,16 @@ Sources, strongest first:
       through Access: gateway route 200, direct route 200, PII prompt correctly 403, and the four
       read-only endpoints healthy.
 - [x] ~~Map the prod block-response JSON keys in the client (Open bug #4)~~ — done 2026-10-05.
-- [ ] Add each other block rule's `reason_code` to `REASON_CODE_DETECTIONS` (`web/src/lib/edgeBlock.ts`)
+- [x] ~~Name each block rule's `reason_code`~~. **Done 2026-10-10** through the "new option" below:
+      `ruleForReasonCode()` reads the code from the live rule definitions, and the card says "per the rule's
+      definition".
+      - **Re-checked on prod 2026-10-14:** `/api/zone-rules` is `source: live` and carries `LLM_PROMPT_INJECTION_BLOCKED`,
+        `LLM_PII_BLOCKED` and `LLM_UNSAFE_TOPIC_BLOCKED` (Protection ruleset; PII and unsafe topic in Monitor too), all
+        off, as intended (#28).
+      - **Still open, and only while a rule blocks:** adding the two new codes to the static `REASON_CODE_DETECTIONS`
+        needs a real payload, which the user's Log-mode choice rules out for now.
+
+      The original item: add each other block rule's `reason_code` to `REASON_CODE_DETECTIONS` (`web/src/lib/edgeBlock.ts`)
       **from a real payload**, once the rules block again (#28). Until then those codes show their message
       and code, with no detection label. **New option (2026-10-08):** the block rules' Custom JSON (including
       `reason_code`) is readable in their `action_parameters.response.content`, now that the nested rulesets are
@@ -3964,12 +4035,25 @@ Sources, strongest first:
       Data (.json) on a saved run's Benchmark panel. See Implemented.
 - [x] ~~**External guardrails tab on Analytics**~~ — done 2026-10-09 on Analytics Engine (deploy `36e5c1c5`), checked
       by hand against raw rows on prod. See Implemented.
-- [ ] **Red Team benchmark I: scheduled re-runs** — a Cron Trigger re-running a fixed corpus and saving the
+- [x] ~~**Red Team benchmark I: scheduled re-runs**~~. **Done differently on 2026-10-12** (#15, deploy `ab64e622`).
+      - **What runs:** every 6 hours, 12 fixed prompts go to the enabled vendors only. There is no model call, no edge
+        check and **no saved run**.
+      - **Where the verdicts go:** Analytics Engine, as source `scheduled`, so drift shows on Analytics.
+      - **Still not built:** a scheduled *full* Red Team run (model + edge) saved as a run. Ask for a budget before
+        building it.
+
+      The original item: a Cron Trigger re-running a fixed corpus and saving the
       run, so drift shows without a person pressing Run. Every run spends Workers AI / AI Gateway and vendor
       calls: needs a budget and cadence from the user first. Not started.
 - [x] ~~**Red Team benchmark J: scan the model's output**~~ — built 2026-10-07/08 (D1 buffer, D2 AIRS/AIDR/Lakera,
       D3 (a), D4 counts only): part 1 deploy `42368cb3`, part 2 deploy `c74474a0`. See Implemented.
-- [ ] **J verification (the user, on prod):** Settings → Prisma AIRS and CrowdStrike AIDR → *Test a reply (PII)* and
+- [ ] **J verification (the user, on prod).** **Partly seen live, 7 days to 2026-10-14:**
+      - **Real reply checks from 4 vendors:** AIRS 7 and AIDR 9, all allowed; Lakera 11, with 4 withheld; Cisco 3, all
+        allowed.
+      - **Cato:** 7 "not run", as designed.
+      - **Still unseen:** a flagged reply from AIRS or AIDR. The *Test a reply (PII)* shapes were never pasted here.
+
+      The original item: Settings → Prisma AIRS and CrowdStrike AIDR → *Test a reply (PII)* and
       *Test a reply (harmless)*, then paste the response shapes. Until then the reply direction is documented, not
       verified. Then, optionally, turn *Check replies too* on (turns stop streaming; each guardrail is called twice).
 
