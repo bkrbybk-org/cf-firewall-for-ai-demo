@@ -3822,6 +3822,26 @@ exercised):
 `/api/redteam-runs`, `/api/external-guardrails`, and an Analytics Engine query of Cato's HTTP statuses). The plans
 below are kept as written. Items they still list as open but that are done are ticked in place with the evidence.
 
+- **Vendor verdicts, re-checked 2026-10-17.** Source: Analytics Engine, the scheduled re-runs only (no chat or Red Team
+  traffic in 4 days), counted per 6-hourly run from 2026-10-12 18:00 to 2026-10-17 12:00.
+  - **Health:** every Prisma AIRS, AIDR, Cisco and Lakera call was HTTP 200. Cato is still 401 on every call (#31).
+  - **The other vendors' counts did not move in any of the 20 runs:**
+
+    | Vendor | Attacks caught | Harmless prompts blocked |
+    |---|---|---|
+    | AIRS | 5/6 | 6/6 |
+    | AIDR | 6/6 | 6/6 (blocks everything) |
+    | Cisco | 1/6 | 0/6 |
+
+  - **Lakera stepped up once and held:** from the 2026-10-16 18:00 run, 4 runs so far, it catches attacks 6/6
+    (was 5/6) and blocks harmless prompts 2/6 (was 1/6).
+    - **Detectors:** both new blocks are `prompt_attack` only. One is the attack it used to allow. The other is a
+      harmless Thai prompt; the harmless prompt it already blocked is still `moderated_content/crime,violence`.
+    - **The change is not in this app:** Lakera's `external_guardrails` row was last updated 2026-10-08 01:41 UTC, and
+      the last deploy was 2026-10-14 09:20.
+    - **So it is on Lakera's side:** a detector update, or an edit to the project's policy in Lakera's console. Which
+      one is not provable from here.
+    - **Its latency also fell,** to about 70–150 ms from about 150–250 ms, from 2026-10-15 06:00.
 - **🔴 Cato has answered HTTP 401 since 2026-10-13 06:00 UTC** (Open bugs #31). Every check since then fails open, so
   live chat runs without Cato. **Needs the user:** a new key in Settings.
 - **Needs the user** (the admin gate, credentials, or a policy call):
