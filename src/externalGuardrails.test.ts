@@ -62,8 +62,9 @@ describe("validateUpdate", () => {
 
   // Configurable (that is how they get verified) but flagged unverified, and held to
   // the same enable rules as the others: a key, plus Lakera's project.
-  it("lets Cisco AI Defense and Lakera Guard be configured, flagged unverified, under the same rules", () => {
-    expect([PROVIDERS["cisco-ai-defense"].verified, PROVIDERS["lakera-guard"].verified]).toEqual([false, false]);
+  it("lets Cisco AI Defense and Lakera Guard be configured under the same rules; Cisco still flagged unverified", () => {
+    // Lakera verified 2026-10-18 from real traffic (see the registry); Cisco has never flagged a reply.
+    expect([PROVIDERS["cisco-ai-defense"].verified, PROVIDERS["lakera-guard"].verified]).toEqual([false, true]);
     expect([PROVIDERS["prisma-airs"].verified, PROVIDERS["crowdstrike-aidr"].verified]).toEqual([true, true]);
     expect(validateUpdate({ provider: "cisco-ai-defense", enabled: true }, defaultConfig("cisco-ai-defense"))).toMatchObject({
       ok: false,
@@ -135,10 +136,10 @@ describe("validateUpdate", () => {
     });
 
     it("Remove key removes both and disables; malformed or misplaced second keys are refused", () => {
-      const stored = { ...dd(), enabled: true, apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222" };
+      const stored = { ...dd(), enabled: true, apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222", apiKeySetAt: 7, secondKeySetAt: 8 };
       const v = validateUpdate({ clearApiKey: true, secondKey: "ignored" }, stored);
       expect(v).toMatchObject({ ok: true, newSecondKey: null });
-      if (v.ok) expect(v.next).toMatchObject({ enabled: false, apiKeyEnc: null, apiKeyLast4: null, secondKeyEnc: null, secondKeyLast4: null });
+      if (v.ok) expect(v.next).toMatchObject({ enabled: false, apiKeyEnc: null, apiKeyLast4: null, secondKeyEnc: null, secondKeyLast4: null, apiKeySetAt: null, secondKeySetAt: null });
       expect(validateUpdate({ secondKey: "has space" }, dd()).ok).toBe(false);
       expect(validateUpdate({ secondKey: 42 }, dd()).ok).toBe(false);
       expect(validateUpdate({ secondKey: "x".repeat(4097) }, dd()).ok).toBe(false);
@@ -155,6 +156,27 @@ describe("validateUpdate", () => {
         secondKeyLabel: null,
         secondKeySet: false,
         secondKeyLast4: null,
+      });
+    });
+
+    // Key age (2026-10-18): exact when the save date is known, else bounded by the config's last save; nothing without a key.
+    it("reports when each key was saved, or the latest it can have been", () => {
+      const keyed = { ...dd(), apiKeyEnc: "C1", apiKeyLast4: "1111", secondKeyEnc: "C2", secondKeyLast4: "2222", updatedAt: 500 };
+      expect(toPublicConfig({ ...keyed, apiKeySetAt: 100, secondKeySetAt: null })).toMatchObject({
+        apiKeySavedAt: 100,
+        apiKeySavedNoLaterThan: null,
+        secondKeySavedAt: null,
+        secondKeySavedNoLaterThan: 500,
+      });
+      expect(toPublicConfig({ ...dd(), apiKeySetAt: 100, updatedAt: 500 })).toMatchObject({
+        apiKeySavedAt: null, // no key: no age, whatever a stale column says
+        apiKeySavedNoLaterThan: null,
+        secondKeySavedAt: null,
+        secondKeySavedNoLaterThan: null,
+      });
+      expect(toPublicConfig({ ...airs(), secondKeyEnc: "C2", secondKeySetAt: 1, updatedAt: 500 })).toMatchObject({
+        secondKeySavedAt: null, // a one-key provider has no second key age
+        secondKeySavedNoLaterThan: null,
       });
     });
   });

@@ -6,6 +6,7 @@ import {
   ALERT_MIN_CHECKS,
   alertText,
   evaluate,
+  keyRejected,
   runVendorAlerts,
   transitions,
   webhookUrl,
@@ -25,9 +26,9 @@ describe("evaluate", () => {
       stat("prisma-airs", "prompt", 2, 2), // 100% but only 2 checks → unknown, never "down" on two calls
     ]);
     expect(c).toEqual([
-      { provider: "lakera-guard", checked: 4, noVerdict: 2, state: "down" },
-      { provider: "cato-ai-security", checked: 4, noVerdict: 1, state: "ok" },
-      { provider: "prisma-airs", checked: 2, noVerdict: 2, state: "unknown" },
+      { provider: "lakera-guard", checked: 4, noVerdict: 2, authFailed: 0, state: "down" },
+      { provider: "cato-ai-security", checked: 4, noVerdict: 1, authFailed: 0, state: "ok" },
+      { provider: "prisma-airs", checked: 2, noVerdict: 2, authFailed: 0, state: "unknown" },
     ]);
     expect(ALERT_MIN_CHECKS).toBe(3);
   });
@@ -41,11 +42,11 @@ describe("transitions", () => {
   ]);
   it("alerts on ok → down and down → ok; a first sighting only when already down; unknown and no change are silent", () => {
     const t = transitions(prev, [
-      { provider: "lakera-guard", checked: 4, noVerdict: 3, state: "down" },
-      { provider: "cato-ai-security", checked: 5, noVerdict: 0, state: "ok" },
-      { provider: "prisma-airs", checked: 1, noVerdict: 1, state: "unknown" },
-      { provider: "cisco-ai-defense", checked: 6, noVerdict: 0, state: "ok" }, // first seen, healthy
-      { provider: "datadog-ai-guard", checked: 3, noVerdict: 3, state: "down" }, // first seen, down
+      { provider: "lakera-guard", checked: 4, noVerdict: 3, authFailed: 0, state: "down" },
+      { provider: "cato-ai-security", checked: 5, noVerdict: 0, authFailed: 0, state: "ok" },
+      { provider: "prisma-airs", checked: 1, noVerdict: 1, authFailed: 0, state: "unknown" },
+      { provider: "cisco-ai-defense", checked: 6, noVerdict: 0, authFailed: 0, state: "ok" }, // first seen, healthy
+      { provider: "datadog-ai-guard", checked: 3, noVerdict: 3, authFailed: 0, state: "down" }, // first seen, down
     ]);
     expect(t.map((x) => [x.provider, x.from, x.to])).toEqual([
       ["lakera-guard", "ok", "down"],
@@ -58,8 +59,8 @@ describe("transitions", () => {
 describe("alertText and webhookUrl", () => {
   it("names the vendor, the counts and the window — nothing else", () => {
     const t = alertText([
-      { provider: "lakera-guard", from: "ok", to: "down", checked: 4, noVerdict: 3 },
-      { provider: "cato-ai-security", from: "down", to: "ok", checked: 10, noVerdict: 0 },
+      { provider: "lakera-guard", from: "ok", to: "down", checked: 4, noVerdict: 3, authFailed: 0 },
+      { provider: "cato-ai-security", from: "down", to: "ok", checked: 10, noVerdict: 0, authFailed: 0 },
     ]);
     expect(t).toContain("Check Point Lakera Guard looks DOWN: 3 of 4 checks (75%) got no verdict in the last 1h.");
     expect(t).toContain("Cato Networks AI Security recovered: 0 of 10 checks without a verdict in the last 1h.");
@@ -129,7 +130,7 @@ describe("runVendorAlerts", () => {
     expect(hook).toHaveLength(1);
     const payload = JSON.parse(hook[0].body!);
     expect(payload.alerts).toEqual([
-      { provider: "lakera-guard", from: "ok", to: "down", checked: 4, noVerdict: 3, label: "Check Point Lakera Guard" },
+      { provider: "lakera-guard", from: "ok", to: "down", checked: 4, noVerdict: 3, authFailed: 0, label: "Check Point Lakera Guard" },
     ]);
     expect(db.rows.get("lakera-guard")).toMatchObject({ state: "down", since: NOW });
     expect(db.rows.get("cato-ai-security")).toMatchObject({ state: "ok" }); // first seen healthy: stored, not announced
@@ -170,5 +171,37 @@ describe("runVendorAlerts", () => {
     const calls: { url: string }[] = [];
     const s = await runVendorAlerts(env(fakeDb({}), "https://hooks.example.com/x"), { fetchImpl: fetchWith(calls, rows, 500), now: NOW, log: () => {} });
     expect(s.delivered).toBe("failed");
+  });
+});
+
+// 2026-10-18: a vendor that rejects the key is named as such — the fix is a new key, not a wait.
+describe("rejected keys", () => {
+  it("says the key was rejected when most checks without a verdict were 401/403", () => {
+    expect(keyRejected({ noVerdict: 4, authFailed: 3 })).toBe(true);
+    expect(keyRejected({ noVerdict: 4, authFailed: 2 })).toBe(false); // half: the outage reads as an outage
+    expect(keyRejected({ noVerdict: 0, authFailed: 0 })).toBe(false);
+    const t = alertText([{ provider: "cato-ai-security", from: "ok", to: "down", checked: 12, noVerdict: 12, authFailed: 12 }]);
+    expect(t).toContain("Cato Networks AI Security REJECTED THE KEY: 12 of 12 checks got HTTP 401/403 in the last 1h.");
+    expect(t).toContain("Settings → Cato Networks AI Security");
+    expect(alertText([{ provider: "cato-ai-security", from: "ok", to: "down", checked: 12, noVerdict: 12, authFailed: 2 }])).toContain("looks DOWN");
+  });
+  it("reads 401s from Analytics Engine into the message", async () => {
+    const ae = Array.from({ length: 4 }, () => ({
+      ts: "2026-10-12 09:50:00", si: 1, src: "scheduled", dir: "prompt", provider: "cato-ai-security", outcome: "failed_open",
+      detected: "", ray: "", scan_id: "", mode: "parallel", action: "", expect: "", ms: 300, status: 401, alerts: 0,
+      redaction: 0, incomplete: 0, decided: 0, applied: 0,
+    }));
+    const lines: Record<string, unknown>[] = [];
+    const db = {
+      prepare: () => ({ bind: () => ({}), all: async () => ({ results: [{ provider: "cato-ai-security", state: "ok" }] }) }),
+      batch: async () => [],
+    };
+    const s = await runVendorAlerts({ CF_ANALYTICS_TOKEN: "t", CF_ACCOUNT_ID: "a", DB: db } as unknown as Env, {
+      fetchImpl: (async () => Response.json({ data: ae })) as unknown as typeof fetch,
+      now: Date.parse("2026-10-12T10:17:00Z"),
+      log: (l) => lines.push(l as Record<string, unknown>),
+    });
+    expect(s.vendors).toEqual([{ provider: "cato-ai-security", state: "down", checked: 4, noVerdict: 4, authFailed: 4 }]);
+    expect(String(lines.find((l) => l.event === "guardrail_alert")?.text)).toContain("REJECTED THE KEY");
   });
 });

@@ -310,3 +310,32 @@ describe("forProvider", () => {
     expect(seen).toEqual(["lakera-guard", "null", "null"]);
   });
 });
+
+// 2026-10-18: the prompt id (blob12) and the HTTP status, read back; a rejected key (401/403 without a verdict) counted.
+describe("prompt id, status and rejected keys", () => {
+  it("reads the prompt id on curated rows only, and the status with 0 as no answer", () => {
+    const [a, b, c] = rows([
+      { src: "scheduled", prompt_id: "han-600", status: 200 },
+      { src: "chat", prompt_id: "han-600", status: 0, outcome: "error" },
+      { src: "redteam", prompt_id: "Bad Id", status: "401", outcome: "failed_open" },
+    ]);
+    expect([a.promptId, a.status]).toEqual(["han-600", 200]);
+    expect([b.promptId, b.status]).toEqual(["", null]);
+    expect([c.promptId, c.status]).toEqual(["", 401]); // numbers may come back as strings
+    expect(rows([{}])[0]).toMatchObject({ promptId: "" }); // a point written before blob12 existed
+  });
+  it("counts 401/403 among checks with no verdict as authFailed — not 5xx, not timeouts, not verdicts", () => {
+    const agg = aggregate(
+      rows([
+        { provider: "cato-ai-security", outcome: "failed_open", status: 401 },
+        { provider: "cato-ai-security", outcome: "error", status: 403 },
+        { provider: "cato-ai-security", outcome: "failed_open", status: 0 }, // timeout
+        { provider: "cato-ai-security", outcome: "error", status: 503 },
+        { provider: "cato-ai-security", outcome: "allow", status: 200 },
+        { provider: "cato-ai-security", outcome: "failed_open", status: 401, si: 3 }, // sampled: weighted
+      ]),
+      { hours: 24, now: NOW, source: "all", rowsRead: 6, rowsDropped: 0 },
+    );
+    expect(agg.vendors[0]).toMatchObject({ checked: 8, error: 2, failedOpen: 5, authFailed: 5 });
+  });
+});

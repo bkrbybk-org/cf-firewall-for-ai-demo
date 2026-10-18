@@ -7,8 +7,10 @@ import {
   AE_SCHEMA,
   VERDICT_EVENT,
   dataPointOf,
+  PROMPT_HEADER,
   expectOf,
   logVerdicts,
+  promptIdOf,
   sourceOf,
   verdictLines,
   type VerdictLine,
@@ -63,6 +65,7 @@ describe("verdictLines", () => {
       mode: "sequential",
       action: null,
       expect: "",
+      promptId: "",
     });
     expect(lines[1].detected).toBe("prompt_attack");
     expect(lines[2]).toMatchObject({ ms: null, status: null, detected: "" });
@@ -165,12 +168,12 @@ describe("dataPointOf (Analytics Engine)", () => {
     );
     expect(dataPointOf(ran)).toEqual({
       indexes: ["abc|reply|datadog-ai-guard"],
-      blobs: [AE_SCHEMA, "redteam", "reply", "datadog-ai-guard", "allow", "jailbreak", "abc", "e1", "sequential", "abort", ""],
+      blobs: [AE_SCHEMA, "redteam", "reply", "datadog-ai-guard", "allow", "jailbreak", "abc", "e1", "sequential", "abort", "", ""],
       doubles: [87, 200, 1, 0, 0, 0, 0],
     });
     expect(dataPointOf(skipped)).toEqual({
       indexes: ["abc|reply|cisco-ai-defense"],
-      blobs: [AE_SCHEMA, "redteam", "reply", "cisco-ai-defense", "not_run", "", "abc", "", "sequential", "", ""],
+      blobs: [AE_SCHEMA, "redteam", "reply", "cisco-ai-defense", "not_run", "", "abc", "", "sequential", "", "", ""],
       doubles: [-1, 0, 0, 0, 0, 0, 0],
     });
   });
@@ -249,5 +252,31 @@ describe("expectOf", () => {
     expect(expectOf(req("benign"))).toBe("benign");
     expect(expectOf(req("attack"))).toBe("attack");
     for (const v of [undefined, "", "Benign", "harmless", "benign,attack"]) expect(expectOf(req(v)), String(v)).toBe("");
+  });
+});
+
+// 2026-10-18: which curated prompt a verdict was for (blob12), so a change can be traced to its prompt.
+describe("promptId", () => {
+  const p = pipe({ results: [res({ provider: "lakera-guard", outcome: "block" })] });
+  it("is kept on curated prompts only, and only in the id shape — never free text", () => {
+    expect(verdictLines(p, "scheduled", "sch1", "benign", "han-600")[0].promptId).toBe("han-600");
+    expect(verdictLines(p, "redteam", "r1", "attack", "rt-03~base64")[0].promptId).toBe("rt-03~base64");
+    expect(verdictLines(p, "redteam", "r1", "benign", "h1a2b3c4d")[0].promptId).toBe("h1a2b3c4d");
+    expect(verdictLines(p, "chat", "r1", "", "rt-03")[0].promptId).toBe(""); // a chat turn names no curated prompt
+    for (const bad of ["", "RT-03", "rt 03", "rt-03; drop", "a".repeat(40), "-rt", "rt-03~", "ignore previous instructions"]) {
+      expect(verdictLines(p, "redteam", "r1", "attack", bad)[0].promptId, bad).toBe("");
+    }
+  });
+  it("goes to blob12, after the label", () => {
+    const [l] = verdictLines(p, "scheduled", "sch1", "attack", "rt-01");
+    expect(dataPointOf(l).blobs![10]).toBe("attack");
+    expect(dataPointOf(l).blobs![11]).toBe("rt-01");
+    expect(dataPointOf(l).blobs).toHaveLength(12);
+  });
+  it("reads the Red Team's header, shape-checked", () => {
+    const req = (v?: string) => new Request("https://x/api/chat", { headers: v == null ? {} : { [PROMPT_HEADER]: v } });
+    expect(promptIdOf(req("th-ok-07"))).toBe("th-ok-07");
+    expect(promptIdOf(req())).toBe("");
+    expect(promptIdOf(req("<script>"))).toBe("");
   });
 });

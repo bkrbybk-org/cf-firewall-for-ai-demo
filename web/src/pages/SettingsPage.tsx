@@ -46,7 +46,15 @@ import type {
   GuardrailTestSample,
   ModelsResponse,
 } from "../lib/types";
-import { healthText, vendorHealth, type VendorHealth } from "../lib/vendorHealth";
+import {
+  healthText,
+  KEY_AGE_WARN_DAYS,
+  keyAge,
+  keyAgeText,
+  vendorHealth,
+  type KeyAge,
+  type VendorHealth,
+} from "../lib/vendorHealth";
 import { vendorLinks } from "../lib/productLinks";
 import { TestAllVendors } from "../components/settings/TestAllVendors";
 
@@ -289,10 +297,13 @@ function ProviderCard({
   open,
   onOpenChange,
   health,
+  downSince,
 }: {
   config: ExternalGuardrailConfig;
   // Is it answering? From the verdict data (lib/vendorHealth.ts); undefined while loading.
   health?: VendorHealth;
+  // When the hourly outage check marked it down, while it still says so (automation.alerts.states).
+  downSince?: number;
   locked?: boolean; // not a guardrail admin — read-only
   // A row in a collapsible list, closed by default (the page owns which are open,
   // so the in-page nav and deep links can open the one they point at).
@@ -442,11 +453,18 @@ function ProviderCard({
   // without opening them. Saved values only — an unsaved edit in a closed row must
   // not read as the configuration in force.
   const savedRegion = config.regions.find((r) => r.id === config.region);
+  // Key age: exact for a key saved since 2026-10-18, a floor ("≥") for an older one (lib/vendorHealth.ts keyAge).
+  const now = Date.now();
+  const age1 = config.apiKeySet ? keyAge(config.apiKeySavedAt, config.apiKeySavedNoLaterThan, now) : null;
+  const age2 = config.secondKeySet ? keyAge(config.secondKeySavedAt, config.secondKeySavedNoLaterThan, now) : null;
+  const stale = [age1, age2].filter((a): a is KeyAge => a?.stale === true);
   const summary = [
-    config.apiKeySet ? `${keyWord(config)} ••••${config.apiKeyLast4 ?? ""}` : `no ${keyWord(config)}`,
+    config.apiKeySet
+      ? `${keyWord(config)} ••••${config.apiKeyLast4 ?? ""}${age1 ? ` (${keyAgeText(age1)})` : ""}`
+      : `no ${keyWord(config)}`,
     config.secondKeyLabel
       ? config.secondKeySet
-        ? `${config.secondKeyLabel.toLowerCase()} ••••${config.secondKeyLast4 ?? ""}`
+        ? `${config.secondKeyLabel.toLowerCase()} ••••${config.secondKeyLast4 ?? ""}${age2 ? ` (${keyAgeText(age2)})` : ""}`
         : `no ${config.secondKeyLabel.toLowerCase()}`
       : null,
     savedRegion?.label ?? config.region,
@@ -487,6 +505,15 @@ function ProviderCard({
                     unverified
                   </span>
                 )}
+                {stale.length > 0 && (
+                  <span
+                    title={`A key saved ${KEY_AGE_WARN_DAYS} days ago or more. Vendors expire or revoke keys without telling this app — check it in the vendor's console. This is a reminder, not a sign that it stopped working.`}
+                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
+                  >
+                    key {stale.some((a) => a.atLeast) ? "≥ " : ""}
+                    {Math.max(...stale.map((a) => a.days))} d old
+                  </span>
+                )}
               </span>
               <span className="mt-0.5 block text-[11.5px] font-normal leading-relaxed text-muted">
                 {summary.join(" · ")}
@@ -499,14 +526,21 @@ function ProviderCard({
                   <span
                     aria-hidden
                     className={`mt-[5px] h-2 w-2 shrink-0 rounded-full ${
-                      health.state === "ok" ? "bg-cf-green" : health.state === "degraded" ? "bg-cf-amber" : "bg-subtle"
+                      health.state === "ok"
+                        ? "bg-cf-green"
+                        : health.state === "rejected"
+                          ? "bg-cf-red"
+                          : health.state === "degraded"
+                            ? "bg-cf-amber"
+                            : "bg-subtle"
                     }`}
                   />
-                  <span>
+                  {/* A rejected key is the one state that needs the operator, so it is said in red, not just dotted. */}
+                  <span className={health.state === "rejected" ? "font-semibold text-cf-red" : undefined}>
                     <span className="sr-only">
                       {health.state === "ok" ? "Healthy: " : health.state === "degraded" ? "Degraded: " : ""}
                     </span>
-                    {healthText(health, Date.now())}
+                    {healthText(health, now, downSince)}
                   </span>
                 </span>
               )}
@@ -1092,6 +1126,10 @@ export function SettingsPage() {
                           open={openRows.has(c.provider)}
                           onOpenChange={(on) => setRowOpen(c.provider, on)}
                           health={verdicts === undefined ? undefined : vendorHealth(c.provider, verdicts)}
+                          downSince={
+                            state.automation?.alerts.states.find((s) => s.provider === c.provider && s.state === "down")
+                              ?.since
+                          }
                         />
                       </li>
                     ))}

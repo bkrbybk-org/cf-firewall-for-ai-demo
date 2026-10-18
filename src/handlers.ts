@@ -62,7 +62,7 @@ import {
 import { guardrailWriteAccess } from "./accessAuth";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
-import { expectOf, logVerdicts, sourceOf } from "./guardrailLog";
+import { expectOf, logVerdicts, promptIdOf, sourceOf } from "./guardrailLog";
 import { automationStatus } from "./vendorAlerts";
 import { shapeOf, type Shape } from "./responseShape";
 import {
@@ -764,7 +764,9 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // only — src/guardrailLog.ts). A turn the caller asked to keep out of the log stays out of this too.
   const verdictSource = sourceOf(request);
   const verdictExpect = expectOf(request); // #13: the Red Team's harmless/attack label, for the false-block rate
-  if (!excludeFromLog) logVerdicts(external, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS, expect: verdictExpect });
+  const verdictPrompt = promptIdOf(request); // which built-in Red Team prompt (2026-10-18); "" otherwise
+  const verdictOpts = { ae: env.GUARDRAIL_VERDICTS, expect: verdictExpect, promptId: verdictPrompt };
+  if (!excludeFromLog) logVerdicts(external, verdictSource, ray, verdictOpts);
   // Carried on every response from here on, so the client can show the verdicts
   // on a streamed reply too — a stream has no JSON body to put it in. URI-encoded
   // because a header value must stay within Latin-1. NEVER with raw responses:
@@ -810,7 +812,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     const rc = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
       captureRaw: includeRaw,
     });
-    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, { ae: env.GUARDRAIL_VERDICTS, expect: verdictExpect });
+    if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, verdictOpts);
     return { rc, modelMs };
   };
   const withheld = (
@@ -1676,9 +1678,11 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
       // The plaintext key exists only for this line; it is never logged, stored
       // or returned.
       next.apiKeyEnc = await encryptSecret(v.newApiKey, env.GUARDRAIL_SECRET_KEY!, next.provider);
+      next.apiKeySetAt = next.updatedAt; // key age: only a NEW key moves it, not a region or fail-mode save
     }
     if (v.newSecondKey != null) {
       next.secondKeyEnc = await encryptSecret(v.newSecondKey, env.GUARDRAIL_SECRET_KEY!, secondKeyAad(next.provider));
+      next.secondKeySetAt = next.updatedAt;
     }
     await save(env.DB!, next);
     return guardrailState(env, request);

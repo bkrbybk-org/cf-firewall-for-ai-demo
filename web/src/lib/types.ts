@@ -301,6 +301,12 @@ export interface ExternalGuardrailConfig {
   redactionSupported?: boolean;
   applyRedaction?: boolean;
   updatedAt: number | null; // epoch ms
+  // Key age (2026-10-18), epoch ms. `…SavedAt` is exact; a key saved before dates were kept has none, and
+  // `…SavedNoLaterThan` bounds it instead (age is AT LEAST now − that). All null with no key. Absent from an older Worker.
+  apiKeySavedAt?: number | null;
+  apiKeySavedNoLaterThan?: number | null;
+  secondKeySavedAt?: number | null;
+  secondKeySavedNoLaterThan?: number | null;
 }
 
 export interface ExternalGuardrailsState {
@@ -327,6 +333,9 @@ export interface GuardrailAutomation {
     webhook: "set" | "unset" | "invalid"; // never the URL itself
     states: { provider: ExternalGuardrailProvider; state: "ok" | "down"; since: number; updatedAt: number }[];
   };
+  // 2026-10-18 (src/verdictWatch.ts): vendor × prompt pairs watched for a changed verdict. tracked / pending null when
+  // the table could not be read. Absent from an older Worker.
+  verdictWatch?: { confirmRuns: number; tracked: number | null; pending: number | null };
 }
 
 export type GuardrailAccess =
@@ -651,6 +660,8 @@ export interface GuardrailVendorStats {
   incomplete: number;
   error: number; // no verdict, fail closed
   failedOpen: number; // no verdict, fail open
+  // Of error + failedOpen: the vendor answered HTTP 401/403 — it rejected the key. Absent from a Worker before 2026-10-18.
+  authFailed?: number;
   notRun: number;
   decided: number;
   latencyN: number;

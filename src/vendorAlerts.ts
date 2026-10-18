@@ -17,18 +17,22 @@
 //   - **What a message holds:** vendor names, counts, the rate and the window. Never an error text (it can carry a
 //     vendor's message), a prompt, or the webhook URL itself.
 //   - Sampled rows are weighted, as on the page; the rate is a ratio of weighted counts.
+//   - **A rejected key is named** (2026-10-18): when most checks without a verdict got HTTP 401/403, the message says
+//     the vendor rejected the key and where to fix it. Still one "down" state — the fix differs, the outage does not.
 
+import { deliverAlert, webhookUrl } from "./alertDelivery";
 import { PROVIDERS } from "./externalGuardrails";
 import { aggregate, buildSql, parseRow, type VendorStats, type VerdictRow } from "./guardrailAnalytics";
 import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
 import { RERUN_CRON } from "./scheduledRerun";
 import type { Env, ExternalGuardrailProvider } from "./types";
+import { WATCH_CONFIRM_RUNS, watchStatus } from "./verdictWatch";
 
 export const ALERT_CRON = "17 * * * *";
 export const ALERT_WINDOW_HOURS = 1;
 export const ALERT_MIN_CHECKS = 3;
 export const ALERT_NO_VERDICT_RATE = 0.5;
-const WEBHOOK_TIMEOUT_MS = 5000;
+export { webhookUrl }; // kept here too: tests and Settings import it from this module
 
 export type AlertState = "ok" | "down";
 
@@ -36,16 +40,22 @@ export interface VendorCheck {
   provider: ExternalGuardrailProvider;
   checked: number; // weighted: block + allow + error + failedOpen, prompt and reply together
   noVerdict: number; // error + failedOpen
+  authFailed: number; // of noVerdict: HTTP 401/403 — the vendor rejected the key
   state: AlertState | "unknown";
 }
 
+// "Key rejected" when most of the checks without a verdict were 401/403 — a mixed outage (some timeouts) still reads
+// as the more common cause, and a single stray 403 among timeouts does not send the operator to rotate a good key.
+export const keyRejected = (c: { noVerdict: number; authFailed: number }) => c.noVerdict > 0 && c.authFailed / c.noVerdict > 0.5;
+
 // Per vendor, prompt and reply checks together.
 export function evaluate(vendors: VendorStats[]): VendorCheck[] {
-  const by = new Map<ExternalGuardrailProvider, { checked: number; noVerdict: number }>();
+  const by = new Map<ExternalGuardrailProvider, { checked: number; noVerdict: number; authFailed: number }>();
   for (const v of vendors) {
-    const e = by.get(v.provider) ?? { checked: 0, noVerdict: 0 };
+    const e = by.get(v.provider) ?? { checked: 0, noVerdict: 0, authFailed: 0 };
     e.checked += v.checked;
     e.noVerdict += v.error + v.failedOpen;
+    e.authFailed += v.authFailed ?? 0;
     by.set(v.provider, e);
   }
   return [...by.entries()].map(([provider, e]) => ({
@@ -62,6 +72,7 @@ export interface Transition {
   from: AlertState | null; // null: never seen before
   checked: number;
   noVerdict: number;
+  authFailed: number;
 }
 
 // What changed since the stored states. `unknown` changes nothing. A first sighting alerts only when it is already down.
@@ -72,7 +83,7 @@ export function transitions(prev: Map<ExternalGuardrailProvider, AlertState>, no
     const before = prev.get(c.provider) ?? null;
     if (before === c.state) continue;
     if (before === null && c.state === "ok") continue; // recorded, not announced
-    out.push({ provider: c.provider, to: c.state, from: before, checked: c.checked, noVerdict: c.noVerdict });
+    out.push({ provider: c.provider, to: c.state, from: before, checked: c.checked, noVerdict: c.noVerdict, authFailed: c.authFailed });
   }
   return out;
 }
@@ -83,27 +94,17 @@ const count = (n: number) => (Number.isInteger(n) ? String(n) : `≈${Math.round
 export function alertText(t: Transition[], windowHours = ALERT_WINDOW_HOURS): string {
   const lines = t.map((x) =>
     x.to === "down"
-      ? `🔴 ${PROVIDERS[x.provider].label} looks DOWN: ${count(x.noVerdict)} of ${count(x.checked)} checks (${pct(x.noVerdict, x.checked)}) got no verdict in the last ${windowHours}h.`
+      ? keyRejected(x)
+        ? `🔑 ${PROVIDERS[x.provider].label} REJECTED THE KEY: ${count(x.authFailed)} of ${count(x.checked)} checks got HTTP 401/403 in the last ${windowHours}h. Issue a new key in the vendor's console, then save it in Settings → ${PROVIDERS[x.provider].label}.`
+        : `🔴 ${PROVIDERS[x.provider].label} looks DOWN: ${count(x.noVerdict)} of ${count(x.checked)} checks (${pct(x.noVerdict, x.checked)}) got no verdict in the last ${windowHours}h.`
       : `🟢 ${PROVIDERS[x.provider].label} recovered: ${count(x.noVerdict)} of ${count(x.checked)} checks without a verdict in the last ${windowHours}h.`,
   );
   return ["cf-ai-waf-demo — external guardrail health", ...lines].join("\n");
 }
 
-// Only an https URL to a public host is ever called; anything else is refused and logged as such (without the value).
-export function webhookUrl(raw: string | undefined): URL | null {
-  if (!raw) return null;
-  try {
-    const u = new URL(raw.trim());
-    if (u.protocol !== "https:" || /^(localhost|127\.|10\.|192\.168\.|\[)/.test(u.hostname)) return null;
-    return u;
-  } catch {
-    return null;
-  }
-}
-
 export interface AlertRunSummary {
   event: "guardrail_alert_check";
-  vendors: { provider: ExternalGuardrailProvider; state: VendorCheck["state"]; checked: number; noVerdict: number }[];
+  vendors: { provider: ExternalGuardrailProvider; state: VendorCheck["state"]; checked: number; noVerdict: number; authFailed: number }[];
   alerts: number;
   delivered: "webhook" | "log" | "none" | "failed";
   skipped?: string;
@@ -162,7 +163,7 @@ export async function runVendorAlerts(
     );
   }
 
-  const vendors = checks.map(({ provider, state, checked, noVerdict }) => ({ provider, state, checked, noVerdict }));
+  const vendors = checks.map(({ provider, state, checked, noVerdict, authFailed }) => ({ provider, state, checked, noVerdict, authFailed }));
   if (changed.length === 0) {
     const s = { ...base, vendors };
     log(s);
@@ -177,27 +178,7 @@ export async function runVendorAlerts(
     windowHours: ALERT_WINDOW_HOURS,
     at: new Date(now).toISOString(),
   };
-  const url = webhookUrl(env.ALERT_WEBHOOK_URL);
-  let delivered: AlertRunSummary["delivered"] = "log";
-  if (env.ALERT_WEBHOOK_URL && !url) {
-    log({ event: "guardrail_alert", note: "ALERT_WEBHOOK_URL is set but is not an https URL to a public host — not called", ...payload });
-  } else if (!url) {
-    log({ event: "guardrail_alert", note: "ALERT_WEBHOOK_URL is not set — logged only", ...payload });
-  } else {
-    try {
-      const r = await fetchImpl(url.toString(), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
-      });
-      delivered = r.ok ? "webhook" : "failed";
-      log({ event: "guardrail_alert", delivered, status: r.status, ...payload });
-    } catch (err) {
-      delivered = "failed";
-      log({ event: "guardrail_alert", delivered, error: err instanceof Error ? err.name : "error", ...payload });
-    }
-  }
+  const delivered = await deliverAlert(env, "guardrail_alert", payload, { fetchImpl, log });
   const s = { ...base, vendors, alerts: changed.length, delivered };
   log(s);
   return s;
@@ -215,6 +196,8 @@ export async function automationStatus(env: Env) {
       webhook: env.ALERT_WEBHOOK_URL ? (webhookUrl(env.ALERT_WEBHOOK_URL) ? "set" : "invalid") : "unset",
       states: await loadAlertStates(env.DB),
     },
+    // 2026-10-18: verdict changes on the scheduled prompts. null when the table cannot be read (migration 0012).
+    verdictWatch: { confirmRuns: WATCH_CONFIRM_RUNS, ...((await watchStatus(env.DB)) ?? { tracked: null, pending: null }) },
   };
 }
 

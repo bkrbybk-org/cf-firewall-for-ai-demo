@@ -158,7 +158,21 @@ export function DeploymentPanel({
               Re-run: {state.automation.rerun.prompts} fixed prompts to every enabled guardrail (no model, no edge), shown as
               "scheduled re-runs" on Analytics. Outage check: hourly, a vendor is <b>down</b> when at least{" "}
               {Math.round(state.automation.alerts.noVerdictRate * 100)}% of at least {state.automation.alerts.minChecks} checks
-              in the last {state.automation.alerts.windowHours}h got no verdict; an alert is sent when that changes.
+              in the last {state.automation.alerts.windowHours}h got no verdict; an alert is sent when that changes, and
+              says so when the vendor rejected the key (HTTP 401/403).
+              {state.automation.verdictWatch && (
+                <>
+                  {" "}
+                  Verdict watch: after each re-run, an alert when a vendor's verdict on one of the fixed prompts changes and
+                  holds for {state.automation.verdictWatch.confirmRuns} runs in a row
+                  {state.automation.verdictWatch.tracked == null
+                    ? " (its table could not be read)"
+                    : ` — ${state.automation.verdictWatch.tracked} vendor × prompt pairs watched${
+                        state.automation.verdictWatch.pending ? `, ${state.automation.verdictWatch.pending} awaiting a second run` : ""
+                      }`}
+                  .
+                </>
+              )}
               {state.automation.alerts.states.length > 0 && (
                 <>
                   {" "}

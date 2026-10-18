@@ -124,10 +124,14 @@ export const PROVIDERS: Record<ExternalGuardrailProvider, ProviderSpec> = {
     // The SDK's inspect_response() sends the reply alone as {role: "assistant"} (src/ciscoAiDefense.ts, 2026-10-12).
     replyCheck: true,
   },
+  // Verified 2026-10-18 from real traffic: enabled on prod since 2026-10-08. The 4 days to 2026-10-17 alone hold 192
+  // scheduled verdicts, all HTTP 200 and all parsed — the parser makes any other shape an error, and there were none.
+  // Blocks carried breakdown detector names (`prompt_attack`, `moderated_content/*`), and 4 reply checks were withheld.
+  // Not yet seen: a project in Detect mode (`action: "detect"`, the allow-with-alerts path), which follows the docs.
   "lakera-guard": {
     label: "Check Point Lakera Guard",
     supported: true,
-    verified: false,
+    verified: true,
     regions: LAKERA_REGIONS,
     defaultRegion: "global",
     scanPath: LAKERA_GUARD_PATH,
@@ -193,6 +197,10 @@ export interface StoredConfig {
   // The second credential (ProviderSpec.secondKeyLabel), encrypted with its own AAD (secondKeyAad).
   secondKeyEnc: string | null;
   secondKeyLast4: string | null;
+  // When each credential was saved (epoch ms, migration 0012). null with a key set = saved before dates were kept:
+  // the key is then no newer than updatedAt, which moves on every save.
+  apiKeySetAt: number | null;
+  secondKeySetAt: number | null;
   // #11: send this vendor's redacted prompt to the model (only where PROVIDERS[...].redaction).
   applyRedaction: boolean;
   updatedAt: number | null;
@@ -215,6 +223,8 @@ export function defaultConfig(provider: ExternalGuardrailProvider): StoredConfig
     apiKeyLast4: null,
     secondKeyEnc: null,
     secondKeyLast4: null,
+    apiKeySetAt: null,
+    secondKeySetAt: null,
     applyRedaction: false,
     updatedAt: null,
   };
@@ -255,6 +265,13 @@ export function toPublicConfig(c: StoredConfig) {
     redactionSupported: spec.redaction === true,
     applyRedaction: spec.redaction === true && c.applyRedaction,
     updatedAt: c.updatedAt,
+    // Key age (2026-10-18). `…SavedAt` is exact. A key saved before dates were kept has none, and then
+    // `…SavedNoLaterThan` (= updatedAt) bounds it: the page shows an age of AT LEAST now − that, never a guess.
+    apiKeySavedAt: c.apiKeyEnc != null ? c.apiKeySetAt : null,
+    apiKeySavedNoLaterThan: c.apiKeyEnc != null && c.apiKeySetAt == null ? c.updatedAt : null,
+    secondKeySavedAt: spec.secondKeyLabel != null && c.secondKeyEnc != null ? c.secondKeySetAt : null,
+    secondKeySavedNoLaterThan:
+      spec.secondKeyLabel != null && c.secondKeyEnc != null && c.secondKeySetAt == null ? c.updatedAt : null,
   };
 }
 
@@ -297,6 +314,8 @@ export function validateUpdate(body: unknown, current: StoredConfig): UpdateResu
     next.apiKeyLast4 = null;
     next.secondKeyEnc = null;
     next.secondKeyLast4 = null;
+    next.apiKeySetAt = null;
+    next.secondKeySetAt = null;
     // A provider with no key cannot scan anything, so leaving it "enabled"
     // would turn every chat into a fail-mode decision. Disable it instead.
     next.enabled = false;
@@ -417,6 +436,8 @@ interface Row {
   second_key_enc?: string | null; // absent before migration 0009
   second_key_last4?: string | null;
   apply_redaction?: number; // absent before migration 0010
+  api_key_set_at?: number | null; // absent before migration 0012
+  second_key_set_at?: number | null;
   updated_at: number | null;
 }
 
@@ -433,6 +454,8 @@ function fromRow(r: Row): StoredConfig | null {
     apiKeyLast4: r.api_key_last4,
     secondKeyEnc: r.second_key_enc ?? null,
     secondKeyLast4: r.second_key_last4 ?? null,
+    apiKeySetAt: r.api_key_set_at ?? null,
+    secondKeySetAt: r.second_key_set_at ?? null,
     applyRedaction: r.apply_redaction === 1 && PROVIDERS[provider].redaction === true,
     updatedAt: r.updated_at,
   };
@@ -449,12 +472,13 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
   const upsert = db
     .prepare(
       `INSERT INTO external_guardrails (provider, enabled, region, profile_name, fail_mode, api_key_enc, api_key_last4,
-         second_key_enc, second_key_last4, apply_redaction, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         second_key_enc, second_key_last4, apply_redaction, api_key_set_at, second_key_set_at, updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
        ON CONFLICT(provider) DO UPDATE SET enabled = excluded.enabled, region = excluded.region,
          profile_name = excluded.profile_name, fail_mode = excluded.fail_mode, api_key_enc = excluded.api_key_enc,
          api_key_last4 = excluded.api_key_last4, second_key_enc = excluded.second_key_enc,
          second_key_last4 = excluded.second_key_last4, apply_redaction = excluded.apply_redaction,
+         api_key_set_at = excluded.api_key_set_at, second_key_set_at = excluded.second_key_set_at,
          updated_at = excluded.updated_at`,
     )
     .bind(
@@ -468,6 +492,8 @@ export async function save(db: D1Database, c: StoredConfig): Promise<void> {
       c.secondKeyEnc,
       c.secondKeyLast4,
       c.applyRedaction ? 1 : 0,
+      c.apiKeySetAt,
+      c.secondKeySetAt,
       c.updatedAt,
     );
   await upsert.run();

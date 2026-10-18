@@ -626,6 +626,79 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-18 — Rejected keys named; key age; prompt ids; verdict watch; Lakera verified
+
+**Asked for:** "do 1, 2, 5, 7, 14" from the suggestion table. Deploy `3cb87528-ddaf-4c24-b6bf-47fd08c64b86`. Migration
+`0012_key_dates_and_verdict_watch`, purely additive (two nullable columns, one new table), applied to prod before the
+Worker.
+
+**Why these:** two things this week were found late and by hand.
+- **Cato's key** was rejected from 2026-10-13 06:00 and read only as "no verdict" for a day.
+- **Lakera's step-up** on 2026-10-16 could not be traced to the prompt that changed.
+
+**#1 A rejected key is named.**
+- **Counting:** `guardrailAnalytics.ts` reads the HTTP status per row (double2; 0 = no answer) and counts `authFailed`, the
+  checks with no verdict that got 401 or 403. Weighted like every count.
+- **The outage alert** says "REJECTED THE KEY … Issue a new key in the vendor's console" when more than half of the
+  no-verdict checks were 401/403, so a stray 403 among timeouts does not send anyone to rotate a good key. It is still the
+  one `down` state: the fix differs, the outage does not.
+- **Settings:** the row turns red ("Key rejected — N of M checks got HTTP 401/403 (last 24h) · down since …"). Same
+  threshold. "Down since" comes from the outage check's stored state, which reaches back past the 24 h window.
+- **Delivery** moved to `src/alertDelivery.ts`, shared with #7: the same https-public-host rule, never throws.
+
+**#2 Key age.**
+- **Storage:** `api_key_set_at` / `second_key_set_at` are set only when a NEW key is saved; a region or fail-mode save
+  leaves them (checked locally: `updatedAt` moved, `apiKeySavedAt` did not). Removing the key clears them.
+- **Older keys:** a key saved before 0012 has no date, so the API sends `…SavedNoLaterThan` (= `updated_at`, which moves
+  on every save and so is no earlier than the key). The page shows "saved ≥ N d ago", a floor, never a guess.
+- **Badge:** amber "key N d old" from 90 days — a reminder, since no vendor here publishes a key lifetime.
+
+**#5 Prompt ids in the verdict data (blob12).**
+- **Scheduled rows** carry the set's id (`rt-03`, `han-600`).
+- **Red Team rows** carry the page's existing join key (`attackKey`): a built-in id (`rt-03~base64`) or `h` + a hash of the
+  prompt text. Never a CSV row number, which names a different prompt in every file. Sent as `x-demo-prompt`.
+- **Checks:** shape-checked on write and read (`PROMPT_ID`), kept on curated sources only, as the label is.
+
+**#7 The verdict watch** (`src/verdictWatch.ts`, after each 6-hourly re-run).
+- **State:** each vendor × prompt's last confirmed verdict is in D1 (`guardrail_prompt_verdicts`, keyed `v1/<id>` so a set
+  bump starts afresh).
+- **When it alerts:** a different verdict is held as `pending` and announced only when the next run with a verdict agrees.
+  - A return to the old verdict clears it.
+  - An error is not a verdict: it neither confirms nor clears, and never writes.
+  - A first sighting is recorded silently.
+- **The message** names vendor, prompt id, label and what it means ("now BLOCKS harmless prompt han-600 — a new false
+  block"), never the prompt text.
+
+**#14 Lakera verified**, from real traffic rather than a pasted shape.
+- **The evidence:** enabled on prod since 2026-10-08. 192 scheduled verdicts in the 4 days to 2026-10-17, all HTTP 200,
+  all parsed. The parser turns any other shape into an error, and there were none. Detector names arrived from
+  `breakdown`, and 4 replies were withheld.
+- **Not seen:** Detect mode (`action: "detect"`).
+- **Cisco stays unverified:** it has never flagged a reply.
+
+**Verified:**
+- **Gates:** 939 tests (+21), 0 type errors, build clean. **Mutation-verified 17 of 17**, after one survivor: clearing a
+  key without clearing its date. The test's stored row had a null date; it now starts from a dated one.
+- **Local D1 and `wrangler-dev-scheduled`:**
+  - Migration 0012 applied.
+  - A dummy key save set `api_key_set_at`, and a fail-mode save left it.
+  - The scheduled trigger wrote 12 rows with `promptId` `rt-01`…`han-1500`.
+  - The watch logged `skipped: "no verdicts this run"`: locally Cisco fails at the network, status null, and errors are
+    not verdicts.
+- **Local Settings, with prod's verdict data:**
+  - Cato red: "Key rejected — 48 of 48 checks got HTTP 401/403 (last 24h)".
+  - Lakera has no badge and reads "saved ≥ 6 d ago".
+  - A backdated key showed "key 100 d old".
+  - Light and dark. No console errors. The local test key was removed after.
+- **Prod:** smoke passes.
+  - `authFailed` 48/48 for Cato, 0 for the other four.
+  - Lakera `verified: true`.
+  - Each saved key has `apiKeySavedNoLaterThan`.
+  - `verdictWatch {confirmRuns: 2, tracked: 0}`.
+  - The bundle carries the new strings.
+- **Pending on prod:** the first scheduled run with this code (18:00 UTC) — rows in `guardrail_prompt_verdicts`, and
+  blob12 in Analytics Engine.
+
 ### 2026-10-14 — Settings: console and docs links for every product
 
 **Asked for:** "add link to console … and to docs … on every product in setting page so i can quickly access". Deploy
@@ -3862,7 +3935,8 @@ below are kept as written. Items they still list as open but that are done are t
   - **`npm run corpus:thai` on prod.**
   - **Dynamic Route with `tier=free`.**
   - **Whether custom metadata lands in the gateway logs.**
-- **Self, code, small:** set `verified: true` for Lakera Guard. Real prompt and reply blocks have been seen and parsed
+- ~~**Self, code, small:** set `verified: true` for Lakera Guard.~~ **Done 2026-10-18** (see that day's entry), from 192
+  live verdicts all parsed. Original note: real prompt and reply blocks have been seen and parsed
   (`prompt_attack`, `moderated_content/*`), but the "unverified" badge is still on.
   - **Cisco:** real prompt blocks have been seen (`Prompt Injection`, `General Harms`), but never a flagged reply.
   - **Cato:** a real block was seen on 2026-10-09, but it can be re-tested only after the key is fixed.

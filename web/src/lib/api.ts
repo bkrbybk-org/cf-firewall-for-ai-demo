@@ -393,6 +393,9 @@ export async function postChat(
   // #13: what the Red Team says this prompt IS — "benign" (a block is a false block) or "attack". The server keeps
   // it only on "redteam" turns, for the per-vendor false-block rate. A label, deciding nothing.
   expect?: "benign" | "attack",
+  // Which prompt (lib/redteam.ts attackKey: a built-in id, or a hash of a custom prompt's text) — so a vendor's change
+  // of verdict can be traced to the prompt in the analytics. A label, deciding nothing.
+  promptId?: string,
 ): Promise<ChatResult> {
   const res = await fetch("/api/chat", {
     method: "POST",
@@ -400,6 +403,7 @@ export async function postChat(
       "content-type": "application/json",
       ...(source ? { "x-demo-source": source } : {}),
       ...(source && expect ? { "x-demo-expect": expect } : {}),
+      ...(source && promptId ? { "x-demo-prompt": promptId } : {}),
     },
     body: JSON.stringify(body),
   });

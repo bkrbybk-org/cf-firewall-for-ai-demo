@@ -17,7 +17,7 @@
 
 import { bucketFor, type SeriesBucket } from "./config";
 import { PROVIDER_IDS } from "./externalGuardrails";
-import { AE_SCHEMA, type VerdictExpect, type VerdictOutcome, type VerdictSource } from "./guardrailLog";
+import { AE_SCHEMA, PROMPT_ID, type VerdictExpect, type VerdictOutcome, type VerdictSource } from "./guardrailLog";
 import { nearestRank } from "./percentile";
 import { clientError } from "./publicError";
 import type { Env, ExternalGuardrailProvider } from "./types";
@@ -38,7 +38,7 @@ export function buildSql(hours: (typeof RANGE_HOURS)[number], source: SourceFilt
   return [
     "SELECT timestamp AS ts, _sample_interval AS si,",
     "blob2 AS src, blob3 AS dir, blob4 AS provider, blob5 AS outcome, blob6 AS detected, blob7 AS ray,",
-    "blob8 AS scan_id, blob9 AS mode, blob10 AS action, blob11 AS expect,",
+    "blob8 AS scan_id, blob9 AS mode, blob10 AS action, blob11 AS expect, blob12 AS prompt_id,",
     "double1 AS ms, double2 AS status, double3 AS alerts, double4 AS redaction, double5 AS incomplete, double6 AS decided,",
     // blob11 / double7 date from 2026-10-12; checked live that day, older points read "" and 0 (the columns always exist).
     "double7 AS applied",
@@ -72,6 +72,10 @@ export interface VerdictRow {
   quorum: boolean; // the pipeline ran in quorum mode (#7)
   applied: boolean; // #11: this vendor's redacted prompt reached the model
   expect: VerdictExpect; // #13: the Red Team's label; "" when unlabelled (chat, and every point before 2026-10-12)
+  promptId: string; // the curated prompt's id (guardrailLog.ts); "" when none (chat, and every point before 2026-10-18)
+  // The vendor's HTTP status; null when it never answered (timeout, network) or never ran. 401/403 on a check with no
+  // verdict is a REJECTED KEY (authFailed), told apart from an outage.
+  status: number | null;
 }
 
 const NAME = /^[A-Za-z0-9_.:\-/ ]{1,80}$/;
@@ -97,6 +101,8 @@ export function parseRow(r: unknown): VerdictRow | null {
   if (o.src !== "chat" && o.src !== "redteam" && o.src !== "scheduled") return null;
   const si = num(o.si);
   const ms = num(o.ms);
+  const status = num(o.status);
+  const curated = o.src === "redteam" || o.src === "scheduled";
   return {
     ts,
     si: Number.isFinite(si) && si >= 1 ? si : 1,
@@ -115,7 +121,10 @@ export function parseRow(r: unknown): VerdictRow | null {
     quorum: o.mode === "quorum",
     applied: outcome === "allow" && num(o.applied) === 1,
     // Only on curated prompts (Red Team, scheduled re-run), as written; re-checked so a stray label never reaches a rate.
-    expect: (o.src === "redteam" || o.src === "scheduled") && (o.expect === "benign" || o.expect === "attack") ? o.expect : "",
+    expect: curated && (o.expect === "benign" || o.expect === "attack") ? o.expect : "",
+    promptId: curated && typeof o.prompt_id === "string" && PROMPT_ID.test(o.prompt_id) ? o.prompt_id : "",
+    // 0 is how the writer stores "no HTTP answer" (guardrailLog.ts double2).
+    status: Number.isInteger(status) && status >= 100 && status <= 599 ? status : null,
   };
 }
 
@@ -133,6 +142,9 @@ export interface VendorStats {
   incomplete: number;
   error: number; // fail closed: the turn stopped without a verdict
   failedOpen: number; // fail open: the turn went on without a verdict
+  // Of error + failedOpen: the vendor answered HTTP 401 or 403 — it REJECTED THE KEY (expired, revoked, rotated), which
+  // no retry fixes, unlike a timeout or a 5xx. Cato's 401s from 2026-10-13 read only as "no verdict" before this.
+  authFailed: number;
   notRun: number;
   decided: number; // times this vendor's verdict stopped the turn (quorum: times it was one of the stopping votes)
   outvoted: number; // #7: blocks that did NOT stop the turn — quorum mode, too few votes. A subset of block.
@@ -213,7 +225,7 @@ export function aggregate(
       e = {
         s: {
           provider: r.provider, dir: r.dir, checked: 0, block: 0, allow: 0, alerts: 0, redaction: 0, incomplete: 0,
-          error: 0, failedOpen: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
+          error: 0, failedOpen: 0, authFailed: 0, notRun: 0, decided: 0, latencyN: 0, p50Ms: null, p95Ms: null, topDetections: [],
           lastTs: null, redactionApplied: 0, outvoted: 0, detections: [],
           labelled: { benign: { verdicts: 0, block: 0 }, attack: { verdicts: 0, block: 0 } },
           latencyTrend: [],
@@ -258,6 +270,7 @@ export function aggregate(
       s.failedOpen += w;
       totals.failedOpen += w;
     }
+    if ((r.outcome === "error" || r.outcome === "failed_open") && (r.status === 401 || r.status === 403)) s.authFailed += w;
     if (r.ms != null) e.ms.push(r.ms);
     if (r.outcome !== "error" && r.outcome !== "failed_open") {
       for (const d of r.detected) e.det.set(d, (e.det.get(d) ?? 0) + w);

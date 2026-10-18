@@ -18,7 +18,7 @@
 import { useCallback, useRef, useState } from "react";
 import { postChat } from "../lib/api";
 import { fetchVerdictOnce, verdictOutcome } from "../lib/verdict";
-import { isAttack, type RedTeamAttack, type RtResultState, type RtRunResult } from "../lib/redteam";
+import { attackKey, isAttack, type RedTeamAttack, type RtResultState, type RtRunResult } from "../lib/redteam";
 import type { GuardrailPipelineResult } from "../lib/types";
 import { toVendorOutcomes } from "../lib/vendorScorecard";
 
@@ -62,6 +62,7 @@ async function sendOne(
   prompt: string,
   cfg: RtRouteConfig,
   expect: "benign" | "attack",
+  promptId: string,
 ): Promise<{ ray?: string; kind: SendKind; pipeline?: GuardrailPipelineResult; replyPipeline?: GuardrailPipelineResult }> {
   try {
     // Minimal body: the server fills in the default model + system prompt.
@@ -80,6 +81,7 @@ async function sendOne(
       undefined,
       "redteam",
       expect,
+      promptId,
     );
     if (res.mode === "stream") {
       // Shouldn't happen with stream:false, but treat a stream as a reply.
@@ -251,7 +253,7 @@ export function useRedTeam(): RedTeamRun {
       if (stopRef.current) return;
       setOne(a.id, "sending");
       const ts = Date.now();
-      const { ray, kind, pipeline, replyPipeline } = await sendOne(a.prompt, cfg, isAttack(a) ? "attack" : "benign");
+      const { ray, kind, pipeline, replyPipeline } = await sendOne(a.prompt, cfg, isAttack(a) ? "attack" : "benign", attackKey(a));
       if (stopRef.current) return;
       sent.push({ id: a.id, ray, ts, kind, pipeline, replyPipeline });
       setOne(a.id, "sent");

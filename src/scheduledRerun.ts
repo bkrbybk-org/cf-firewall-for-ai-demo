@@ -16,11 +16,14 @@
 //     "where the vendors disagreed"). It starts "sch" — real rays are hex only, so it can never be mistaken for one.
 //   - A prompt's failure is a verdict row like any other (error / failed_open), never a skipped prompt: an outage is
 //     exactly what this should show.
+//   - **Each row names its prompt** (blob12, 2026-10-18), and after the run each vendor's verdict per prompt goes to the
+//     verdict watch (src/verdictWatch.ts), which alerts once a changed verdict has held for two runs.
 
 import { loadGuardrailSetup, runPipeline } from "./externalGuardrails";
 import { logVerdicts } from "./guardrailLog";
 import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
-import type { Env } from "./types";
+import type { Env, GuardrailPipelineResult } from "./types";
+import { runVerdictWatch } from "./verdictWatch";
 
 export const RERUN_CRON = "0 */6 * * *";
 // Between prompts: each prompt fans out to every enabled vendor at once, so a short gap keeps 12 prompts from
@@ -56,13 +59,22 @@ export async function runScheduledRerun(
   }
   const forced = { pipeline: { ...setup.pipeline, mode: "parallel" as const, guardrailOnly: true }, enabled: setup.enabled };
   let sent = 0;
+  const runs: { id: string; pipeline: GuardrailPipelineResult | null }[] = [];
   for (const p of SCHEDULED_PROMPTS) {
     if (sent > 0) await sleep(RERUN_GAP_MS);
     const result = await runPipeline(env, { prompt: p.prompt, model: "", ray: null }, deps.fetchImpl ?? fetch, { setup: forced });
-    logVerdicts(result, "scheduled", scheduledRunId(), { ae: env.GUARDRAIL_VERDICTS, expect: p.expect });
+    logVerdicts(result, "scheduled", scheduledRunId(), { ae: env.GUARDRAIL_VERDICTS, expect: p.expect, promptId: p.id });
+    runs.push({ id: p.id, pipeline: result });
     sent++;
   }
   const s = { ...base, vendors: setup.enabled.length, prompts: sent, ms: Date.now() - started };
   log(s);
+  // Verdict changes per vendor and prompt (src/verdictWatch.ts). After the run's own summary, and never able to fail it:
+  // the verdicts above are already recorded.
+  try {
+    await runVerdictWatch(env, runs, { fetchImpl: deps.fetchImpl, log });
+  } catch (err) {
+    log({ event: "guardrail_verdict_watch", skipped: `failed: ${err instanceof Error ? err.name : "error"}` });
+  }
   return s;
 }

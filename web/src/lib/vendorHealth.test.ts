@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ago, healthText, vendorHealth } from "./vendorHealth";
+import { KEY_AGE_WARN_DAYS, ago, healthText, keyAge, keyAgeText, vendorHealth } from "./vendorHealth";
 import type { GuardrailAnalytics, GuardrailVendorStats } from "./types";
 
 const NOW = Date.parse("2026-10-10T12:00:00Z");
@@ -65,5 +65,39 @@ describe("ago", () => {
     expect(ago(NOW - 5 * 60_000, NOW)).toBe("5 min ago");
     expect(ago(NOW - 3 * 3_600_000, NOW)).toBe("3 h ago");
     expect(ago(NOW - 3 * 86_400_000, NOW)).toBe("3 d ago");
+  });
+});
+
+// 2026-10-18: a rejected key is its own state (red), with the outage check's "down since" when it reaches back further.
+describe("rejected key", () => {
+  it("reads 'rejected' when most checks without a verdict were 401/403, with what to do", () => {
+    const h = vendorHealth("cato-ai-security", data([v({ provider: "cato-ai-security", checked: 48, failedOpen: 48, authFailed: 48, lastTs: NOW })]));
+    expect(h.state).toBe("rejected");
+    const since = Date.parse("2026-10-13T06:17:31Z");
+    const t = healthText(h, NOW, since);
+    expect(t).toMatch(/^Key rejected — 48 of 48 checks got HTTP 401\/403 \(last 24h\) · down since .+\. Issue a new key in the vendor's console and save it here\.$/);
+  });
+  it("stays 'degraded' when 401/403 are half or fewer, and an older Worker without authFailed is never 'rejected'", () => {
+    expect(vendorHealth("cato-ai-security", data([v({ provider: "cato-ai-security", checked: 4, failedOpen: 4, authFailed: 2 })])).state).toBe("degraded");
+    expect(vendorHealth("cato-ai-security", data([v({ provider: "cato-ai-security", checked: 4, failedOpen: 4 })])).state).toBe("degraded");
+  });
+});
+
+describe("keyAge", () => {
+  const DAY = 86_400_000;
+  it("is exact from the save date, a floor from the config's last save, and stale from 90 days", () => {
+    expect(keyAge(NOW - 12 * DAY, null, NOW)).toEqual({ days: 12, atLeast: false, stale: false });
+    expect(keyAge(null, NOW - 10 * DAY, NOW)).toEqual({ days: 10, atLeast: true, stale: false });
+    expect(keyAge(NOW - 90 * DAY, null, NOW)?.stale).toBe(true);
+    expect(keyAge(NOW - 89.9 * DAY, null, NOW)?.stale).toBe(false);
+    expect(keyAge(null, null, NOW)).toBeNull();
+    expect(keyAge(undefined, undefined, NOW)).toBeNull(); // an older Worker
+    expect(KEY_AGE_WARN_DAYS).toBe(90);
+  });
+  it("says ≥ when it is a floor", () => {
+    expect(keyAgeText({ days: 12, atLeast: false, stale: false })).toBe("saved 12 d ago");
+    expect(keyAgeText({ days: 0, atLeast: false, stale: false })).toBe("saved today");
+    expect(keyAgeText({ days: 10, atLeast: true, stale: false })).toBe("saved ≥ 10 d ago");
+    expect(keyAgeText({ days: 0, atLeast: true, stale: false })).toBe("saved today or earlier");
   });
 });

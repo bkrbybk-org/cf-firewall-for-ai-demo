@@ -56,10 +56,18 @@ export interface VerdictLine {
   mode: GuardrailPipelineMode;
   action: string | null; // Datadog's "deny" / "abort" only — the one category that is a fixed token
   expect: VerdictExpect; // #13: the Red Team's label for the prompt; "" when unlabelled
+  // Which curated prompt this was (2026-10-18), so a change can be traced to the prompt that changed: the scheduled
+  // set's id ("rt-03", "han-600"), or the Red Team's join key (web/src/lib/redteam.ts attackKey) — a built-in row's id
+  // ("rt-03", "rt-03~base64"), else "h" + a hash of the prompt text, never a CSV row number (that names a different
+  // prompt in every file). "" on chat and the API.
+  promptId: string;
 }
 
 const NAME = /^[A-Za-z0-9_.:\-/ ]{1,80}$/;
 const SCAN_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
+// The shape of every such id (redteam.ts ids and attackKey hashes, variants' "~technique", scheduledCorpus.ts).
+// Anything else is dropped, so a header can never put free text into the dataset.
+export const PROMPT_ID = /^[a-z0-9][a-z0-9._-]{0,30}(~[a-z0-9-]{1,20})?$/;
 
 function outcomeOf(r: ExternalGuardrailResult): VerdictOutcome {
   if (r.outcome === "block") return "block";
@@ -74,13 +82,15 @@ export function verdictLines(
   src: VerdictSource,
   ray: string | null,
   expect: VerdictExpect = "",
+  promptId = "",
 ): VerdictLine[] {
   // The bare ray id ("8f1c…", not "8f1c…-SIN"): the form the edge's firewall events carry as rayName, so
   // a line joins to the edge verdict; the prompt log's full cf-ray starts with it.
   const rayId = ray ? ray.split("-")[0].trim() || null : null;
   // A label only counts on curated prompts — the Red Team's own turns and the scheduled re-run's fixed set: "benign"
   // on a chat turn would be a client's say-so about a prompt nobody curated.
-  const label: VerdictExpect = src === "redteam" || src === "scheduled" ? expect : "";
+  const curated = src === "redteam" || src === "scheduled";
+  const label: VerdictExpect = curated ? expect : "";
   const base = {
     event: VERDICT_EVENT,
     v: VERDICT_SCHEMA,
@@ -89,6 +99,7 @@ export function verdictLines(
     ray: rayId,
     mode: p.mode,
     expect: label,
+    promptId: curated && PROMPT_ID.test(promptId) ? promptId : "", // same rule as the label: curated prompts only
   } as const;
   const decidedBy = (r: ExternalGuardrailResult) =>
     p.mode === "quorum" ? p.stoppedBy != null && stopsTurn(r) : p.stoppedBy === r.provider;
@@ -162,6 +173,7 @@ export function dataPointOf(l: VerdictLine, unique: () => string = () => crypto.
       l.mode, // blob9
       l.action ?? "", // blob10
       l.expect, // blob11 — #13; absent (read as "") on points written before 2026-10-12
+      l.promptId, // blob12 — the curated prompt's id; absent (read as "") on points written before 2026-10-18
     ],
     doubles: [
       l.ms ?? -1, // double1 — -1: the vendor never ran (not_run), so there is no latency to count
@@ -181,12 +193,12 @@ export function logVerdicts(
   p: GuardrailPipelineResult | null,
   src: VerdictSource,
   ray: string | null,
-  opts: { ae?: AnalyticsEngineDataset; sink?: (line: VerdictLine) => void; expect?: VerdictExpect } = {},
+  opts: { ae?: AnalyticsEngineDataset; sink?: (line: VerdictLine) => void; expect?: VerdictExpect; promptId?: string } = {},
 ): void {
   if (!p) return;
   const sink = opts.sink ?? ((line: VerdictLine) => console.log(line));
   try {
-    for (const line of verdictLines(p, src, ray, opts.expect)) {
+    for (const line of verdictLines(p, src, ray, opts.expect, opts.promptId)) {
       sink(line);
       opts.ae?.writeDataPoint(dataPointOf(line)); // non-blocking; never awaited (Cloudflare's guidance)
     }
@@ -208,4 +220,12 @@ export const EXPECT_HEADER = "x-demo-expect";
 export function expectOf(request: Request): VerdictExpect {
   const v = request.headers.get(EXPECT_HEADER);
   return v === "benign" || v === "attack" ? v : "";
+}
+
+// The Red Team page's key for the prompt it sent (attackKey). Shape-checked; kept only on "redteam" turns (verdictLines).
+export const PROMPT_HEADER = "x-demo-prompt";
+
+export function promptIdOf(request: Request): string {
+  const v = request.headers.get(PROMPT_HEADER) ?? "";
+  return PROMPT_ID.test(v) ? v : "";
 }
