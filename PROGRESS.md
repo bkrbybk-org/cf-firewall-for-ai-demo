@@ -696,8 +696,17 @@ Worker.
   - Each saved key has `apiKeySavedNoLaterThan`.
   - `verdictWatch {confirmRuns: 2, tracked: 0}`.
   - The bundle carries the new strings.
-- **Pending on prod:** the first scheduled run with this code (18:00 UTC) — rows in `guardrail_prompt_verdicts`, and
-  blob12 in Analytics Engine.
+- **Prod's first scheduled run with this code (2026-10-18 18:00 UTC):**
+  - **Analytics Engine:** every one of the 60 rows carries its `prompt_id` (blob12), `rt-01`…`han-1500`, read back by an
+    AE query 4 minutes later.
+  - **Verdict watch:** 48 baseline rows in `guardrail_prompt_verdicts` (4 vendors × 12, none pending), and
+    `automation.verdictWatch {tracked: 48, pending: 0}`. Cato's 12 are absent, as designed: all failed open with HTTP 401,
+    and errors are not verdicts.
+  - **Now traceable by prompt id:**
+    - **Lakera** blocks harmless `han-300` and `han-600`, and all six attacks.
+    - **Prisma AIRS** misses only `rt-05`.
+    - **Cisco** catches only `rt-05`.
+    - **AIDR** blocks all 12.
 
 ### 2026-10-14 — Settings: console and docs links for every product
 
