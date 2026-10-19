@@ -24,12 +24,12 @@ const CARD: Record<Outcome, string> = {
 
 // Filled action badge so the outcome pops at a glance.
 const PILL: Record<Outcome, { label: string; cls: string }> = {
-  block: { label: "BLOCKED", cls: "bg-cf-red text-white" },
+  block: { label: "BLOCKED", cls: "bg-cf-red-solid text-white" },
   challenge: { label: "CHALLENGE", cls: "bg-cf-amber text-[#241a04]" },
   log: { label: "LOGGED", cls: "bg-cf-amber text-[#241a04]" },
   allow: { label: "ALLOWED", cls: "bg-cf-green text-[#04140d]" },
   // Deliberately not "BLOCKED": nothing in the WAF stopped this.
-  denied: { label: "STOPPED", cls: "bg-cf-red text-white" },
+  denied: { label: "STOPPED", cls: "bg-cf-red-solid text-white" },
 };
 
 // Plain-language summary of what actually happened — the headline of the card.

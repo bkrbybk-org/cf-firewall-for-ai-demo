@@ -20,7 +20,7 @@ export function SectionHeader({
   children?: ReactNode; // the one-paragraph explanation of what "scope" means here
 }) {
   const chip =
-    scopeTone === "viewer" ? "border-cf-blue/50 bg-cf-blue/10 text-cf-blue" : "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink";
+    scopeTone === "viewer" ? "border-cf-blue/50 bg-cf-blue/10 text-cf-blue-ink" : "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink";
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-line bg-surface-2 text-muted">
@@ -105,7 +105,7 @@ export function Segmented<T extends string>({
           aria-pressed={value === o.id}
           onClick={() => onChange(o.id)}
           className={`px-3 py-1.5 text-[12.5px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset ${
-            value === o.id ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
+            value === o.id ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:text-text"
           }`}
         >
           {o.label}

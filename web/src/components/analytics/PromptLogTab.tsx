@@ -44,7 +44,7 @@ const OUTCOME_TONE: Record<string, string> = {
   external_reply: "border-cf-amber/50 text-cf-amber-ink",
   // Guardrail-only: passed every check, the model was never called. Blue, like
   // its series — a neutral "nothing answered", not a reply (green) or a block.
-  skipped: "border-cf-blue/50 text-cf-blue",
+  skipped: "border-cf-blue/50 text-cf-blue-ink",
   error: "border-cf-red/50 text-cf-red",
 };
 
@@ -117,7 +117,7 @@ function SortHeader({
         className={`inline-flex items-center gap-1 uppercase transition hover:text-text ${active ? "text-text" : ""}`}
       >
         {label}
-        <Icon size={11} className={active ? "text-accent" : "text-subtle"} />
+        <Icon size={11} className={active ? "text-accent-ink" : "text-subtle"} />
       </button>
     </th>
   );
@@ -361,7 +361,7 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
         <Tile
           label="prompts logged"
           value={total}
-          icon={<MessagesSquare size={16} className="text-cf-blue" />}
+          icon={<MessagesSquare size={16} className="text-cf-blue-ink" />}
           tone="border-cf-blue/40 bg-cf-blue/10"
         />
         <Tile
@@ -534,7 +534,7 @@ export function PromptLogTab({
                   setConfirming(false);
                   onClear();
                 }}
-                className="rounded-full bg-cf-red px-3 py-1 text-[11.5px] font-semibold text-white"
+                className="rounded-full bg-cf-red-solid px-3 py-1 text-[11.5px] font-semibold text-white"
               >
                 Yes, clear
               </button>
@@ -574,7 +574,7 @@ export function PromptLogTab({
             ) : (
               <p>
                 Send a prompt from the{" "}
-                <Link to="/" className="text-accent hover:underline">
+                <Link to="/" className="text-accent-ink hover:underline">
                   Firewall page
                 </Link>{" "}
                 (either route) and it appears here. Local dev has no <code className="font-mono">cf-ray</code>, so the

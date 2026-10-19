@@ -47,7 +47,7 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
         <Tile
           label={`gateway requests · ${hours}h`}
           value={requests}
-          icon={<Route size={16} className="text-cf-blue" />}
+          icon={<Route size={16} className="text-cf-blue-ink" />}
           tone="border-cf-blue/40 bg-cf-blue/10"
         />
         <Tile
@@ -86,7 +86,7 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
             <p>
               Nothing logged for this gateway in the last {hours}h. Switch the route toggle to{" "}
               <b>AI Gateway</b> on the{" "}
-              <Link to="/" className="text-accent hover:underline">
+              <Link to="/" className="text-accent-ink hover:underline">
                 AI Guardrails Demo page
               </Link>{" "}
               and send a few prompts, or pick a different gateway above.

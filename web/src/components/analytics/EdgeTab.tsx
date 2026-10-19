@@ -144,7 +144,7 @@ export function EdgeTab({
               value={est ? estValue(est.total) : capped ? `${total}+` : total}
               rate={est ? estRate(est.total, est.level) : capped ? "row cap reached — see note below" : undefined}
               delta={deltaOf(total, prev?.totalEvents)}
-              icon={<BarChart3 size={16} className="text-cf-blue" />}
+              icon={<BarChart3 size={16} className="text-cf-blue-ink" />}
               tone="border-cf-blue/40 bg-cf-blue/10"
             />
             <Tile
@@ -184,7 +184,7 @@ export function EdgeTab({
                 <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green-ink" />
                 <p>
                   Nothing recorded in the last {hours}h. Send a few attacks from the{" "}
-                  <Link to="/" className="text-accent hover:underline">
+                  <Link to="/" className="text-accent-ink hover:underline">
                     AI Guardrails Demo page
                   </Link>{" "}
                   and come back — GraphQL ingestion lags ~1–2 minutes. Note: edge analytics only exist for the

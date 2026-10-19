@@ -62,7 +62,7 @@ const SEV_PILL: Record<RtSeverity, string> = {
   critical: "border-cf-red/60 text-cf-red",
   high: "border-cf-red/40 text-cf-red/90",
   medium: "border-cf-amber/50 text-cf-amber-ink",
-  low: "border-cf-blue/50 text-cf-blue",
+  low: "border-cf-blue/50 text-cf-blue-ink",
 };
 
 function StateCell({
@@ -82,7 +82,7 @@ function StateCell({
     if (stopped) return <span className="text-subtle">unscored</span>;
     const label = s === "resolving" ? "resolving…" : "sending…";
     return (
-      <span className="inline-flex items-center gap-1 text-[11px] text-accent">
+      <span className="inline-flex items-center gap-1 text-[11px] text-accent-ink">
         <Loader2 size={11} className="animate-spin" /> {label}
       </span>
     );
@@ -174,7 +174,7 @@ function SortHeader({
         className={`inline-flex items-center gap-1 uppercase transition hover:text-text ${active ? "text-text" : ""}`}
       >
         {label}
-        <Icon size={11} className={active ? "text-accent" : "text-subtle"} />
+        <Icon size={11} className={active ? "text-accent-ink" : "text-subtle"} />
       </button>
     </th>
   );
@@ -460,7 +460,7 @@ export function RedTeamPage() {
         <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
           {/* What this measures — the honest caveat, up front. */}
           <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
-            <Info size={16} className="mt-0.5 shrink-0 text-cf-blue" />
+            <Info size={16} className="mt-0.5 shrink-0 text-cf-blue-ink" />
             <p className="text-[12.5px] leading-relaxed text-muted">
               This replays a curated <b className="text-text">36 of the 116</b> attacks from the Prisma AIRS scan
               (Thai-language) — or <b className="text-text">your own prompts from a CSV</b> — through the real{" "}
@@ -493,7 +493,7 @@ export function RedTeamPage() {
                     ? `${toRun.length} prompts — a saved run holds at most ${MAX_RUN_PROMPTS}. Pick fewer variants or tick a subset.`
                     : undefined
                 }
-                className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 rounded-full border border-accent/60 bg-accent/10 px-3.5 py-1.5 text-[12.5px] font-semibold text-accent-ink transition hover:bg-accent/20 disabled:opacity-50"
               >
                 <Play size={13} /> {hasResults ? "Re-run" : "Run"} {toRun.length}{" "}
                 {selected.size > 0
@@ -521,7 +521,7 @@ export function RedTeamPage() {
                   disabled={running}
                   onClick={() => setRoute(r)}
                   className={`px-3 py-1.5 transition disabled:opacity-50 ${
-                    route === r ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                    route === r ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:bg-surface-hover"
                   }`}
                 >
                   {r === "direct" ? "Workers AI" : "AI Gateway"}
@@ -565,7 +565,7 @@ export function RedTeamPage() {
 
             {phaseText && (
               <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
-                {running && <Loader2 size={13} className="animate-spin text-accent" />}
+                {running && <Loader2 size={13} className="animate-spin text-accent-ink" />}
                 {phaseText}
               </span>
             )}
@@ -602,7 +602,7 @@ export function RedTeamPage() {
                 disabled={running}
                 onClick={() => selectCorpus(false)}
                 className={`px-3 py-1.5 transition disabled:opacity-50 ${
-                  !isCustom ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                  !isCustom ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
                 AI Red Team Sample ({RT_CORPUS.length})
@@ -613,7 +613,7 @@ export function RedTeamPage() {
                 title={custom ? undefined : "Load a CSV first"}
                 onClick={() => selectCorpus(true)}
                 className={`px-3 py-1.5 transition disabled:opacity-40 ${
-                  isCustom ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:bg-surface-hover"
+                  isCustom ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
                 Custom CSV{custom ? ` (${custom.attacks.length})` : ""}
@@ -650,14 +650,14 @@ export function RedTeamPage() {
               type="button"
               disabled={running}
               onClick={() => fileRef.current?.click()}
-              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent-ink disabled:opacity-50"
             >
               <Upload size={13} /> {custom ? "Replace CSV" : "Load CSV"}
             </button>
             <button
               type="button"
               onClick={() => downloadFile("attack-corpus-template.csv", CSV_TEMPLATE, "text/csv")}
-              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent"
+              className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent-ink"
             >
               <Download size={13} /> Template
             </button>
@@ -699,7 +699,7 @@ export function RedTeamPage() {
                     onClick={() => toggleTechnique(t)}
                     title={TECHNIQUE_HINT[t]}
                     className={`rounded-full border px-3 py-1 text-[12px] transition disabled:opacity-50 ${
-                      on ? "border-accent/60 bg-accent/15 font-semibold text-accent" : "border-line bg-surface text-muted hover:text-text"
+                      on ? "border-accent/60 bg-accent/15 font-semibold text-accent-ink" : "border-line bg-surface text-muted hover:text-text"
                     }`}
                   >
                     {TECHNIQUE_LABEL[t]}

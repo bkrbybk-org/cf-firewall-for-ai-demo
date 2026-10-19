@@ -26,6 +26,11 @@
      --amber / --green above are the chart palette, validated as marks at 3:1; small text needs 4.5:1 (#10, 2026-10-19). */
   --color-cf-amber-ink: var(--amber-ink);
   --color-cf-green-ink: var(--green-ink);
+  /* The same for links and accent words (text-accent-ink), blue text (text-cf-blue-ink), and the solid red of a status
+     pill under white text (bg-cf-red-solid) — 2026-10-19. Backgrounds, rings and chart marks keep the palette tokens. */
+  --color-accent-ink: var(--accent-ink);
+  --color-cf-blue-ink: var(--blue-ink);
+  --color-cf-red-solid: var(--red-solid);
   --color-cf-blue: var(--blue);
   --color-cf-purple: var(--purple);
 
@@ -43,7 +48,9 @@
   --surface-hover: #1c2536;
   --text: #eef2f8;
   --muted: #9aa7bd;
-  --subtle: #6b7688;
+  /* Was #6b7688, 3.59:1 on --surface-2: under 4.5:1 for the small secondary text it sets. Now 4.60:1, still well below
+     --muted (6.78), so the two still read as two levels (2026-10-19). */
+  --subtle: #7d889a;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.16);
   --accent: #f6821f;
@@ -64,6 +71,11 @@
   /* Text ink: on these dark surfaces the palette colours already read at 7.5:1 or more as text. */
   --amber-ink: #f0b429;
   --green-ink: #3fcf8e;
+  --accent-ink: #f6821f; /* 5.09:1 on the darkest surface, tint included */
+  --blue-ink: #7ab8ff; /* 5.89:1 */
+  /* White on --red (#ff5c5c) was 3.03:1 on the BLOCKED / STOPPED pills; white on this is 4.98, and the pill still
+     stands out from --surface by 3.57:1. */
+  --red-solid: #d32f2f;
   /* JSON syntax colours for the raw-responses panel, on --bg. Their own tokens, not the
      status ones: several light status colours sit under 4.5:1 for 11px text. Measured
      on #0a0e17: key 9.3, string 9.7, number 10.4, boolean 7.5, null 7.9, punct ≥ 4.5. */
@@ -83,7 +95,8 @@
   --surface-hover: #e7edf6;
   --text: #0f172a;
   --muted: #55617a;
-  --subtle: #8a94a8;
+  /* Was #8a94a8, 2.72:1 on --surface-2. Now 4.69:1; --muted stays darker (5.53), so the two still read as two levels. */
+  --subtle: #636c80;
   --line: rgba(15, 23, 42, 0.1);
   --line-strong: rgba(15, 23, 42, 0.2);
   --accent: #ea6a05;
@@ -108,6 +121,11 @@
      word stays readable. Chart marks keep the validated palette; only text moves. */
   --amber-ink: #8a5300;
   --green-ink: #076b49;
+  /* Links and accent words: --accent (#ea6a05) is 2.85-3.20:1 as text; this is 4.86:1 or more on every surface and on a
+     15% accent tint. Blue text likewise (--blue 3.35-3.76:1; this 4.81). */
+  --accent-ink: #9c4600;
+  --blue-ink: #1d5ac2;
+  --red-solid: #b91c1c; /* = --red: white on it is already 6.47:1 */
   --blue: #2b7fff;
   /* Darkened so it no longer reads as --blue: the two were ΔE00 2.3 apart under
      deuteranopia on the prompt-log chart. Now ≥ 13.2 for every pair under all

@@ -14,7 +14,7 @@ const ICON_TONE: Record<Tone, string> = {
   green: "bg-cf-green/12 text-cf-green-ink",
   red: "bg-cf-red/12 text-cf-red",
   amber: "bg-cf-amber/12 text-cf-amber-ink",
-  blue: "bg-cf-blue/12 text-cf-blue",
+  blue: "bg-cf-blue/12 text-cf-blue-ink",
   purple: "bg-cf-purple/12 text-cf-purple",
 };
 
@@ -112,7 +112,7 @@ export function AttackLibrary({
             {(cat.owasp || cat.atlas) && (
               <div className="mb-2 flex flex-wrap gap-1.5">
                 {cat.owasp && (
-                  <span className="rounded-full border border-cf-blue/40 bg-cf-blue/10 px-2 py-0.5 text-[10.5px] font-semibold text-cf-blue">
+                  <span className="rounded-full border border-cf-blue/40 bg-cf-blue/10 px-2 py-0.5 text-[10.5px] font-semibold text-cf-blue-ink">
                     {cat.owasp}
                   </span>
                 )}

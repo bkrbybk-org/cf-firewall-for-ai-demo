@@ -63,7 +63,7 @@ const OBSERVE_WINDOW = "last 7 days";
 const COVERAGE_TONE: Record<Coverage, string> = {
   full: "border-cf-green/50 bg-cf-green/10 text-cf-green-ink",
   partial: "border-cf-amber/50 bg-cf-amber/10 text-cf-amber-ink",
-  supporting: "border-cf-blue/50 bg-cf-blue/10 text-cf-blue",
+  supporting: "border-cf-blue/50 bg-cf-blue/10 text-cf-blue-ink",
   none: "border-line bg-surface-2 text-subtle",
 };
 const COVERAGE_DOT: Record<Coverage, string> = {
@@ -73,9 +73,9 @@ const COVERAGE_DOT: Record<Coverage, string> = {
   none: "bg-subtle",
 };
 const PRODUCT_TONE: Record<Product, string> = {
-  "ai-security": "border-cf-blue/40 bg-cf-blue/10 text-cf-blue",
+  "ai-security": "border-cf-blue/40 bg-cf-blue/10 text-cf-blue-ink",
   "ai-gateway": "border-cf-purple/40 bg-cf-purple/10 text-cf-purple",
-  both: "border-accent/40 bg-accent/10 text-accent",
+  both: "border-accent/40 bg-accent/10 text-accent-ink",
   neither: "border-line bg-surface-2 text-subtle",
 };
 
@@ -161,7 +161,7 @@ function EvidenceChip({
   }
   return (
     <div
-      className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-cf-blue/30 bg-cf-blue/[0.06] px-2.5 py-1.5 text-[11px] text-cf-blue"
+      className="mt-2.5 flex items-start gap-1.5 rounded-lg border border-cf-blue/30 bg-cf-blue/[0.06] px-2.5 py-1.5 text-[11px] text-cf-blue-ink"
       title={r.floor ? "Row cap reached in this window — counts are a floor, not an exact total." : undefined}
     >
       <Activity size={12} className="mt-0.5 shrink-0" />
@@ -206,7 +206,7 @@ function FrameworkTabs({ active, onPick }: { active: string; onPick: (id: string
           onClick={() => onPick(f.id)}
           className={`rounded-full border px-3.5 py-1.5 text-[12.5px] transition ${
             f.id === active
-              ? "border-accent bg-accent/12 font-bold text-accent"
+              ? "border-accent bg-accent/12 font-bold text-accent-ink"
               : "border-line bg-surface text-muted hover:border-accent hover:text-text"
           }`}
         >
@@ -222,7 +222,7 @@ function FrameworkHeader({ fw }: { fw: Framework }) {
     <section className="rounded-2xl border border-line bg-surface p-4 shadow-sm">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         <h2 className="text-[14px] font-bold text-text">{fw.full}</h2>
-        <a href={fw.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11.5px] text-accent hover:underline">
+        <a href={fw.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[11.5px] text-accent-ink hover:underline">
           reference <ExternalLink size={11} />
         </a>
       </div>
@@ -322,7 +322,7 @@ function VendorCapabilityMatrix({ obs, onPick }: { obs: Record<VendorId, VendorO
               <th className="px-2 py-2 text-[11px] font-semibold tracking-wide text-subtle uppercase">Capability</th>
               {VENDOR_IDS.map((v) => (
                 <th key={v} className="px-2 py-2 text-[11px] font-semibold tracking-wide text-subtle">
-                  <button type="button" onClick={() => onPick(v)} className="text-left uppercase hover:text-accent" title={`Open ${vendorName(v)}'s view`}>
+                  <button type="button" onClick={() => onPick(v)} className="text-left uppercase hover:text-accent-ink" title={`Open ${vendorName(v)}'s view`}>
                     {vendorName(v)}
                   </button>
                 </th>
@@ -462,7 +462,7 @@ function ControlCard({
         {c.refs?.map((r) => <Ref key={r}>{r}</Ref>)}
         {/* The demo links show Cloudflare's features ("Try Guardrails" is AI Gateway's), so not on another vendor's view. */}
         {c.demo && (view === "all" || view === "cloudflare") && (
-          <Link to={c.demo.to} className="ml-auto inline-flex items-center gap-1 text-[11.5px] text-accent hover:underline">
+          <Link to={c.demo.to} className="ml-auto inline-flex items-center gap-1 text-[11.5px] text-accent-ink hover:underline">
             {c.demo.label} <ArrowRight size={12} />
           </Link>
         )}
@@ -599,7 +599,7 @@ export function CompliancePage() {
       <main className="relative min-h-0 flex-1 overflow-y-auto p-4">
         <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
           <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface px-4 py-3 shadow-sm">
-            <Info size={16} className="mt-0.5 shrink-0 text-cf-blue" />
+            <Info size={16} className="mt-0.5 shrink-0 text-cf-blue-ink" />
             <p className="text-[12.5px] leading-relaxed text-muted">
               These products provide <b className="text-text">technical controls</b> that support the frameworks. Full
               compliance is an organizational program — governance, documentation and process — not a product. Every vendor
@@ -620,7 +620,7 @@ export function CompliancePage() {
                 aria-selected={vendor === v}
                 onClick={() => setVendor(v)}
                 className={`rounded-full border px-3 py-1.5 transition ${
-                  vendor === v ? "border-accent bg-accent/15 font-bold text-accent" : "border-line bg-surface text-muted hover:bg-surface-hover"
+                  vendor === v ? "border-accent bg-accent/15 font-bold text-accent-ink" : "border-line bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
                 {v === "all" ? "All vendors" : vendorName(v)}
@@ -684,7 +684,7 @@ export function CompliancePage() {
             <p>
               Every observation above comes from traffic in this demo — load a matching prompt from the attack library and
               watch each layer's verdict, then check the same turn in{" "}
-              <Link to="/analytics" className="text-accent hover:underline">
+              <Link to="/analytics" className="text-accent-ink hover:underline">
                 analytics
               </Link>
               , vendor by vendor. That request-to-evidence trail is what most of these controls actually ask for.

@@ -19,7 +19,7 @@
 
 import { deliverAlert, type Delivery } from "./alertDelivery";
 import { PROVIDERS } from "./externalGuardrails";
-import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
+import { SCHEDULED_PROMPTS, SCHEDULED_REPLIES, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
 import { CANARY_ID } from "./smokeCanary";
 import type { Env, ExternalGuardrailProvider, GuardrailPipelineResult } from "./types";
 
@@ -86,18 +86,23 @@ export function observedOf(runs: { id: string; pipeline: GuardrailPipelineResult
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export function changeText(changes: VerdictChange[]): string {
-  const expectOf = new Map(SCHEDULED_PROMPTS.map((p) => [watchKey(p.id), p.expect]));
+  const expectOf = new Map([...SCHEDULED_PROMPTS, ...SCHEDULED_REPLIES].map((p) => [watchKey(p.id), p.expect]));
+  const replyIds = new Set(SCHEDULED_REPLIES.map((r) => watchKey(r.id)));
   const lines = changes.map((c) => {
     const id = c.promptId.replace(/^v\d+\//, "");
     const benign = expectOf.get(c.promptId) === "benign";
+    // A reply pair is named as a reply: its "attack" is a reply carrying a test SSN, which a vendor should withhold.
+    const reply = replyIds.has(c.promptId);
+    const good = reply ? `harmless reply ${id}` : `harmless prompt ${id}`;
+    const bad = reply ? `the PII reply ${id}` : `attack ${id}`;
     const what =
       c.to === "block"
         ? benign
-          ? `now BLOCKS harmless prompt ${id} — a new false block`
-          : `now catches attack ${id}`
+          ? `now BLOCKS ${good} — a new false block`
+          : `now catches ${bad}`
         : benign
-          ? `no longer blocks harmless prompt ${id}`
-          : `now ALLOWS attack ${id} — a new miss`;
+          ? `no longer blocks ${good}`
+          : `now ALLOWS ${bad} — a new miss`;
     return `🔀 ${PROVIDERS[c.provider].label} ${what} (it had ${c.from === "block" ? "blocked" : "allowed"} it since ${day(c.heldSince)}).`;
   });
   return [

@@ -19,9 +19,9 @@
 //   - **Each row names its prompt** (blob12, 2026-10-18), and after the run each vendor's verdict per prompt goes to the
 //     verdict watch (src/verdictWatch.ts), which alerts once a changed verdict has held for two runs.
 
-import { loadGuardrailSetup, runPipeline } from "./externalGuardrails";
+import { loadGuardrailSetup, runPipeline, runReplyCheck } from "./externalGuardrails";
 import { logVerdicts } from "./guardrailLog";
-import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
+import { SCHEDULED_PROMPTS, SCHEDULED_REPLIES, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
 import { SMOKE_PROMPT } from "./smokeCanary";
 import type { Env, GuardrailPipelineResult } from "./types";
 import { runCanaryWatch, runVerdictWatch } from "./verdictWatch";
@@ -40,6 +40,7 @@ export interface RerunSummary {
   setVersion: number;
   vendors: number;
   prompts: number;
+  replies?: number; // reply pairs sent (0 when no enabled vendor can check a reply)
   ms: number;
   skipped?: string;
 }
@@ -68,7 +69,20 @@ export async function runScheduledRerun(
     runs.push({ id: p.id, pipeline: result });
     sent++;
   }
-  const s = { ...base, vendors: setup.enabled.length, prompts: sent, ms: Date.now() - started };
+  // Reply checks (2026-10-19): the two fixed prompt + reply pairs, to the vendors that can check a reply, the way the
+  // chat's reply check sends them. runReplyCheck returns null when no enabled vendor can (Cato cannot) — then nothing is
+  // sent or logged. Logged as direction "reply", so the prompt series and its counts are untouched.
+  const replySetup = { ...forced, pipeline: { ...forced.pipeline, scanReplies: true } };
+  let replies = 0;
+  for (const r of SCHEDULED_REPLIES) {
+    await sleep(RERUN_GAP_MS);
+    const result = await runReplyCheck(env, replySetup, { prompt: r.prompt, response: r.response, model: "", ray: null }, deps.fetchImpl ?? fetch);
+    if (!result) break;
+    logVerdicts(result, "scheduled", scheduledRunId(), { ae: env.GUARDRAIL_VERDICTS, expect: r.expect, promptId: r.id });
+    runs.push({ id: r.id, pipeline: result });
+    replies++;
+  }
+  const s = { ...base, vendors: setup.enabled.length, prompts: sent, replies, ms: Date.now() - started };
   log(s);
   // Verdict changes per vendor and prompt (src/verdictWatch.ts). After the run's own summary, and never able to fail it:
   // the verdicts above are already recorded.

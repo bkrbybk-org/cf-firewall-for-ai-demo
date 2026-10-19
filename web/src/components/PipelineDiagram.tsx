@@ -441,7 +441,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
                 if (pipeline.mode !== m.id) void run(() => onPipeline({ mode: m.id }));
               }}
               className={`px-3 py-1.5 text-[12.5px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-60 ${
-                pipeline.mode === m.id ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
+                pipeline.mode === m.id ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:text-text"
               }`}
             >
               {m.label}

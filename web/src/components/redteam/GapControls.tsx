@@ -38,7 +38,7 @@ const CONFIDENCE_LABEL: Record<CoverageConfidence, string> = {
 // standard: presenting a guess as verified is the failure this exists to avoid.
 const CONFIDENCE_CLS: Record<CoverageConfidence, string> = {
   "live-expression": "border-cf-green/50 text-cf-green-ink",
-  "live-name": "border-cf-blue/50 text-cf-blue",
+  "live-name": "border-cf-blue/50 text-cf-blue-ink",
   "fallback-name": "border-cf-amber/50 text-cf-amber-ink",
   none: "border-line text-subtle",
   "not-applicable": "border-line text-subtle",
@@ -55,7 +55,7 @@ function CopyButton({ text }: { text: string }) {
           setTimeout(() => setCopied(false), 1500);
         });
       }}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-1 text-[10.5px] text-muted transition hover:border-accent hover:text-accent"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-1 text-[10.5px] text-muted transition hover:border-accent hover:text-accent-ink"
     >
       {copied ? <Check size={11} className="text-cf-green-ink" /> : <Copy size={11} />}
       {copied ? "copied" : "copy"}
@@ -130,7 +130,7 @@ export function GapControls({
       }`}
     >
       <div className="mb-2 flex items-start gap-2 rounded-lg border border-cf-blue/30 bg-cf-blue/[0.06] px-3 py-2 text-[11px] leading-relaxed text-muted">
-        <ShieldAlert size={13} className="mt-px shrink-0 text-cf-blue" />
+        <ShieldAlert size={13} className="mt-px shrink-0 text-cf-blue-ink" />
         <span>
           Reviewable starting point, not an apply button — every expression below is read-only and copies to the clipboard. Nothing here
           writes to the zone.

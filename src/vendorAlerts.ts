@@ -23,7 +23,7 @@
 import { deliverAlert, webhookFormat, webhookUrl } from "./alertDelivery";
 import { PROVIDERS } from "./externalGuardrails";
 import { aggregate, buildSql, parseRow, type VendorStats, type VerdictRow } from "./guardrailAnalytics";
-import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
+import { SCHEDULED_PROMPTS, SCHEDULED_REPLIES, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
 import { RERUN_CRON } from "./scheduledRerun";
 import type { Env, ExternalGuardrailProvider } from "./types";
 import { WATCH_CONFIRM_RUNS, canaryStatus, watchStatus } from "./verdictWatch";
@@ -187,7 +187,7 @@ export async function runVendorAlerts(
 // What Settings shows about the two schedules (#15, #17). The webhook only as set / not set — never its value.
 export async function automationStatus(env: Env) {
   return {
-    rerun: { cron: RERUN_CRON, prompts: SCHEDULED_PROMPTS.length, setVersion: SCHEDULED_SET_VERSION },
+    rerun: { cron: RERUN_CRON, prompts: SCHEDULED_PROMPTS.length, replies: SCHEDULED_REPLIES.length, setVersion: SCHEDULED_SET_VERSION },
     alerts: {
       cron: ALERT_CRON,
       windowHours: ALERT_WINDOW_HOURS,

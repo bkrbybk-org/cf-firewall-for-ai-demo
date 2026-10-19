@@ -878,7 +878,7 @@ export const openapi = {
           access: ref("GuardrailAccess"),
           automation: obj(
             {
-              rerun: obj({ cron: str(), prompts: int(), setVersion: int("Bumped whenever the fixed prompt set changes.") }, ["cron", "prompts", "setVersion"]),
+              rerun: obj({ cron: str(), prompts: int(), replies: int("Fixed prompt + reply pairs sent to the vendors that can check a reply (2026-10-19)."), setVersion: int("Bumped whenever the fixed prompt set changes.") }, ["cron", "prompts", "replies", "setVersion"]),
               alerts: obj(
                 {
                   cron: str(),

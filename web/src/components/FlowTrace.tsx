@@ -483,7 +483,7 @@ export function FlowTrace({
                 )}
                 {dynamicRoute && (
                   <span
-                    className="ml-1.5 inline-flex items-center rounded-full border border-cf-blue/60 bg-cf-blue/10 px-1.5 py-px align-middle text-[9.5px] font-bold text-cf-blue"
+                    className="ml-1.5 inline-flex items-center rounded-full border border-cf-blue/60 bg-cf-blue/10 px-1.5 py-px align-middle text-[9.5px] font-bold text-cf-blue-ink"
                     title="Model chosen by an AI Gateway dynamic route"
                   >
                     ROUTE {dynamicRoute}

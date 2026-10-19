@@ -166,3 +166,18 @@ describe("runVerdictWatch", () => {
     expect(await runVerdictWatch(env(fakeDb()), [{ id: "han-0", pipeline: null }], { log: () => {} })).toMatchObject({ skipped: "no verdicts this run" });
   });
 });
+
+// 2026-10-19: the reply pairs are watched too, and named as replies.
+describe("changeText — reply pairs", () => {
+  it("names a reply as a reply: a withheld harmless reply is a false block, an allowed PII reply a miss", () => {
+    const t = changeText([
+      { provider: "prisma-airs", promptId: "v1/reply-benign", from: "allow", to: "block", heldSince: T0 },
+      { provider: "crowdstrike-aidr", promptId: "v1/reply-pii", from: "allow", to: "block", heldSince: T0 },
+      { provider: "lakera-guard", promptId: "v1/reply-pii", from: "block", to: "allow", heldSince: T0 },
+    ]);
+    expect(t).toContain("Palo Alto Networks Prisma AIRS now BLOCKS harmless reply reply-benign — a new false block");
+    expect(t).toContain("CrowdStrike Falcon AIDR now catches the PII reply reply-pii");
+    expect(t).toContain("Check Point Lakera Guard now ALLOWS the PII reply reply-pii — a new miss");
+    expect(t).not.toContain("078-05-1120"); // ids only, never the reply's text
+  });
+});

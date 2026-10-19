@@ -771,7 +771,7 @@ function ProviderCard({
           type="button"
           onClick={save}
           disabled={saving || busy || !dirty}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-white transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:cursor-not-allowed disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-[#1a1206] transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:cursor-not-allowed disabled:opacity-50"
         >
           {saving && <Loader2 size={13} className="animate-spin" />}
           {saving ? "Saving…" : "Save"}
@@ -1105,7 +1105,7 @@ export function SettingsPage() {
                                 label === "Expand all" ? new Set(providers.map((c) => c.provider)) : new Set(),
                               )
                             }
-                            className="text-[11.5px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                            className="text-[11.5px] font-semibold text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                           >
                             {label}
                           </button>

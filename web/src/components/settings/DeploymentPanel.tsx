@@ -87,7 +87,7 @@ function GatewayList({ gateways }: { gateways: GatewayOption[] }) {
           type="button"
           onClick={() => setAll((v) => !v)}
           aria-expanded={all}
-          className="rounded-full px-1.5 text-[11.5px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="rounded-full px-1.5 text-[11.5px] font-semibold text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {all ? "Show fewer" : `+${rest} more`}
         </button>
@@ -167,8 +167,11 @@ export function DeploymentPanel({
         detail={
           state?.automation ? (
             <>
-              Re-run: {state.automation.rerun.prompts} fixed prompts to every enabled guardrail (no model, no edge), shown as
-              "scheduled re-runs" on Analytics. Outage check: hourly, a vendor is <b>down</b> when at least{" "}
+              Re-run: {state.automation.rerun.prompts} fixed prompts to every enabled guardrail (no model, no edge)
+              {state.automation.rerun.replies
+                ? `, and ${state.automation.rerun.replies} fixed prompt + reply pairs (a harmless reply, one with a test SSN) to those that can check a reply`
+                : ""}
+              , shown as "scheduled re-runs" on Analytics. Outage check: hourly, a vendor is <b>down</b> when at least{" "}
               {Math.round(state.automation.alerts.noVerdictRate * 100)}% of at least {state.automation.alerts.minChecks} checks
               in the last {state.automation.alerts.windowHours}h got no verdict; an alert is sent when that changes, and
               says so when the vendor rejected the key (HTTP 401/403).

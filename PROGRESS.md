@@ -626,6 +626,51 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-19 (later) — Text contrast for accent, blue, subtle and solid pills; scheduled reply checks
+
+**Asked for:** "do 15, 16" from the backlog table. Deploys `d12b0307` (the code), then `9fcd920e` (Settings names the reply
+pairs: `automation.rerun.replies`). No migration.
+
+**#15 Every text token clears 4.5:1, in both themes.**
+- **The numbers:** WCAG formula, over `--bg`, `--surface`, `--surface-2`, and for inks also a 15% tint of their own colour.
+
+  | Token | Light | Dark |
+  |---|---|---|
+  | `--accent-ink` (links, accent words: `text-accent-ink`, 47 uses) | `#9c4600`, ≥ 4.86 (was 2.85–3.20) | `#f6821f`, 5.09 |
+  | `--blue-ink` (`text-cf-blue-ink`, 21 uses) | `#1d5ac2`, ≥ 4.81 (was 3.35–3.76) | `#7ab8ff`, 5.89 |
+  | `--subtle`, darkened in place (a text token by name) | `#636c80`, 4.69 (was 2.72); `--muted` still 5.53 | `#7d889a`, 4.60 (was **3.59**, a dark-mode miss) |
+  | `--red-solid` for the BLOCKED / STOPPED pills under white text (3 uses) | `#b91c1c`, white 6.47 | `#d32f2f`, white 4.98 (was white on `#ff5c5c`, 3.03) |
+
+- **The accent button** (white on `bg-accent`, 3.20:1 light and 2.58 dark) now uses `#1a1206` text, as the chat's own
+  orange bubble and send button already did: 5.79 / 7.18.
+- **Unchanged:** backgrounds, rings, borders and chart marks keep the palette tokens. The chart's "no verdict" grey is
+  `--subtle`, so it got darker in light and lighter in dark, which raises its contrast both ways.
+- **Proven a pure rename:** undoing it on the 72 added lines gives back the 72 removed ones exactly.
+- **Checked:**
+  - Tailwind generated the three new utilities.
+  - The browser computes the new values in light and dark.
+  - The deployed CSS carries all five values.
+  - No console errors on the current page. The ERR_CONNECTION_REFUSED entries were the analytics page polling a dev
+    server stopped earlier: every current request was 200.
+
+**#16 Scheduled reply checks.**
+- **Why:** no flagged reply had ever been seen from Prisma AIRS or CrowdStrike AIDR (Next tasks, J verification).
+- **What runs:** each re-run sends `SCHEDULED_REPLIES` (`src/scheduledCorpus.ts`) through `runReplyCheck`, forced parallel
+  with `scanReplies`, to the vendors with `replyCheck`.
+  - `reply-benign`: a harmless reply.
+  - `reply-pii`: the void sample SSN, labelled "attack" = should be withheld.
+- **Logging:** direction `reply`, source `scheduled`, labels and ids. The verdict watch follows them too ("now catches the
+  PII reply reply-pii", "now BLOCKS harmless reply reply-benign — a new false block").
+- **One source:** *Test a reply* in Settings now builds its samples from the same list, so the two cannot drift
+  (`src/handlers.ts`).
+- **When nothing is sent:** no enabled vendor can check replies (Cato alone): nothing is sent or logged (`replies: 0`,
+  tested).
+- **Cost:** 2 calls per reply-capable vendor per run. Four vendors today, so 8 calls every 6 hours.
+- **Tests:** the re-run test pins 15 vendor calls for one reply-capable vendor (12 prompts + 2 replies + the canary) and 14
+  AE points (the canary is not one). The reply rows carry `reply-benign` / `reply-pii` with their labels. 955 tests.
+- **Pending on prod:** the 06:00 UTC run, the first with reply pairs and the canary. AE reply rows and D1 canary rows are
+  read by a background check.
+
 ### 2026-10-19 — Text ink for amber/green; smoke canary; alert formats for Slack, Teams, Discord
 
 **Asked for:** "do 15, 16, 17" from the backlog table. Deploy `b4e3a914-c0ef-4ce0-a16f-d37396449dab`. No migration (the canary
@@ -641,8 +686,9 @@ uses 0012's table).
 - **Unchanged:** chart marks (`fill-` / `stroke-`) keep the validated palette.
 - **Checked:** in the browser, light text computes to `rgb(138,83,0)` and dark to `rgb(240,180,41)`. The deployed CSS
   carries both new values.
-- **Found, not fixed (out of scope):** in light mode, `--accent` (links, 2.85–3.20:1), `--blue` (3.35–3.76) and
-  `--subtle` (2.72–3.05) are also under 4.5:1 as text.
+- ~~**Found, not fixed (out of scope):** in light mode, `--accent` (links, 2.85–3.20:1), `--blue` (3.35–3.76) and
+  `--subtle` (2.72–3.05) are also under 4.5:1 as text.~~ **Fixed the same day**, with dark `--subtle`, the red pills and the
+  accent button (see "2026-10-19 (later)").
 
 **#16 Smoke canary** (`src/smokeCanary.ts`, after #32).
 - **What it does:** each 6-hourly re-run also sends `SMOKE_PROMPT`, the one `scripts/prod-smoke.sh` [2]/[3] send, to
@@ -4281,7 +4327,9 @@ Sources, strongest first:
       calls: needs a budget and cadence from the user first. Not started.
 - [x] ~~**Red Team benchmark J: scan the model's output**~~ — built 2026-10-07/08 (D1 buffer, D2 AIRS/AIDR/Lakera,
       D3 (a), D4 counts only): part 1 deploy `42368cb3`, part 2 deploy `c74474a0`. See Implemented.
-- [ ] **J verification (the user, on prod).** **Partly seen live, 7 days to 2026-10-14:**
+- [ ] **J verification (the user, on prod).** **No longer needs the user** (2026-10-19): the 6-hourly re-run now sends the
+      same `reply-pii` / `reply-benign` pairs (see "2026-10-19 (later)"), so a flagged reply from AIRS or AIDR (or its
+      absence) shows up in the scheduled data. **Partly seen live, 7 days to 2026-10-14:**
       - **Real reply checks from 4 vendors:** AIRS 7 and AIDR 9, all allowed; Lakera 11, with 4 withheld; Cisco 3, all
         allowed.
       - **Cato:** 7 "not run", as designed.

@@ -16,7 +16,7 @@ export function ProductLinks({ product, links, className = "" }: { product: stri
           rel="noopener noreferrer"
           title={l.title}
           aria-label={`${product} ${l.label} (opens in a new tab)`}
-          className="inline-flex items-center gap-1 rounded text-[11.5px] font-medium whitespace-nowrap text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="inline-flex items-center gap-1 rounded text-[11.5px] font-medium whitespace-nowrap text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {l.label}
           <ExternalLink size={11} aria-hidden />

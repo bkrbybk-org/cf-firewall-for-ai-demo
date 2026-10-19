@@ -162,7 +162,7 @@ export function VendorsOverview({
                   <button
                     type="button"
                     onClick={() => onPick(r.tab)}
-                    className="inline-flex items-center gap-1 text-left font-semibold text-text hover:text-accent"
+                    className="inline-flex items-center gap-1 text-left font-semibold text-text hover:text-accent-ink"
                     title={`Open ${r.vendor}'s page`}
                   >
                     {r.vendor} <ArrowRight size={12} className="shrink-0 text-subtle" />

@@ -32,7 +32,7 @@ function outcomeLabel(actual: StepState & { phase: "done" }): string {
 
 function StepIcon({ s }: { s: StepState }) {
   if (s.phase === "sending" || s.phase === "verdict")
-    return <Loader2 size={15} className="shrink-0 animate-spin text-accent" />;
+    return <Loader2 size={15} className="shrink-0 animate-spin text-accent-ink" />;
   if (s.phase === "done") {
     if (s.ok === true) return <CircleCheck size={15} className="shrink-0 text-cf-green-ink" />;
     if (s.ok === false) return <CircleX size={15} className="shrink-0 text-cf-red" />;
@@ -131,7 +131,7 @@ export function DemoMode({
         type="button"
         onClick={run}
         disabled={running || chatBusy}
-        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-accent/60 bg-accent/10 px-3 py-1.5 text-[12.5px] font-semibold text-accent transition hover:bg-accent/20 disabled:opacity-50"
+        className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-accent/60 bg-accent/10 px-3 py-1.5 text-[12.5px] font-semibold text-accent-ink transition hover:bg-accent/20 disabled:opacity-50"
       >
         <Play size={13} /> Run demo
       </button>

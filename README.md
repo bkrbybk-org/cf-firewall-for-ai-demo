@@ -538,6 +538,10 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 **Scheduled checks** (since 2026-10-12, two Cron Triggers in `wrangler.jsonc`; Settings → Deployment shows both):
 - **Re-run, every 6 hours** (`src/scheduledRerun.ts`).
   - **What it sends:** 12 fixed prompts (the first 6 built-in attacks and 6 harmless Thai) to every enabled external guardrail at once. There is no model call and no edge (the cron runs inside the Worker).
+  - **Reply checks** (since 2026-10-19): it also sends 2 fixed prompt + **reply** pairs to the vendors that can check a reply. These are the same pairs as *Test a reply*, from `src/scheduledCorpus.ts` `SCHEDULED_REPLIES`.
+    - `reply-benign` is a harmless reply, so a block is a false block.
+    - `reply-pii` carries the void sample SSN 078-05-1120. It is labelled "attack", meaning a control should withhold it.
+    - They are logged as direction `reply` with their ids and watched like the prompts. The prompt series is unchanged.
   - **Where it shows:** as **scheduled re-runs** on the External guardrails tab. The same prompts every time, so a change between runs is drift.
   - **Cost:** about 12 calls per enabled vendor per run.
 - **Outage alerts, hourly** (`src/vendorAlerts.ts`).

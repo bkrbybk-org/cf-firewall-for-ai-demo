@@ -404,7 +404,7 @@ export function Chat({
                       )}
                       {m.meta.dynamicRoute && (
                         <span
-                          className="rounded-full border border-cf-blue/60 bg-cf-blue/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-blue"
+                          className="rounded-full border border-cf-blue/60 bg-cf-blue/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-blue-ink"
                           title="Model chosen by an AI Gateway dynamic route"
                         >
                           ROUTE {m.meta.dynamicRoute}
@@ -593,7 +593,7 @@ export function Chat({
               type="button"
               onClick={() => onRouteChange(r)}
               className={`px-3 py-1.5 text-[12.5px] transition ${
-                route === r ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
+                route === r ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:text-text"
               }`}
             >
               {r === "direct" ? "Workers AI" : "AI Gateway"}

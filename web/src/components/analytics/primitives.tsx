@@ -40,7 +40,7 @@ export function Tile({
             // blocks could mean more attacks or a stricter rule.
             <span
               className={`text-[11px] font-semibold tabular-nums ${
-                delta! > 0 ? "text-cf-amber-ink" : delta! < 0 ? "text-cf-blue" : "text-subtle"
+                delta! > 0 ? "text-cf-amber-ink" : delta! < 0 ? "text-cf-blue-ink" : "text-subtle"
               }`}
               title="vs the preceding window of the same length"
             >

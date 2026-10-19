@@ -125,7 +125,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
         <Tile
           label={`vendor verdicts · ${t.turns} turn${t.turns === 1 ? "" : "s"}`}
           value={n(t.verdicts)}
-          icon={<ShieldCheck size={16} className="text-cf-blue" />}
+          icon={<ShieldCheck size={16} className="text-cf-blue-ink" />}
           tone="border-cf-blue/40 bg-cf-blue/10"
         />
         <Tile
@@ -273,7 +273,7 @@ export function LatencySparkline({
   };
   const label = `p50 latency over time: ${vals.length} of ${trend.length} time buckets had timed checks, ${Math.round(min)}–${Math.round(max)} ms`;
   return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} className="block overflow-visible text-cf-blue">
+    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} role="img" aria-label={label} className="block overflow-visible text-cf-blue-ink">
       <title>{label}</title>
       {segments.map((pts, k) =>
         pts.includes(" ") ? (

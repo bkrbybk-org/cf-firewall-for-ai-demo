@@ -324,7 +324,7 @@ export interface ExternalGuardrailsState {
 }
 
 export interface GuardrailAutomation {
-  rerun: { cron: string; prompts: number; setVersion: number };
+  rerun: { cron: string; prompts: number; replies?: number; setVersion: number }; // replies: fixed reply pairs (2026-10-19)
   alerts: {
     cron: string;
     windowHours: number;

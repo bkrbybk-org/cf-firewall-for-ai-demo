@@ -56,7 +56,7 @@ function Toggle<T extends string>({
           aria-pressed={value === o.id}
           onClick={() => onChange(o.id)}
           className={`px-3 py-1 text-[12px] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
-            value === o.id ? "bg-accent/15 font-semibold text-accent" : "bg-surface text-muted hover:text-text"
+            value === o.id ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:text-text"
           }`}
         >
           {o.label}
@@ -240,7 +240,7 @@ function CellPrompts({
         <button
           type="button"
           onClick={onClose}
-          className="text-[11.5px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="text-[11.5px] font-semibold text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           Close
         </button>
@@ -254,7 +254,7 @@ function CellPrompts({
               {controls.map((c) => (
                 <th
                   key={c.control}
-                  className={`px-2 pb-1 text-right font-semibold whitespace-nowrap ${c.control === sel.control ? "text-accent" : ""}`}
+                  className={`px-2 pb-1 text-right font-semibold whitespace-nowrap ${c.control === sel.control ? "text-accent-ink" : ""}`}
                 >
                   {c.label}
                 </th>
@@ -442,7 +442,7 @@ export function VendorBenchmark({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="mt-2 text-[12px] font-semibold text-accent hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="mt-2 text-[12px] font-semibold text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           {expanded ? "Show fewer" : `Show all ${bench.rows.length} ${nouns}`}
         </button>

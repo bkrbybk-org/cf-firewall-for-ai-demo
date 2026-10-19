@@ -63,7 +63,7 @@ const OUTCOME_FILTERS = [
   { value: "guardrails", label: "guardrails-blocked", tone: "border-cf-purple/50 text-cf-purple" },
   { value: "external", label: "external-guardrail-blocked", tone: "border-cf-amber/50 text-cf-amber-ink" },
   { value: "external_reply", label: "reply withheld", tone: "border-cf-amber/50 text-cf-amber-ink" },
-  { value: "skipped", label: "model skipped", tone: "border-cf-blue/50 text-cf-blue" },
+  { value: "skipped", label: "model skipped", tone: "border-cf-blue/50 text-cf-blue-ink" },
   { value: "error", label: "error", tone: "border-cf-red/50 text-cf-red" },
 ];
 // The prompt log is deliberately small and often reviewed as "the whole demo
@@ -296,7 +296,7 @@ export function AnalyticsPage() {
                 }}
                 className={`rounded-full border px-3 py-1.5 transition ${
                   tab === t.id
-                    ? "border-accent bg-accent/15 font-bold text-accent"
+                    ? "border-accent bg-accent/15 font-bold text-accent-ink"
                     : "border-line bg-surface text-muted hover:bg-surface-hover"
                 }`}
               >
@@ -314,7 +314,7 @@ export function AnalyticsPage() {
                   onClick={() => setTab("promptlog")}
                   className={`rounded-full border px-3 py-1.5 transition ${
                     tab === "promptlog"
-                      ? "border-accent bg-accent/15 font-bold text-accent"
+                      ? "border-accent bg-accent/15 font-bold text-accent-ink"
                       : "border-line bg-surface text-muted hover:bg-surface-hover"
                   }`}
                 >
@@ -338,7 +338,7 @@ export function AnalyticsPage() {
                       }}
                       className={`px-3.5 py-1.5 transition ${
                         !plogCustom && plogHours === r.hours
-                          ? "bg-accent/15 font-bold text-accent"
+                          ? "bg-accent/15 font-bold text-accent-ink"
                           : "bg-surface hover:bg-surface-hover"
                       }`}
                     >
@@ -360,7 +360,7 @@ export function AnalyticsPage() {
                       setPlogCustom(true);
                     }}
                     className={`border-l border-line px-3.5 py-1.5 transition ${
-                      plogCustom ? "bg-accent/15 font-bold text-accent" : "bg-surface hover:bg-surface-hover"
+                      plogCustom ? "bg-accent/15 font-bold text-accent-ink" : "bg-surface hover:bg-surface-hover"
                     }`}
                   >
                     Custom
@@ -417,7 +417,7 @@ export function AnalyticsPage() {
                     type="button"
                     onClick={() => setHours(r.hours)}
                     className={`px-3.5 py-1.5 transition ${
-                      hours === r.hours ? "bg-accent/15 font-bold text-accent" : "bg-surface hover:bg-surface-hover"
+                      hours === r.hours ? "bg-accent/15 font-bold text-accent-ink" : "bg-surface hover:bg-surface-hover"
                     }`}
                   >
                     {r.label}
@@ -450,7 +450,7 @@ export function AnalyticsPage() {
                     aria-pressed={grSource === s}
                     onClick={() => setGrSource(s)}
                     className={`px-3.5 py-1.5 transition ${
-                      grSource === s ? "bg-accent/15 font-bold text-accent" : "bg-surface hover:bg-surface-hover"
+                      grSource === s ? "bg-accent/15 font-bold text-accent-ink" : "bg-surface hover:bg-surface-hover"
                     }`}
                   >
                     {SOURCE_LABEL[s]}
@@ -521,7 +521,7 @@ export function AnalyticsPage() {
 
           {tab === "promptlog" && drill && (
             <div className="flex items-start gap-3 rounded-xl border border-accent/40 bg-accent/[0.07] px-3.5 py-2.5">
-              <Crosshair size={15} className="mt-0.5 shrink-0 text-accent" />
+              <Crosshair size={15} className="mt-0.5 shrink-0 text-accent-ink" />
               <div className="min-w-0 text-[12px]">
                 <div className="font-semibold text-text">{drill.label}</div>
                 {drill.note && <div className="mt-0.5 text-[11.5px] text-muted">{drill.note}</div>}

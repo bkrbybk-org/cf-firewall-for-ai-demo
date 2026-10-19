@@ -27,7 +27,7 @@ import type { RedTeamRunRow } from "../../lib/types";
 import { StatePill } from "./StatePill";
 
 const BTN =
-  "inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted transition hover:border-accent hover:text-accent-ink disabled:cursor-not-allowed disabled:opacity-50";
 
 function when(ts: number): string {
   return new Date(ts).toLocaleString();
@@ -331,7 +331,7 @@ function SavedBenchmark({ id }: { id: number }) {
   return (
     <div className="mt-4 rounded-xl border border-line bg-surface-2/50 p-3.5">
       <div className="mb-2 flex flex-wrap items-center gap-2 text-[12.5px] font-bold text-text">
-        <BarChart3 size={14} className="text-accent" /> Benchmark {run && <RunTag run={run} />}
+        <BarChart3 size={14} className="text-accent-ink" /> Benchmark {run && <RunTag run={run} />}
         {run && (
           // Open item H: the same numbers as a file (lib/benchmarkReport.ts). Saved runs
           // only — their prompts are the Worker's redacted previews.
@@ -419,7 +419,7 @@ function Comparison({ ids }: { ids: number[] }) {
   return (
     <div className="mt-4 rounded-xl border border-line bg-surface-2/50 p-3.5">
       <div className="flex items-center gap-2 text-[12.5px] font-bold text-text">
-        <GitCompare size={14} className="text-accent" /> Compare
+        <GitCompare size={14} className="text-accent-ink" /> Compare
       </div>
       {err && <div className="mt-2 text-[12px] text-cf-red">{err}</div>}
       {!err && !diff && (
