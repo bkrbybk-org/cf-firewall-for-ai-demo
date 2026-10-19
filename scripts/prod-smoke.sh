@@ -62,6 +62,31 @@ check() {
   return 0
 }
 
+# A route check passes only if the MODEL answered. An external guardrail that stops the prompt also returns 200
+# (externalGuardrailBlocked) — and the model, the gateway and CF_AIG_TOKEN are then never touched. From 2026-10-16
+# Lakera blocked the old smoke prompt ("Reply with the single word OK.") as prompt_attack, and checks [2] and [3]
+# kept passing on the 200 without reaching either route (found 2026-10-19). Fails by name, saying which vendor.
+replied() {
+  local name="$1" file="$2"
+  local why
+  why=$(node -e '
+    let b; try { b = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch { console.log("body is not JSON"); process.exit(); }
+    if (b.externalGuardrailBlocked) { console.log(`an external guardrail stopped the prompt (${b.externalGuardrails?.stoppedBy ?? "?"}) — the route was not exercised`); process.exit(); }
+    if (typeof b.reply !== "string" || !b.reply.trim()) { console.log("no model reply in the body"); process.exit(); }
+    console.log("");
+  ' "$file" 2>/dev/null)
+  if [[ -z "$why" ]]; then
+    printf '  ✓ %-34s the model replied\n' "$name"
+  else
+    printf '  ✗ %-34s %s\n' "$name" "$why"
+    FAIL=1
+  fi
+  return 0
+}
+
+# Plain enough that every enabled vendor allowed it on 2026-10-19 (all five verdicts were allow or error).
+SMOKE_PROMPT="What is the capital of France?"
+
 hr
 echo "Prod smoke — ${BASE}"
 hr
@@ -83,8 +108,9 @@ echo
 echo "[2] Direct Workers AI route"
 CODE=$(curl -s -o /tmp/smoke2.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
-  -d '{"prompt":"Reply with the single word OK.","stream":false,"excludeFromLog":true}' --max-time 60)
+  -d "{\"prompt\":\"${SMOKE_PROMPT}\",\"stream\":false,\"excludeFromLog\":true}" --max-time 60)
 check "POST /api/chat (direct)" 200 /tmp/smoke2.txt "$CODE"
+replied "POST /api/chat (direct)" /tmp/smoke2.txt
 
 # 3. AI Gateway route — this is the one that needs CF_AIG_TOKEN. A mis-scoped
 #    token surfaces as {"code":10000,"message":"Authentication error"}.
@@ -92,8 +118,9 @@ echo
 echo "[3] AI Gateway route (exercises CF_AIG_TOKEN)"
 CODE=$(curl -s -o /tmp/smoke3.txt -w "$HTTP_CODE_FMT" "${AUTH[@]}" "${JSON[@]}" \
   -X POST "$BASE/api/chat" \
-  -d '{"prompt":"Reply with the single word OK.","gateway":true,"stream":false,"excludeFromLog":true}' --max-time 60)
+  -d "{\"prompt\":\"${SMOKE_PROMPT}\",\"gateway\":true,\"stream\":false,\"excludeFromLog\":true}" --max-time 60)
 check "POST /api/chat (gateway)" 200 /tmp/smoke3.txt "$CODE"
+replied "POST /api/chat (gateway)" /tmp/smoke3.txt
 if grep -q '"code":10000' /tmp/smoke3.txt 2>/dev/null; then
   echo "  → CF_AIG_TOKEN is mis-scoped in prod. Needs AI Gateway Read + Edit and"
   echo "    Workers AI Read on a normal API token (not the Authenticated Gateway"

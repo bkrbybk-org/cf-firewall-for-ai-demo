@@ -3621,9 +3621,21 @@ uncommitted.
    non-LLM attack score despite the name. **Mitigated in the UI** as of 2026-08-01: it now lands in
    the "not AI Security" group rather than the AI Security rule list, so it can no longer be read as
    a detection. The rule itself still exists in the dashboard and still inflates raw event counts.
-6. **Dynamic Routing prerequisites are unproven end to end** independent of bug #1: Routes need an
-   Authenticated Gateway; a route branch calling third-party models also needs BYOK or Unified
-   Billing credits.
+6. ~~**Dynamic Routing prerequisites are unproven end to end**~~ **RESOLVED 2026-10-19** on prod, one call per branch,
+   `excludeFromLog`.
+   - **The route, read from the AI Gateway API:** `demo-routes` on `cf-ai-sec-demo-gw`, an authenticated gateway.
+     Every branch is Workers AI, so no BYOK or Unified Billing is needed.
+     - `metadata.tier = "pro"` → a cost limit of 1 per day → `@cf/openai/gpt-oss-120b`, falling back to `gpt-oss-20b`.
+     - Anything else → `@cf/meta/llama-3.2-1b-instruct`, falling back to `llama-3.2-3b`.
+   - **`tier=free`** answered with `model: "@cf/meta/llama-3.2-1b-instruct"` and `dynamicRoute: "demo-routes"`: the
+     route's model, not the picker's default (`llama-3.2-3b`).
+   - **`tier=pro`** answered with `@cf/openai/gpt-oss-120b`.
+   - **Custom metadata reaches the gateway log.** The log entry for the free turn (`01a151d8-fd56-…`) carries
+     `metadata: {tier: "free", probe: "bug6-014855"}`. That was outstanding since 2026-08.
+   - **Found on the way:** the first attempt, "Reply with the single word OK.", was blocked by **Lakera** as
+     `moderated_content/sexual, prompt_attack`, which is a clear false block. It also exposed #32.
+   Original entry: Routes need an Authenticated Gateway; a route branch calling third-party models also needs BYOK or
+   Unified Billing credits.
 
 **Known gaps introduced/left by this session's fixes**
 
@@ -3653,9 +3665,21 @@ uncommitted.
     #5b3fd6`. Now every pair of the five is ≥ 11.1 deutan, ≥ 14.3 protan, ≥ 8.9 tritan (dark) and ≥ 13.2
     under all three (light); dark purple text is 4.58:1 on `--surface-2`, light purple 6.72:1 on white (was
     4.35). Verified in the browser (computed colours in both themes, prompt-log legend) and in the deployed
-    CSS. **Still open, pre-existing:** light `--amber` and `--green` are 2.84–2.97:1 on `--bg`/`--surface-2`,
+    CSS. ~~**Still open, pre-existing:** light `--amber` and `--green` are 2.84–2.97:1 on `--bg`/`--surface-2`,
     under the 3:1 non-text floor for chart marks — unchanged here, and moving amber reopens the red/amber
-    CVD pair, so it needs its own pass.
+    CVD pair, so it needs its own pass.~~ **FIXED 2026-10-19** (deploy `9f306c35`).
+    - **New values:** light `--green` `#12a670` → `#0f9464`, light `--amber` `#d97706` → `#b87000`.
+    - **Contrast now:** 3.44 / 3.49:1 on `--surface-2`, 3.60 / 3.66 on `--bg`, 3.86 / 3.92 on white. Was 2.78 / 2.84 on
+      `--surface-2`.
+    - **Why amber moved toward yellow:** a darker orange drifts into red. Every orange step tried (`#c76a05`, `#c26604`,
+      `#bf6a00`, `#b96500`) failed the normal-vision floor against `--red` (ΔE 13.3–14.8, under 15).
+    - **The dataviz validator** (`--pairs all`, run on each of the three light surfaces) passes every check. The worst
+      colour-blind pair is green↔amber, ΔE 8.6 (protan). Red↔amber is 10.2 deutan / 16.0 normal (was 16.2 / 18.8), still
+      above the 8 target. Red, blue, purple and the dark theme are unchanged.
+    - **Checked:** in the browser (computed `--amber` / `--green`, and the vendor chart's strokes in light mode), and in
+      the deployed CSS (only the new values present).
+    - **Still short:** as TEXT (badges, `text-cf-amber`), both are 3.4–3.9:1, under 4.5:1 for small text. That is better
+      than the 2.8–3.2 before, but a separate pass for text tokens is owed.
 
 **Known limits (by design)**
 
@@ -3897,6 +3921,24 @@ exercised):
       nobody saw it for a day. This is the first live case for setting the webhook.
     - **Fix (the user, admin gate):** Settings → Cato → save a new key (or disable Cato) → *Test connection*. The next
       6-hourly run then shows whether it recovered, and the outage check marks it `ok` with a "recovered" alert.
+32. ~~**🔴 Smoke checks [2] and [3] passed without reaching either route**~~ **FIXED 2026-10-19** (found while
+    proving #6).
+    - **The bug:** both checks passed on any HTTP 200. An external guardrail that stops a prompt also answers 200, with
+      `externalGuardrailBlocked: true`, and the model, the gateway and `CF_AIG_TOKEN` are then never called.
+    - **What happened:** from Lakera's change on 2026-10-16, its parallel-mode block of the smoke prompt ("Reply with the
+      single word OK.", `prompt_attack`) did exactly that. `/tmp/smoke2.txt` and `/tmp/smoke3.txt` from the 2026-10-18
+      run both read `externalGuardrailBlocked: true, stoppedBy: "lakera-guard"`, with no reply.
+    - **What it means:** every "ALL CHECKS PASSED" since 2026-10-16 proved neither the direct nor the gateway route. The
+      deploys in that window were `559e4dc0` (2026-10-14, before it) and `3cb87528` (2026-10-18, during it). Both routes
+      were then proven by real replies on 2026-10-19: smoke after `9f306c35`, and the #6 Dynamic Route calls.
+    - **The fix (`scripts/prod-smoke.sh`):** `replied()` now requires a model reply and fails by name when a guardrail
+      stopped the prompt ("an external guardrail stopped the prompt (lakera-guard) — the route was not exercised").
+      Checks [2] and [3] use a plainer prompt, "What is the capital of France?", which every enabled vendor allowed on
+      2026-10-19.
+    - **Proven both ways:** on the saved 2026-10-18 body the helper fails as above, and against prod both checks print
+      "the model replied".
+    - **The lesson, the same one as #21 and the percentile bug:** a check that passes on a status code is a check of the
+      status code. A vendor's drift can now fail smoke by name, which is the honest outcome: the route is then unproven.
 
 ## Next tasks
 
@@ -4145,11 +4187,12 @@ Sources, strongest first:
 
 **Then verify what is currently unproven**
 
-- [ ] Dynamic Route on prod (the plain AI Gateway send is smoke check [3], passing since #1 was fixed
+- [x] ~~Dynamic Route on prod~~ — done 2026-10-19, both branches (Open bugs #6). Original: (the plain AI Gateway send is smoke check [3], passing since #1 was fixed
       2026-09-30): a Dynamic Route send with
       `tier=free` (isolates routing from third-party billing) before `tier=pro`. Confirm the reply
       reports the *route's* model + blue `ROUTE` badge, not the Model picker's value.
-- [ ] Confirm custom metadata actually lands in the gateway logs — outstanding for two sessions now.
+- [x] ~~Confirm custom metadata actually lands in the gateway logs~~ — done 2026-10-19: the log entry carries
+      `metadata: {tier, probe}` (Open bugs #6).
 - [ ] **Run the red-team corpus on prod.** Local dev has no `cf-ray`, so verdicts never resolve and
       nothing is scored — only the runner mechanics are exercised locally. The real test is whether
       the Brand-Tarnishing / Political rows come back `reached the model`, reproducing the scan's

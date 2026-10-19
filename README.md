@@ -80,7 +80,7 @@ migrations/
   0008_reply_checks.sql            guardrail_pipeline.scan_replies; redteam_results.reply_vendors — design J, the reply check (additive)
 scripts/
   thaisafety-csv.mjs    ThaiSafetyBench → prompt,goal CSV (dev tooling, not shipped)
-  prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod); [4] passes on a WAF 403 or a real external-guardrail block
+  prod-smoke.sh         5 authenticated checks against prod through Access (npm run smoke:prod); [2]/[3] pass only on a real model reply, [4] on a WAF 403 or a real external-guardrail block
   copy-swagger-ui.mjs   copies the Swagger UI vendor files into dist/api-docs/ after vite build
 .github/workflows/ci.yml   typecheck (Worker + web) · test · build on every PR and push to main
 .nvmrc                  Node version CI and `nvm use` both read

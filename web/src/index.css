@@ -81,7 +81,12 @@
   --line-strong: rgba(15, 23, 42, 0.2);
   --accent: #ea6a05;
   --accent-hover: #f6821f;
-  --green: #12a670;
+  /* Green and amber darkened 2026-10-19 (Open bugs #10): #12a670 and #d97706 were 2.78 and 2.84:1 on --surface-2,
+     under the 3:1 floor for chart marks. Now 3.44 and 3.49:1 on --surface-2 (3.86 / 3.92 on white). Amber also moved
+     toward yellow: a darker ORANGE drifts into red (ΔE under 15 for normal vision, a hard fail). The dataviz validator
+     (--pairs all, all three light surfaces) passes every check: worst colour-blind pair green↔amber ΔE 8.6 (protan),
+     red↔amber 10.2 deutan / 16.0 normal (was 16.2 / 18.8 — still above the 8 target). */
+  --green: #0f9464;
   /* Red and amber are moved together on purpose. On white they were only
      ΔE 3.0 apart under deuteranopia (~8% of men) and 14.9 under normal vision
      — below the legibility floor — which made "blocked" and "logged" the same
@@ -90,7 +95,7 @@
      old red fails contrast on white. Verified 16.2 / 18.7 with the validator;
      re-run it before changing either value. */
   --red: #b91c1c;
-  --amber: #d97706;
+  --amber: #b87000;
   --blue: #2b7fff;
   /* Darkened so it no longer reads as --blue: the two were ΔE00 2.3 apart under
      deuteranopia on the prompt-log chart. Now ≥ 13.2 for every pair under all

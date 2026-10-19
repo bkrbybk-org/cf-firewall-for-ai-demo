@@ -79,7 +79,10 @@ failure stops the chain, and the fix comes before moving on.
    ```bash
    npm run smoke:prod
    ```
-   All five checks must pass. Prod is behind Cloudflare Access, so use the service token in
+   All five checks must pass. Checks [2] and [3] pass only on a real **model reply**. An external guardrail that blocks
+   the smoke prompt answers 200 too: that once let them pass for days without touching either route (PROGRESS Open bugs
+   #32). If one fails with "an external guardrail stopped the prompt", the route is unproven; do not wave it through. Find
+   out which vendor drifted, and pick a prompt every vendor allows. Prod is behind Cloudflare Access, so use the service token in
    `.env`; a bare probe returns a 302 to the Access login, which is not a failure. Also curl
    anything the smoke test does not cover that this change touched — the smoke test never sees
    the SPA, so for front-end work fetch the deployed bundle and grep it for the change. A fresh
