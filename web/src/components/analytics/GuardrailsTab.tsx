@@ -7,6 +7,8 @@
 import { AlertTriangle, Download, ShieldAlert, ShieldCheck, ShieldX, Split } from "lucide-react";
 import { bucketLabel, Card, Tile } from "./primitives";
 import { EventSeries, type SeriesDef } from "./EventSeries";
+import { PromptGrid } from "./PromptGrid";
+import { RunTrend } from "./RunTrend";
 import { detectionLabel, providerFullLabel, providerLabel } from "../../lib/guardrailView";
 import { downloadFile } from "../../lib/export";
 import { buildGuardrailReport, guardrailReportFilename, guardrailReportToMarkdown } from "../../lib/guardrailReport";
@@ -175,6 +177,8 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
             </p>
           )}
 
+          <PerPromptCards d={d} hours={hours} />
+
           <Card
             title="Verdicts over time"
             subtitle={`per ${bucketLabel(d.bucket)} · ${who ? "its" : "every vendor's"} verdicts, by outcome · ${window}`}
@@ -230,6 +234,38 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
             )}
           </Card>
         </>
+      )}
+    </>
+  );
+}
+
+// The two per-prompt views (2026-10-19), shared by a vendor's tab and the All vendors comparison, so they cannot differ:
+// the per-run catch / false-block trend (scheduled rows) and the prompt × vendor grid (curated rows). Each renders only
+// when the window holds its kind of row — a chat-only window shows neither, rather than an empty card.
+export function PerPromptCards({ d, hours }: { d: GuardrailAnalytics; hours: number }) {
+  const mark = d.sampled ? "≈" : d.capped ? "≥" : "";
+  const n = (v: number) => `${mark}${Math.round(v).toLocaleString()}`;
+  const who = d.provider ? providerFullLabel(d.provider) : null;
+  const window = `${who ? `${who} · ` : ""}${rangeLabel(d.rangeHours ?? hours)} · ${SOURCE_LABEL[d.source ?? "chat"]}`;
+  return (
+    <>
+      {d.runTrend && d.runTrend.length > 0 && (
+        <Card
+          title={who ? `${who}: catch and false-block rate per run` : "Catch and false-block rate per run"}
+          subtitle={`scheduled re-runs only — the same labelled prompts every 6 hours, so a moving line is the vendor changing · errors left out · ${window}`}
+        >
+          <RunTrend series={d.runTrend} since={d.since} until={d.until} n={n} />
+        </Card>
+      )}
+      {d.promptGrid && d.promptGrid.prompts.length > 0 && (
+        <Card
+          title={who ? `${who}: answer per prompt` : "Answer per prompt, by vendor"}
+          subtitle={`curated prompts only (scheduled set, reply pairs, Red Team rows) · ${d.promptGrid.prompts.length} prompt${
+            d.promptGrid.prompts.length === 1 ? "" : "s"
+          } · ${window}`}
+        >
+          <PromptGrid grid={d.promptGrid} n={n} />
+        </Card>
       )}
     </>
   );

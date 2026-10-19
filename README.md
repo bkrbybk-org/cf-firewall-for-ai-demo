@@ -568,6 +568,19 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 - **Prompt ids in the verdict data** (blob12, since 2026-10-18). Scheduled rows carry the set's id (`rt-03`, `han-600`). Red Team rows carry the page's join key: a built-in id, or `h` + a hash of a custom prompt's text, sent as `x-demo-prompt`. Chat rows carry none.
 - **Key age** (since 2026-10-18). Each vendor row shows when its key was saved. A key saved before that date shows "saved ≥ N d ago", from the config's last save. An amber **key N d old** badge appears at 90 days: a reminder to check the key in the vendor's console, not a claim that it expired.
 
+**Per prompt and per run** (since 2026-10-19). These cards appear on the *All vendors* view and on each vendor's page, from the payload's `promptGrid` and `runTrend`:
+- **Catch and false-block rate per run.** Scheduled re-runs only: one point per 6-hourly run.
+  - Small multiples, one per vendor: blue is attacks blocked, purple is harmless prompts blocked, on one 0–100% axis.
+  - A run without verdicts is a gap, never 0%.
+  - The caption gives the newest run's date and says "no verdict since …" when a vendor has been down (Cato).
+  - Hover a point for "5 of 6", or use **Show data** for a table.
+  - Where both rates are equal (AIDR's 100% / 100%), the lines overlap; the caption and hover still give both.
+- **Answer per prompt, by vendor.** Every curated prompt with an id: the scheduled set, its reply pairs, Red Team rows.
+  - Each cell is that vendor's newest verdict, as a symbol and a word.
+  - **missed** = an attack allowed; **false block** = a harmless prompt blocked; **mixed** = answered both ways in the window (hover for counts).
+  - Errors-only cells read "no verdict"; a prompt never checked reads "—".
+  - Prompt ids only, never prompt text. Capped at 60 prompts (the most-checked), and it says so when capped.
+
 **External guardrails tab** — `GET /api/guardrail-analytics?hours=1|24|168&source=chat|redteam|scheduled|all` (since 2026-10-09; **Report (.md)** and **Data (.json)** downloads since 2026-10-10, carrying the window, traffic and the same "≈" / "≥" marks). Since 2026-10-12:
 - Blocks show how many were **outvoted** (quorum mode), and allows split redactions into **applied** and **not applied**.
 - With Red Team or all traffic selected, a **"Red Team: false blocks and catches"** card shows each vendor's blocks on the Red Team's harmless prompts ÷ its verdicts on them, and the same rate for attacks.

@@ -1181,8 +1181,45 @@ export const openapi = {
               }),
             ),
           }),
+          promptGrid: obj(
+            {
+              prompts: arr(obj({ promptId: str(), dir: { type: "string", enum: ["prompt", "reply"] }, expect: { type: "string", enum: ["attack", "benign", ""] } })),
+              cells: arr(
+                obj({
+                  promptId: str(),
+                  dir: { type: "string", enum: ["prompt", "reply"] },
+                  provider: ref("ExternalGuardrailProvider"),
+                  block: num(),
+                  allow: num(),
+                  noVerdict: num("Error + failed open."),
+                  last: { type: ["string", "null"], enum: ["block", "allow", null], description: "The newest verdict in the window; null when the vendor never gave one (errors only)." },
+                  lastTs: nullable("integer", "Epoch ms of that verdict."),
+                }),
+              ),
+              total: int("Distinct curated prompts in the window."),
+              capped: bool("More than 60: the most-checked are kept."),
+            },
+            ["prompts", "cells", "total", "capped"],
+            "Each vendor's answers per curated prompt (rows with a prompt id: the scheduled set, its reply pairs, Red Team rows), from 2026-10-19.",
+          ),
+          runTrend: {
+            ...arr(
+              obj({
+                provider: ref("ExternalGuardrailProvider"),
+                dir: { type: "string", enum: ["prompt", "reply"] },
+                runs: arr(
+                  obj({
+                    t: str("The scheduled run's 6-hour slot start, ISO."),
+                    attack: obj({ verdicts: num(), block: num() }, ["verdicts", "block"]),
+                    benign: obj({ verdicts: num(), block: num() }, ["verdicts", "block"]),
+                  }),
+                ),
+              }),
+            ),
+            description: "Scheduled re-run rows only, per 6-hour run: verdicts and blocks on attacks (catch rate) and on harmless prompts (false-block rate). Runs without rows are absent, never zero. From 2026-10-19.",
+          },
         },
-        ["configured", "rangeHours", "since", "until", "source", "capped", "sampled", "totals", "vendors", "series", "disagreements"],
+        ["configured", "rangeHours", "since", "until", "source", "capped", "sampled", "totals", "vendors", "series", "disagreements", "promptGrid", "runTrend"],
       ),
       GatewayAnalyticsResponse: obj(
         {

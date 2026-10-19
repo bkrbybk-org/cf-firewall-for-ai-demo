@@ -626,6 +626,45 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-19 (latest) — Prompt × vendor grid; catch and false-block rate per run
+
+**Asked for:** "do 16, 15" from the backlog table. Deploy `a07cfa44-38ac-46d3-a3a3-aa40ab05baaf`. No migration.
+
+**Server** (`src/guardrailAnalytics.ts`, pure, on every `/api/guardrail-analytics` response; a vendor's page gets its own
+rows only):
+- **`promptGrid`:** per curated prompt id × vendor × direction, weighted block / allow / no-verdict counts, and `last`, the
+  newest VERDICT, so an outage never reads as the vendor's answer.
+  - **Order:** prompts before replies, attacks before harmless, natural id order (`rt-2` before `rt-10`).
+  - **Cap:** 60 prompts, keeping the most-checked, with `capped` and `total`.
+- **`runTrend`:** scheduled rows only, bucketed by 6-hour run slot. Per vendor and direction: verdicts and blocks on attacks
+  and on harmless prompts. Errors left out. Runs with no rows are absent, never 0.
+- **Tests:** hand-computed (natural order, weighting, last-verdict-not-error, the cap keeping the most-checked,
+  scheduled-only, slot bucketing), 959 total. The openapi response schema was updated too.
+
+**UI** (`components/analytics/PromptGrid.tsx`, `RunTrend.tsx`, shared via `PerPromptCards` by the *All vendors* view and
+each vendor's tab, so the two cannot differ):
+- **The grid** names wrong answers: **missed**, **false block**, **mixed**.
+- **The trend** is small multiples with two series on one 0–100% axis, using the validated palette's `--blue` / `--purple`.
+  It has a legend, the latest values in each caption, hover counts, gaps for missing runs, and a table view.
+- **A bug caught in the browser:** the caption first said "latest run: catch rate 50%" for Cato, whose newest run with
+  verdicts is 2026-10-13. It now dates the run and says **"no verdict since …"** in amber when that run is more than one
+  run behind.
+
+**Verified:**
+- **Local, on prod's data:**
+  - Lakera's step-up on 2026-10-16 is visible as it happened.
+  - The grid shows Prisma AIRS missing `rt-05` and Cisco catching only `rt-05`, with Lakera's false blocks on `han-300` /
+    `han-600`.
+  - The table rows match the hand query of 2026-10-17: Prisma 5/6 attacks and 6/6 harmless per run.
+  - Dark and light, 375 px with no sideways page scroll. No console errors from the page.
+- **Prod:** smoke passes.
+  - 7-day scheduled payload: grid 12 prompts / 60 cells, uncapped.
+  - Trend: 27 runs per vendor (2026-10-12 12:00 → 2026-10-19 00:00 is 27 six-hour slots), Cato 3 (its last verdicts
+    were before 2026-10-13 06:00).
+  - `provider=lakera-guard` returns only Lakera in both.
+  - The bundle carries the new strings.
+- **Known:** equal rates draw overlapping lines (AIDR, 100% and 100%). The caption and hover carry both values.
+
 ### 2026-10-19 (later) — Text contrast for accent, blue, subtle and solid pills; scheduled reply checks
 
 **Asked for:** "do 15, 16" from the backlog table. Deploys `d12b0307` (the code), then `9fcd920e` (Settings names the reply

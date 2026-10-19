@@ -5,7 +5,9 @@
 // Analytics Engine error passes on its status only.
 import { describe, expect, it } from "vitest";
 import {
+  PROMPT_GRID_CAP,
   ROW_CAP,
+  RUN_MS,
   aggregate,
   buildSql,
   forProvider,
@@ -337,5 +339,83 @@ describe("prompt id, status and rejected keys", () => {
       { hours: 24, now: NOW, source: "all", rowsRead: 6, rowsDropped: 0 },
     );
     expect(agg.vendors[0]).toMatchObject({ checked: 8, error: 2, failedOpen: 5, authFailed: 5 });
+  });
+});
+
+// 2026-10-19: the prompt × vendor grid and the per-run trend. Expected values worked out by hand from the rows.
+describe("promptGridOf", () => {
+  const r = (over: Record<string, unknown>) => ({ src: "scheduled", provider: "lakera-guard", ts: at("2026-10-09T06:00:05Z"), ...over });
+  it("counts each vendor's answers per curated prompt; `last` is the newest VERDICT, never an error", () => {
+    const g = aggregate(
+      rows([
+        r({ prompt_id: "han-300", expect: "benign", outcome: "allow", ts: at("2026-10-09T00:00:05Z") }),
+        r({ prompt_id: "han-300", expect: "benign", outcome: "block", ts: at("2026-10-09T06:00:05Z") }),
+        r({ prompt_id: "han-300", expect: "benign", outcome: "failed_open", status: 401, ts: at("2026-10-09T11:00:05Z") }),
+        r({ prompt_id: "rt-10", expect: "attack", outcome: "block", si: 2 }),
+        r({ prompt_id: "rt-2", expect: "attack", outcome: "block", provider: "prisma-airs" }),
+        r({ prompt_id: "reply-pii", expect: "attack", outcome: "allow", dir: "reply" }),
+        { src: "chat", prompt_id: "rt-2", outcome: "block" }, // chat: no prompt id kept — not in the grid
+        r({ prompt_id: "rt-2", outcome: "not_run" }), // not run: not an answer
+      ]),
+      { hours: 24, now: NOW, source: "all", rowsRead: 8, rowsDropped: 0 },
+    ).promptGrid;
+    // Prompts before replies, attacks before harmless, rt-2 before rt-10 (natural order).
+    expect(g.prompts).toEqual([
+      { promptId: "rt-2", dir: "prompt", expect: "attack" },
+      { promptId: "rt-10", dir: "prompt", expect: "attack" },
+      { promptId: "han-300", dir: "prompt", expect: "benign" },
+      { promptId: "reply-pii", dir: "reply", expect: "attack" },
+    ]);
+    const han = g.cells.find((c) => c.promptId === "han-300")!;
+    expect(han).toMatchObject({ block: 1, allow: 1, noVerdict: 1, last: "block", lastTs: Date.parse("2026-10-09T06:00:05Z") });
+    expect(g.cells.find((c) => c.promptId === "rt-10")).toMatchObject({ block: 2, allow: 0, last: "block" }); // weighted
+    expect(g.cells.filter((c) => c.promptId === "rt-2").map((c) => c.provider)).toEqual(["prisma-airs"]);
+    expect(g).toMatchObject({ total: 4, capped: false });
+  });
+  it("an outage-only cell has no last verdict", () => {
+    const g = aggregate(rows([r({ prompt_id: "rt-1", expect: "attack", outcome: "error" })]), {
+      hours: 24, now: NOW, source: "all", rowsRead: 1, rowsDropped: 0,
+    }).promptGrid;
+    expect(g.cells[0]).toMatchObject({ noVerdict: 1, last: null, lastTs: null });
+  });
+  it("keeps the most-checked prompts past the cap, and says it is capped", () => {
+    const many = Array.from({ length: PROMPT_GRID_CAP + 5 }, (_, i) => r({ prompt_id: `h${i}`, expect: "attack", outcome: "block", si: i === 64 ? 9 : 1 }));
+    const g = aggregate(rows(many), { hours: 24, now: NOW, source: "all", rowsRead: many.length, rowsDropped: 0 }).promptGrid;
+    expect(g).toMatchObject({ total: PROMPT_GRID_CAP + 5, capped: true });
+    expect(g.prompts).toHaveLength(PROMPT_GRID_CAP);
+    expect(g.prompts.some((p) => p.promptId === "h64")).toBe(true); // the most-checked one survives
+  });
+});
+
+describe("runTrendOf", () => {
+  it("one point per 6-hour run with rows: catches and false blocks over verdicts, scheduled rows only, errors out", () => {
+    const s = (over: Record<string, unknown>) => ({ src: "scheduled", provider: "lakera-guard", ...over });
+    const t = aggregate(
+      rows([
+        // Run 06:00: 2 attacks (1 block), 2 harmless (1 block), 1 error (left out).
+        s({ ts: at("2026-10-09T06:00:05Z"), expect: "attack", outcome: "block" }),
+        s({ ts: at("2026-10-09T06:00:09Z"), expect: "attack", outcome: "allow" }),
+        s({ ts: at("2026-10-09T06:00:12Z"), expect: "benign", outcome: "block" }),
+        s({ ts: at("2026-10-09T06:00:15Z"), expect: "benign", outcome: "allow" }),
+        s({ ts: at("2026-10-09T06:00:18Z"), expect: "benign", outcome: "failed_open" }),
+        // Run 00:00: one attack, blocked, weighted ×3.
+        s({ ts: at("2026-10-09T00:00:05Z"), expect: "attack", outcome: "block", si: 3 }),
+        // Not scheduled, or unlabelled: never in the trend.
+        { src: "redteam", provider: "lakera-guard", ts: at("2026-10-09T06:00:20Z"), expect: "attack", outcome: "block" },
+        s({ ts: at("2026-10-09T06:00:25Z"), outcome: "block" }),
+      ]),
+      { hours: 24, now: NOW, source: "all", rowsRead: 8, rowsDropped: 0 },
+    ).runTrend;
+    expect(t).toEqual([
+      {
+        provider: "lakera-guard",
+        dir: "prompt",
+        runs: [
+          { t: "2026-10-09T00:00:00.000Z", attack: { verdicts: 3, block: 3 }, benign: { verdicts: 0, block: 0 } },
+          { t: "2026-10-09T06:00:00.000Z", attack: { verdicts: 2, block: 1 }, benign: { verdicts: 2, block: 1 } },
+        ],
+      },
+    ]);
+    expect(RUN_MS).toBe(21_600_000);
   });
 });

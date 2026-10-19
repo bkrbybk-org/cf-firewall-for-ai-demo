@@ -11,7 +11,7 @@ import { Header } from "../components/Header";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { EdgeTab, type EdgeDrill } from "../components/analytics/EdgeTab";
 import { GatewayTab } from "../components/analytics/GatewayTab";
-import { GuardrailsTab, SOURCE_LABEL, type GuardrailSource } from "../components/analytics/GuardrailsTab";
+import { GuardrailsTab, PerPromptCards, SOURCE_LABEL, type GuardrailSource } from "../components/analytics/GuardrailsTab";
 import { PromptLogTab, type PromptLogView } from "../components/analytics/PromptLogTab";
 import { VendorsOverview, type VendorTab } from "../components/analytics/VendorsOverview";
 import { providerLabel } from "../lib/guardrailView";
@@ -549,14 +549,19 @@ export function AnalyticsPage() {
           ) : tab === "gateway" ? (
             <GatewayTab d={gw} hours={hours} gatewayId={gatewayId} />
           ) : tab === "all" ? (
-            <VendorsOverview
-              edge={data}
-              gateway={gw}
-              // Only an all-vendor read: a vendor page's filtered numbers must never fill the comparison while it loads.
-              guardrails={gr && (gr.provider ?? null) === null ? gr : null}
-              window={RANGES.find((r) => r.hours === hours)?.label === "7d" ? "last 7 days" : `last ${hours}h`}
-              onPick={(t) => setTab(t)}
-            />
+            <>
+              <VendorsOverview
+                edge={data}
+                gateway={gw}
+                // Only an all-vendor read: a vendor page's filtered numbers must never fill the comparison while it loads.
+                guardrails={gr && (gr.provider ?? null) === null ? gr : null}
+                window={RANGES.find((r) => r.hours === hours)?.label === "7d" ? "last 7 days" : `last ${hours}h`}
+                onPick={(t) => setTab(t)}
+              />
+              {/* The external guardrails side by side, per prompt and per run (the edge and gateway are not in these:
+                  neither has curated prompt ids). Same all-vendor read guard as the table above. */}
+              {gr && (gr.provider ?? null) === null && gr.totals && <PerPromptCards d={gr} hours={hours} />}
+            </>
           ) : isGuardrail(tab) ? (
             // Only this vendor's read — never another vendor's numbers under this vendor's name while loading.
             <GuardrailsTab d={gr && gr.provider === tab ? gr : null} hours={hours} />

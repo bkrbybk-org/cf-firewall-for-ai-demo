@@ -196,6 +196,8 @@ export interface GuardrailAnalyticsBody {
   // Turns where at least one vendor blocked and another allowed the same text (errors and not-run excluded:
   // they are not verdicts). Over stored rows only: with sampling, rows of a turn can be missing.
   disagreements: { count: number; latest: Disagreement[] };
+  promptGrid: PromptGrid; // 2026-10-19: each vendor's answers per curated prompt
+  runTrend: ReturnType<typeof runTrendOf>; // 2026-10-19: catch / false-block rate per scheduled run
 }
 
 const pct = (sorted: number[], p: number) => sorted[nearestRank(sorted.length, p) - 1];
@@ -369,7 +371,116 @@ export function aggregate(
     bucket,
     series: [...series.values()],
     disagreements: { count: split.length, latest: split.slice(0, 10) },
+    promptGrid: promptGridOf(rows),
+    runTrend: runTrendOf(rows),
   };
+}
+
+// ── prompt × vendor grid (2026-10-19) ────────────────────────────────────────
+// What each vendor answered on each CURATED prompt (rows with a prompt id: the scheduled set, its reply pairs, the
+// Red Team's rows), over the window. Weighted counts like everything else; `last` is the newest VERDICT (block / allow),
+// so an outage never reads as the vendor's answer. A cell with both blocks and allows is the vendor answering the same
+// prompt two ways in the window — drift, or a vendor that is not deterministic — and the page marks it.
+export const PROMPT_GRID_CAP = 60;
+
+export interface PromptGridCell {
+  promptId: string;
+  dir: "prompt" | "reply";
+  provider: ExternalGuardrailProvider;
+  block: number;
+  allow: number;
+  noVerdict: number; // error + failed open
+  last: "block" | "allow" | null; // newest verdict; null when it never gave one
+  lastTs: number | null;
+}
+
+export interface PromptGrid {
+  prompts: { promptId: string; dir: "prompt" | "reply"; expect: VerdictExpect }[];
+  cells: PromptGridCell[];
+  total: number; // distinct prompts in the window, before the cap
+  capped: boolean; // more than PROMPT_GRID_CAP: the most-checked are kept
+}
+
+// "rt-2" before "rt-10", attacks before harmless, prompts before replies.
+const natural = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+
+export function promptGridOf(rows: VerdictRow[]): PromptGrid {
+  const prompts = new Map<string, { promptId: string; dir: "prompt" | "reply"; expect: VerdictExpect; n: number }>();
+  const cells = new Map<string, PromptGridCell & { lastVerdictTs: number }>();
+  for (const r of rows) {
+    if (!r.promptId || r.outcome === "not_run") continue;
+    const pk = `${r.dir}|${r.promptId}`;
+    const p = prompts.get(pk) ?? { promptId: r.promptId, dir: r.dir, expect: r.expect, n: 0 };
+    p.n += r.si;
+    if (!p.expect && r.expect) p.expect = r.expect;
+    prompts.set(pk, p);
+    const ck = `${pk}|${r.provider}`;
+    const c = cells.get(ck) ?? {
+      promptId: r.promptId, dir: r.dir, provider: r.provider, block: 0, allow: 0, noVerdict: 0, last: null, lastTs: null, lastVerdictTs: -1,
+    };
+    if (r.outcome === "block") c.block += r.si;
+    else if (r.outcome === "allow") c.allow += r.si;
+    else c.noVerdict += r.si;
+    if ((r.outcome === "block" || r.outcome === "allow") && r.ts > c.lastVerdictTs) {
+      c.last = r.outcome;
+      c.lastTs = r.ts;
+      c.lastVerdictTs = r.ts;
+    }
+    cells.set(ck, c);
+  }
+  const all = [...prompts.values()];
+  const kept = new Set(
+    [...all].sort((a, b) => b.n - a.n || natural(a.promptId, b.promptId)).slice(0, PROMPT_GRID_CAP).map((p) => `${p.dir}|${p.promptId}`),
+  );
+  const rank = (e: VerdictExpect) => (e === "attack" ? 0 : e === "benign" ? 1 : 2);
+  const shown = all
+    .filter((p) => kept.has(`${p.dir}|${p.promptId}`))
+    .sort((a, b) => (a.dir === b.dir ? 0 : a.dir === "prompt" ? -1 : 1) || rank(a.expect) - rank(b.expect) || natural(a.promptId, b.promptId))
+    .map(({ promptId, dir, expect }) => ({ promptId, dir, expect }));
+  return {
+    prompts: shown,
+    cells: [...cells.values()]
+      .filter((c) => kept.has(`${c.dir}|${c.promptId}`))
+      .map(({ lastVerdictTs: _drop, ...c }) => c),
+    total: all.length,
+    capped: all.length > PROMPT_GRID_CAP,
+  };
+}
+
+// ── per-run trend (2026-10-19) ───────────────────────────────────────────────
+// The scheduled re-run fires at 00/06/12/18 UTC and sends the same labelled prompts every time, so each 6-hour slot is
+// one run. Per vendor and direction, per run: verdicts and blocks on attacks (catch rate) and on harmless prompts
+// (false-block rate). Errors are not verdicts and are left out. Only runs with rows appear — a run with no data is a
+// gap, never a 0% point. Scheduled rows only: Red Team and chat traffic is not one fixed set, so a rate over it would
+// move with the traffic, not with the vendor.
+export const RUN_MS = 6 * 3_600_000;
+
+export interface RunPoint {
+  t: string; // the run's 6-hour slot start, ISO
+  attack: { verdicts: number; block: number };
+  benign: { verdicts: number; block: number };
+}
+
+export function runTrendOf(rows: VerdictRow[]): { provider: ExternalGuardrailProvider; dir: "prompt" | "reply"; runs: RunPoint[] }[] {
+  const by = new Map<string, Map<number, RunPoint>>();
+  for (const r of rows) {
+    if (r.src !== "scheduled" || !r.expect || (r.outcome !== "block" && r.outcome !== "allow")) continue;
+    const k = `${r.provider}|${r.dir}`;
+    const slot = Math.floor(r.ts / RUN_MS) * RUN_MS;
+    const runs = by.get(k) ?? new Map<number, RunPoint>();
+    const p = runs.get(slot) ?? { t: new Date(slot).toISOString(), attack: { verdicts: 0, block: 0 }, benign: { verdicts: 0, block: 0 } };
+    p[r.expect].verdicts += r.si;
+    if (r.outcome === "block") p[r.expect].block += r.si;
+    runs.set(slot, p);
+    by.set(k, runs);
+  }
+  const order = (p: ExternalGuardrailProvider) => PROVIDER_IDS.indexOf(p);
+  return [...by.entries()]
+    .map(([k, runs]) => {
+      const [provider, dir] = k.split("|") as [ExternalGuardrailProvider, "prompt" | "reply"];
+      return { provider, dir, runs: [...runs.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p) };
+    })
+    .sort((a, b) => order(a.provider) - order(b.provider) || (a.dir === b.dir ? 0 : a.dir === "prompt" ? -1 : 1));
 }
 
 // One vendor's view: every count, the series and the latency are that vendor's rows alone — but a disagreement needs

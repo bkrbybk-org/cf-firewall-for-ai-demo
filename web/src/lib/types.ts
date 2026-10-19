@@ -710,6 +710,33 @@ export interface GuardrailAnalytics {
       verdicts: { provider: ExternalGuardrailProvider; outcome: "block" | "allow"; alerts: boolean }[];
     }[];
   };
+  // 2026-10-19 (src/guardrailAnalytics.ts promptGridOf / runTrendOf). Absent from an older Worker.
+  promptGrid?: PromptGrid;
+  runTrend?: { provider: ExternalGuardrailProvider; dir: "prompt" | "reply"; runs: RunPoint[] }[];
+}
+
+export interface PromptGridCell {
+  promptId: string;
+  dir: "prompt" | "reply";
+  provider: ExternalGuardrailProvider;
+  block: number;
+  allow: number;
+  noVerdict: number;
+  last: "block" | "allow" | null; // newest verdict in the window; null when it never gave one
+  lastTs: number | null;
+}
+
+export interface PromptGrid {
+  prompts: { promptId: string; dir: "prompt" | "reply"; expect: "attack" | "benign" | "" }[];
+  cells: PromptGridCell[];
+  total: number;
+  capped: boolean;
+}
+
+export interface RunPoint {
+  t: string; // the scheduled run's 6-hour slot, ISO
+  attack: { verdicts: number; block: number };
+  benign: { verdicts: number; block: number };
 }
 
 export interface GatewayAnalytics {
