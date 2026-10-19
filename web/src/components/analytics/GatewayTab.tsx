@@ -53,13 +53,13 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
         <Tile
           label={none ? "cache hits" : `cache hits (${hitRate}%)`}
           value={cached}
-          icon={<Zap size={16} className="text-cf-green" />}
+          icon={<Zap size={16} className="text-cf-green-ink" />}
           tone="border-cf-green/40 bg-cf-green/10"
         />
         <Tile
           label="total cost"
           value={none ? "—" : (fmtCost(d.totalCost) ?? "$0")}
-          icon={<CircleDollarSign size={16} className="text-cf-amber" />}
+          icon={<CircleDollarSign size={16} className="text-cf-amber-ink" />}
           tone="border-cf-amber/40 bg-cf-amber/10"
         />
         <Tile
@@ -82,7 +82,7 @@ export function GatewayTab({ d, hours, gatewayId }: { d: GatewayAnalyticsData | 
       {requests === 0 ? (
         <Card title="No gateway traffic in this window">
           <div className="flex items-start gap-3 text-sm text-muted">
-            <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green" />
+            <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green-ink" />
             <p>
               Nothing logged for this gateway in the last {hours}h. Switch the route toggle to{" "}
               <b>AI Gateway</b> on the{" "}

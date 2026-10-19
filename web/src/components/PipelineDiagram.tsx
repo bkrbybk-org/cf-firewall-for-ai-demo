@@ -97,7 +97,7 @@ function EndPill({ children, dim }: { children: React.ReactNode; dim?: boolean }
 
 function FlowChip({ icon, children }: { icon: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-cf-amber/40 bg-cf-amber/10 px-2.5 py-1 text-[11px] font-semibold text-cf-amber">
+    <div className="flex shrink-0 items-center justify-center gap-1.5 rounded-full border border-cf-amber/40 bg-cf-amber/10 px-2.5 py-1 text-[11px] font-semibold text-cf-amber-ink">
       {icon}
       {children}
     </div>
@@ -147,7 +147,7 @@ function ProviderNode({
         {!p.supported ? (
           <span className="text-[11px] font-semibold text-subtle">Not yet supported</span>
         ) : on ? (
-          <span className="text-[11px] font-semibold text-cf-green">Enabled</span>
+          <span className="text-[11px] font-semibold text-cf-green-ink">Enabled</span>
         ) : (
           <span className="text-[11px] font-semibold text-muted">Disabled — skipped in the flow</span>
         )}
@@ -275,7 +275,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
         // Global switch that changes what every chat and Red Team run does, so
         // it is stated at the top of the panel rather than left to the toggle.
         <div role="status" className="mt-3 flex items-start gap-2.5 rounded-xl border border-cf-amber/60 bg-cf-amber/10 px-3.5 py-2.5">
-          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-cf-amber-ink" />
           <p className="text-[12.5px] leading-relaxed font-semibold text-text">
             Guardrail-only mode is ON — chat and Red Team runs will not call the model. AI Gateway Guardrails do not
             run either.
@@ -302,7 +302,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
 
         <div className="flex min-w-0 flex-col gap-2 rounded-2xl border border-dashed border-cf-amber/60 p-3">
           <div className="flex flex-wrap items-baseline gap-x-2">
-            <span className="text-[11px] font-bold tracking-wider text-cf-amber uppercase">External guardrails</span>
+            <span className="text-[11px] font-bold tracking-wider text-cf-amber-ink uppercase">External guardrails</span>
             <span className="text-[11px] text-subtle">
               {sequential ? "one after another" : quorumMode ? `all at once · stop on ${quorumN} votes` : "all at once"}
             </span>
@@ -365,7 +365,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
                 ? `The turn stops only when at least ${quorumN} guardrails vote to stop it — a block, or an outage on one set to fail closed. One set to fail open abstains when it is down. A lone block can be outvoted; it is still shown on the turn. Latency is the slowest one.`
                 : "The model runs only if every guardrail allows; the Worker waits for all of them. Latency is the slowest one."}
             {quorumLowered && (
-              <b className="mt-1 block text-cf-amber">
+              <b className="mt-1 block text-cf-amber-ink">
                 Only {active.length} enabled: a quorum of {quorumN} can never be reached, so each turn lowers it to{" "}
                 {active.length} (the card says so).
               </b>
@@ -383,7 +383,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
             <Lock size={12} />
             <span className={skipModel ? "line-through" : ""}>Model</span>
             {skipModel && (
-              <span className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-1.5 py-px text-[10px] font-bold text-cf-amber">
+              <span className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-1.5 py-px text-[10px] font-bold text-cf-amber-ink">
                 skipped
               </span>
             )}
@@ -411,7 +411,7 @@ export function PipelineDiagram({ state, onToggle, onPipeline }: PipelineDiagram
           // not checking them, never left to look like it does.
           <>
             <div className="w-full shrink-0 rounded-xl border border-dashed border-cf-amber/60 bg-cf-amber/[0.06] px-3 py-2 xl:w-48">
-              <div className="text-[11px] font-bold tracking-wider text-cf-amber uppercase">Reply check</div>
+              <div className="text-[11px] font-bold tracking-wider text-cf-amber-ink uppercase">Reply check</div>
               <div className="mt-1 text-[11.5px] leading-snug text-text">{replyCheckers.map((p) => p.label).join(", ")}</div>
               {replySkipped.length > 0 && (
                 <div className="mt-1 text-[11px] leading-snug text-muted">

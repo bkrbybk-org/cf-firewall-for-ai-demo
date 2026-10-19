@@ -53,11 +53,12 @@ describe("runScheduledRerun", () => {
     const sleeps: number[] = [];
     const s = await runScheduledRerun(env, { fetchImpl, log: () => {}, sleep: async (ms) => void sleeps.push(ms) });
     expect(s).toMatchObject({ prompts: 12, vendors: 1, setVersion: 1 });
-    // Only the vendor's host: no model, no edge, nothing else.
-    expect(urls).toHaveLength(12);
+    // Only the vendor's host: no model, no edge, nothing else. 12 prompts + the smoke canary (src/smokeCanary.ts).
+    expect(urls).toHaveLength(13);
     expect(urls.every((u) => u.startsWith("https://api.lakera.ai/"))).toBe(true);
-    expect(sleeps).toEqual(Array(11).fill(RERUN_GAP_MS));
-    // One data point per prompt (one vendor), in the AE schema: source "scheduled", mode "parallel", the label.
+    expect(sleeps).toEqual(Array(12).fill(RERUN_GAP_MS));
+    // One data point per prompt (one vendor), in the AE schema: source "scheduled", mode "parallel", the label. The
+    // canary is NOT one: it must not move the drift set's counts.
     expect(points).toHaveLength(12);
     const blobs = points.map((p) => p.blobs as string[]);
     expect(blobs.every((b) => b[0] === AE_SCHEMA && b[1] === "scheduled" && b[8] === "parallel")).toBe(true);

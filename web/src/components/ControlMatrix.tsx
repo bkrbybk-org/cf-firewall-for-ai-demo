@@ -12,11 +12,11 @@ import type { CellState, MatrixCell, MatrixLayer } from "../lib/controlMatrix";
 // Full class strings, never built from a variable: Tailwind only emits what it can read.
 const STOPPED: Record<MatrixLayer, string> = {
   edge: "border-cf-red/60 bg-cf-red/10 text-cf-red",
-  external: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber",
+  external: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink",
   gatewayGuardrails: "border-cf-purple/60 bg-cf-purple/10 text-cf-purple",
   model: "border-line bg-surface-2 text-text",
   // The reply check is the same external guardrails, so the same amber.
-  replyCheck: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber",
+  replyCheck: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink",
 };
 const STOPPED_RING: Record<MatrixLayer, string> = {
   edge: "border-cf-red ring-1 ring-cf-red/40",
@@ -28,10 +28,10 @@ const STOPPED_RING: Record<MatrixLayer, string> = {
 // Detected, not blocked: dashed and unfilled so it cannot be mistaken for a block.
 const FLAGGED: Record<MatrixLayer, string> = {
   edge: "border-dashed border-cf-red/60 text-cf-red",
-  external: "border-dashed border-cf-amber/60 text-cf-amber",
+  external: "border-dashed border-cf-amber/60 text-cf-amber-ink",
   gatewayGuardrails: "border-dashed border-cf-purple/60 text-cf-purple",
   model: "border-dashed border-line text-text",
-  replyCheck: "border-dashed border-cf-amber/60 text-cf-amber",
+  replyCheck: "border-dashed border-cf-amber/60 text-cf-amber-ink",
 };
 
 function cellClass(c: MatrixCell): string {
@@ -45,14 +45,14 @@ function cellClass(c: MatrixCell): string {
       tone = FLAGGED[c.layer];
       break;
     case "passed":
-      tone = "border-cf-green/50 bg-cf-green/5 text-cf-green";
+      tone = "border-cf-green/50 bg-cf-green/5 text-cf-green-ink";
       break;
     case "reached":
       tone = "border-line bg-surface-2 text-text";
       break;
     case "unavailable":
       // Dashed, no fill. A decisive outage still ended the turn, so it keeps the ring.
-      tone = `border-dashed border-cf-amber/60 text-cf-amber ${c.decisive ? "ring-1 ring-cf-amber/40" : ""}`;
+      tone = `border-dashed border-cf-amber/60 text-cf-amber-ink ${c.decisive ? "ring-1 ring-cf-amber/40" : ""}`;
       break;
     case "pending":
       tone = "border-dashed border-line text-muted";

@@ -34,9 +34,9 @@ function StepIcon({ s }: { s: StepState }) {
   if (s.phase === "sending" || s.phase === "verdict")
     return <Loader2 size={15} className="shrink-0 animate-spin text-accent" />;
   if (s.phase === "done") {
-    if (s.ok === true) return <CircleCheck size={15} className="shrink-0 text-cf-green" />;
+    if (s.ok === true) return <CircleCheck size={15} className="shrink-0 text-cf-green-ink" />;
     if (s.ok === false) return <CircleX size={15} className="shrink-0 text-cf-red" />;
-    return <Clock3 size={15} className="shrink-0 text-cf-amber" />;
+    return <Clock3 size={15} className="shrink-0 text-cf-amber-ink" />;
   }
   return <span className="h-[15px] w-[15px] shrink-0 rounded-full border border-line" />;
 }
@@ -191,7 +191,7 @@ export function DemoMode({
                       {s.phase === "done" && (
                         <span
                           className={
-                            s.ok === true ? "text-cf-green" : s.ok === false ? "text-cf-red" : "text-cf-amber"
+                            s.ok === true ? "text-cf-green-ink" : s.ok === false ? "text-cf-red" : "text-cf-amber-ink"
                           }
                         >
                           {" "}

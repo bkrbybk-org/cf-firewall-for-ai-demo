@@ -94,7 +94,7 @@ function AccessNote({ access }: { access: GuardrailAccess }) {
   if (!access.canEdit) {
     return (
       <div role="status" className="flex items-start gap-3 rounded-2xl border border-cf-amber/60 bg-cf-amber/10 px-4 py-3">
-        <Lock size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+        <Lock size={16} className="mt-0.5 shrink-0 text-cf-amber-ink" />
         <p className="text-[12.5px] leading-relaxed text-text">
           <b>Read-only.</b> Only guardrail admins can change these settings — {access.reason}.
           {access.who ? <span className="text-muted"> Signed in as {access.who}.</span> : null}
@@ -105,7 +105,7 @@ function AccessNote({ access }: { access: GuardrailAccess }) {
   if (access.mode === "admin") {
     return (
       <div className="flex items-start gap-2 px-1 text-[12px] leading-relaxed text-muted">
-        <Lock size={13} className="mt-0.5 shrink-0 text-cf-green" />
+        <Lock size={13} className="mt-0.5 shrink-0 text-cf-green-ink" />
         <span>
           Signed in as {access.who}, a guardrail admin — changes are restricted to the admin list.
         </span>
@@ -183,7 +183,7 @@ function ResponseShape({ t }: { t: ExternalGuardrailTestResult }) {
     <details className="mt-1.5 text-[11.5px]" open={t.verified === false}>
       <summary className="cursor-pointer text-muted hover:text-text">
         Response shape — field names, types and true/false only, no text
-        {t.verified === false && <b className="text-cf-amber"> · send this back to verify the parser</b>}
+        {t.verified === false && <b className="text-cf-amber-ink"> · send this back to verify the parser</b>}
       </summary>
       <div className="mt-1 flex items-start gap-2">
         <pre className="max-h-56 flex-1 overflow-auto rounded-lg border border-line bg-surface-2 p-2 font-mono text-[10.5px] whitespace-pre text-muted">
@@ -225,13 +225,13 @@ function TestVerdict({ t }: { t: ExternalGuardrailTestResult }) {
   // the provider's own error, verbatim — never reworded into a verdict.
   if (t.ok) {
     return (
-      <div className="flex items-start gap-1.5 text-[12px] text-cf-green">
+      <div className="flex items-start gap-1.5 text-[12px] text-cf-green-ink">
         <CheckCircle2 size={14} className="mt-0.5 shrink-0" />
         <span>
           {TEST_SAMPLE_LABEL[t.sample ?? "benign"]} — verdict{" "}
           <b className="font-mono">{r.action ?? r.outcome}</b>
-          {r.detectOnly && <b className="text-cf-amber"> · alerts only</b>}
-          {r.transformed && <b className="text-cf-amber"> · redaction requested, not applied</b>}
+          {r.detectOnly && <b className="text-cf-amber-ink"> · alerts only</b>}
+          {r.transformed && <b className="text-cf-amber-ink"> · redaction requested, not applied</b>}
           {r.detected && r.detected.length > 0 && (
             <>
               {" "}
@@ -500,7 +500,7 @@ function ProviderCard({
                 {config.verified === false && (
                   <span
                     title="Built from the vendor's documentation; its response has not yet been checked against a real one. Run both tests and send back the response shape before relying on its verdicts."
-                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
+                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber-ink"
                   >
                     unverified
                   </span>
@@ -508,7 +508,7 @@ function ProviderCard({
                 {stale.length > 0 && (
                   <span
                     title={`A key saved ${KEY_AGE_WARN_DAYS} days ago or more. Vendors expire or revoke keys without telling this app — check it in the vendor's console. This is a reminder, not a sign that it stopped working.`}
-                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber"
+                    className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber-ink"
                   >
                     key {stale.some((a) => a.atLeast) ? "≥ " : ""}
                     {Math.max(...stale.map((a) => a.days))} d old
@@ -846,7 +846,7 @@ function ProviderCard({
         )}
         <span className="text-[11px] text-subtle">Tests the saved configuration, not unsaved edits.</span>
         <div aria-live="polite" className="text-[12px]">
-          {saveStatus === "saved" && !dirty && <span className="text-cf-green">Saved.</span>}
+          {saveStatus === "saved" && !dirty && <span className="text-cf-green-ink">Saved.</span>}
           {saveStatus === "error" && saveErr && <span className="text-cf-red">{saveErr}</span>}
         </div>
       </div>
@@ -1054,9 +1054,9 @@ export function SettingsPage() {
                 // Not an error to retry: the Worker is missing its encryption secret
                 // or D1 binding, and no form can work until an operator fixes that.
                 <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/60 bg-cf-amber/10 px-4 py-3">
-                  <ShieldAlert size={18} className="mt-0.5 shrink-0 text-cf-amber" />
+                  <ShieldAlert size={18} className="mt-0.5 shrink-0 text-cf-amber-ink" />
                   <div>
-                    <div className="text-[13px] font-bold text-cf-amber">External guardrails are not set up</div>
+                    <div className="text-[13px] font-bold text-cf-amber-ink">External guardrails are not set up</div>
                     <p className="mt-1 text-[12.5px] leading-relaxed text-text">
                       {state.setupHint || state.error || "The Worker is missing the configuration this feature needs."}
                     </p>
@@ -1066,7 +1066,7 @@ export function SettingsPage() {
 
               {state?.configured && (
                 <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/40 bg-cf-amber/[0.06] px-4 py-3">
-                  <Info size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+                  <Info size={16} className="mt-0.5 shrink-0 text-cf-amber-ink" />
                   <p className="text-[12.5px] leading-relaxed text-muted">
                     An enabled external guardrail sees <b className="text-text">every prompt sent through /api/chat</b>,
                     before the model runs, on both the direct and the AI Gateway route. The Cloudflare edge WAF still

@@ -886,6 +886,7 @@ export const openapi = {
                   minChecks: int("Fewer checks in the window = unknown, never ok."),
                   noVerdictRate: num("A vendor is down at or above this share of checks with no verdict."),
                   webhook: { type: "string", enum: ["set", "unset", "invalid"], description: "Whether `ALERT_WEBHOOK_URL` is set (and an https URL). Never the URL." },
+                  webhookFormat: { type: ["string", "null"], enum: ["slack", "teams", "discord", "json", null], description: "The body shape the webhook gets: from its host (Slack, Teams Workflows, Discord) or `ALERT_WEBHOOK_FORMAT`; null when no valid webhook is set." },
                   states: arr(
                     obj(
                       { provider: ref("ExternalGuardrailProvider"), state: { type: "string", enum: ["ok", "down"] }, since: int("Epoch ms."), updatedAt: int("Epoch ms.") },
@@ -893,7 +894,7 @@ export const openapi = {
                     ),
                   ),
                 },
-                ["cron", "windowHours", "minChecks", "noVerdictRate", "webhook", "states"],
+                ["cron", "windowHours", "minChecks", "noVerdictRate", "webhook", "webhookFormat", "states"],
               ),
               verdictWatch: obj(
                 {
@@ -903,8 +904,19 @@ export const openapi = {
                 },
                 ["confirmRuns", "tracked", "pending"],
               ),
+              smokeCanary: {
+                ...obj(
+                  {
+                    checked: arr(ref("ExternalGuardrailProvider")),
+                    blockedBy: arr(ref("ExternalGuardrailProvider")),
+                  },
+                  ["checked", "blockedBy"],
+                ),
+                type: ["object", "null"],
+                description: "The prod smoke test's prompt, sent by each re-run: the vendors that gave a verdict on it, and those that blocked it (the smoke test's route checks would fail). null when the table cannot be read.",
+              },
             },
-            ["rerun", "alerts", "verdictWatch"],
+            ["rerun", "alerts", "verdictWatch", "smokeCanary"],
             "The two Cron Triggers: the 6-hourly re-run (#15, with its verdict watch) and the hourly vendor outage check (#17), with the states it last stored.",
           ),
         },

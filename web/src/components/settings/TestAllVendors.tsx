@@ -32,9 +32,9 @@ const BTN_CLS =
   "rounded-lg border border-line bg-surface-2 px-3 py-1.5 text-[12.5px] font-semibold text-text transition-colors hover:border-line-strong focus:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 const TONE_CLS: Record<CellTone, string> = {
-  allow: "text-cf-green",
+  allow: "text-cf-green-ink",
   block: "text-cf-red",
-  partial: "text-cf-amber",
+  partial: "text-cf-amber-ink",
   error: "text-cf-red",
   none: "text-subtle",
 };
@@ -170,7 +170,7 @@ export function TestAllVendors({ providers, canEdit }: { providers: ExternalGuar
         </button>
         {blockedReason && (
           <span id="test-all-why" className="flex items-center gap-1.5 text-[11.5px] text-muted">
-            {!canEdit && <Lock size={12} className="shrink-0 text-cf-amber" />}
+            {!canEdit && <Lock size={12} className="shrink-0 text-cf-amber-ink" />}
             {blockedReason}
           </span>
         )}

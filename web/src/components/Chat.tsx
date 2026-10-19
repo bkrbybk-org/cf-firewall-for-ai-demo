@@ -25,9 +25,9 @@ const NOT_STREAMED_WHY: Record<NotStreamedReason, string> = {
 
 function CacheBadge({ cached }: { cached?: boolean | null }) {
   if (cached === true)
-    return <span className="rounded-full border border-cf-green bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green">CACHE HIT</span>;
+    return <span className="rounded-full border border-cf-green bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green-ink">CACHE HIT</span>;
   if (cached === false)
-    return <span className="rounded-full border border-cf-amber bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber">CACHE MISS</span>;
+    return <span className="rounded-full border border-cf-amber bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink">CACHE MISS</span>;
   return <span className="rounded-full border border-line px-2 py-0.5 text-[10.5px] font-bold text-muted">cache: ?</span>;
 }
 

@@ -256,7 +256,7 @@ export function VendorScorecard({
     <Card title="Controls compared" subtitle="Each control scored only on the prompts it actually scanned — overall, then by topic or language">
       {card.unevenCoverage && (
         <div className="mb-3 flex items-start gap-2 rounded-lg border border-cf-amber/40 bg-cf-amber/[0.08] px-3 py-2 text-[11.5px] leading-relaxed text-text">
-          <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber" />
+          <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber-ink" />
           <span>
             Not a like-for-like comparison: the guardrails did not all scan the same prompts
             {sequential ? " (sequential mode — a later guardrail never sees what an earlier one blocked)" : ""}. For a fair

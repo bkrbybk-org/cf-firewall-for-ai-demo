@@ -244,7 +244,7 @@ export function SavedRuns({
                         {r.reached}/{r.scored}
                         <span className="text-subtle"> · {r.scored === 0 ? "—" : `${r.reachedPct}%`}</span>
                         {r.skipped > 0 && (
-                          <div className="text-[10px] text-cf-amber" title="Guardrail-only: reached, but the model was not called">
+                          <div className="text-[10px] text-cf-amber-ink" title="Guardrail-only: reached, but the model was not called">
                             {r.skipped} model skipped
                           </div>
                         )}
@@ -446,7 +446,7 @@ function delta(b: number | null | undefined, a: number | null | undefined, lower
   const d = a - b;
   const good = lowerIsBetter ? d < 0 : d > 0;
   return (
-    <span className={`ml-1 text-[10px] font-semibold ${good ? "text-cf-green" : "text-cf-red"}`}>
+    <span className={`ml-1 text-[10px] font-semibold ${good ? "text-cf-green-ink" : "text-cf-red"}`}>
       {d > 0 ? "+" : "−"}
       {Math.abs(d)} pts
     </span>
@@ -538,10 +538,10 @@ function DiffView({ before, after, diff }: { before: RtSavedRun; after: RtSavedR
 
       {/* The warning first: it says the numbers below cover less than both runs. */}
       {diff.warning && (
-        <div className="rounded-lg border border-cf-amber/50 bg-cf-amber/10 px-3 py-2 text-cf-amber">{diff.warning}</div>
+        <div className="rounded-lg border border-cf-amber/50 bg-cf-amber/10 px-3 py-2 text-cf-amber-ink">{diff.warning}</div>
       )}
       {!sameRoute && (
-        <div className="rounded-lg border border-cf-amber/50 bg-cf-amber/10 px-3 py-2 text-cf-amber">
+        <div className="rounded-lg border border-cf-amber/50 bg-cf-amber/10 px-3 py-2 text-cf-amber-ink">
           Different routes ({routeLabel(before)} → {routeLabel(after)}).
           The edge verdict is the same on both, but Guardrails only exist on a gateway, so a change may come from the
           route rather than a rule.
@@ -567,7 +567,7 @@ function DiffView({ before, after, diff }: { before: RtSavedRun; after: RtSavedR
           <ul className="flex flex-col gap-0.5 text-text">
             {s.closedTotal > 0 && (
               <li>
-                <b className="text-cf-green">{s.closedTotal} closed</b> — reached the model before, stopped now:{" "}
+                <b className="text-cf-green-ink">{s.closedTotal} closed</b> — reached the model before, stopped now:{" "}
                 {(
                   [
                     ["edge", "at the edge"],
@@ -588,7 +588,7 @@ function DiffView({ before, after, diff }: { before: RtSavedRun; after: RtSavedR
             )}
             {s.lostVerdict > 0 && (
               <li>
-                <b className="text-cf-amber">{s.lostVerdict} unknown</b> — reached the model before, no verdict in the
+                <b className="text-cf-amber-ink">{s.lostVerdict} unknown</b> — reached the model before, no verdict in the
                 later run (pending, failed or refused by a non-WAF layer). Neither a fix nor a regression; re-run to know.
               </li>
             )}

@@ -57,6 +57,9 @@ export interface Env {
   // operator (`npx wrangler secret put ALERT_WEBHOOK_URL`). Unset: alerts are only written to the Worker's logs, and
   // nothing leaves Cloudflare. Never returned by any endpoint; only whether it is set.
   ALERT_WEBHOOK_URL?: string;
+  // 2026-10-19: the body shape the webhook gets — "slack" | "teams" | "discord" | "json". Unset: picked from the URL's
+  // host (src/alertDelivery.ts webhookFormat). A var or secret; an unknown value falls back to the host's guess.
+  ALERT_WEBHOOK_FORMAT?: string;
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.

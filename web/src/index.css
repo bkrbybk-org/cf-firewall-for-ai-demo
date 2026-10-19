@@ -22,6 +22,10 @@
   --color-cf-green: var(--green);
   --color-cf-red: var(--red);
   --color-cf-amber: var(--amber);
+  /* Ink for TEXT (and the icons beside it) in the status colours — text-cf-amber-ink / text-cf-green-ink. The
+     --amber / --green above are the chart palette, validated as marks at 3:1; small text needs 4.5:1 (#10, 2026-10-19). */
+  --color-cf-amber-ink: var(--amber-ink);
+  --color-cf-green-ink: var(--green-ink);
   --color-cf-blue: var(--blue);
   --color-cf-purple: var(--purple);
 
@@ -57,6 +61,9 @@
   --amber: #f0b429;
   --blue: #7ab8ff;
   --purple: #9a6cf5;
+  /* Text ink: on these dark surfaces the palette colours already read at 7.5:1 or more as text. */
+  --amber-ink: #f0b429;
+  --green-ink: #3fcf8e;
   /* JSON syntax colours for the raw-responses panel, on --bg. Their own tokens, not the
      status ones: several light status colours sit under 4.5:1 for 11px text. Measured
      on #0a0e17: key 9.3, string 9.7, number 10.4, boolean 7.5, null 7.9, punct ≥ 4.5. */
@@ -96,6 +103,11 @@
      re-run it before changing either value. */
   --red: #b91c1c;
   --amber: #b87000;
+  /* Text ink (#10's follow-up, 2026-10-19): the palette amber and green above are 3.4–3.9:1 as text. These are at least
+     4.78 / 4.92:1 on --bg, --surface, --surface-2 AND on a 15% tint of their own colour (the badges'), so a status
+     word stays readable. Chart marks keep the validated palette; only text moves. */
+  --amber-ink: #8a5300;
+  --green-ink: #076b49;
   --blue: #2b7fff;
   /* Darkened so it no longer reads as --blue: the two were ΔE00 2.3 apart under
      deuteranopia on the prompt-log chart. Now ≥ 13.2 for every pair under all

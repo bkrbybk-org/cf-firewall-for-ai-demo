@@ -61,7 +61,7 @@ export function Scorecard({
     <>
       {nothingScored && (
         <div className="flex items-start gap-3 rounded-2xl border border-cf-amber/50 bg-cf-amber/10 px-4 py-3">
-          <TriangleAlert size={16} className="mt-0.5 shrink-0 text-cf-amber" />
+          <TriangleAlert size={16} className="mt-0.5 shrink-0 text-cf-amber-ink" />
           <p className="text-[12.5px] leading-relaxed text-text">
             <b>No attack produced an edge verdict</b>, so there is no miss rate to report — this is not a 0% result.
             {score.error > 0 && (
@@ -86,13 +86,13 @@ export function Scorecard({
         <Tile
           label="stopped at the edge"
           value={score.stopped}
-          icon={<ShieldCheck size={16} className="text-cf-green" />}
+          icon={<ShieldCheck size={16} className="text-cf-green-ink" />}
           tone="border-cf-green/40 bg-cf-green/10"
         />
         <Tile
           label="reached the model"
           value={score.reached}
-          icon={<TriangleAlert size={16} className="text-cf-amber" />}
+          icon={<TriangleAlert size={16} className="text-cf-amber-ink" />}
           tone="border-cf-amber/40 bg-cf-amber/10"
         />
         <Tile
@@ -108,7 +108,7 @@ export function Scorecard({
         // in guardrail-only mode that is as far as it got. The headline maths is
         // unchanged — this only stops the number from implying a model answered.
         <div className="flex items-start gap-3 rounded-xl border border-cf-amber/50 bg-cf-amber/10 px-3.5 py-2.5">
-          <SkipForward size={15} className="mt-0.5 shrink-0 text-cf-amber" />
+          <SkipForward size={15} className="mt-0.5 shrink-0 text-cf-amber-ink" />
           <p className="text-[12px] leading-relaxed text-text">
             <b>
               {score.skipped} of the {score.reached} that “reached the model”

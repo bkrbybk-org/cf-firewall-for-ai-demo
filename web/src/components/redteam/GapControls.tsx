@@ -37,9 +37,9 @@ const CONFIDENCE_LABEL: Record<CoverageConfidence, string> = {
 // weaker claim and is colored accordingly, per useZoneRules' own honesty
 // standard: presenting a guess as verified is the failure this exists to avoid.
 const CONFIDENCE_CLS: Record<CoverageConfidence, string> = {
-  "live-expression": "border-cf-green/50 text-cf-green",
+  "live-expression": "border-cf-green/50 text-cf-green-ink",
   "live-name": "border-cf-blue/50 text-cf-blue",
-  "fallback-name": "border-cf-amber/50 text-cf-amber",
+  "fallback-name": "border-cf-amber/50 text-cf-amber-ink",
   none: "border-line text-subtle",
   "not-applicable": "border-line text-subtle",
 };
@@ -57,7 +57,7 @@ function CopyButton({ text }: { text: string }) {
       }}
       className="inline-flex shrink-0 items-center gap-1 rounded-full border border-line px-2 py-1 text-[10.5px] text-muted transition hover:border-accent hover:text-accent"
     >
-      {copied ? <Check size={11} className="text-cf-green" /> : <Copy size={11} />}
+      {copied ? <Check size={11} className="text-cf-green-ink" /> : <Copy size={11} />}
       {copied ? "copied" : "copy"}
     </button>
   );
@@ -90,7 +90,7 @@ function GapRow({ gap }: { gap: GapControl }) {
       ) : (
         gap.expressionNote && (
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-cf-amber/30 bg-cf-amber/[0.06] px-2.5 py-2 text-[11.5px] text-muted">
-            <ShieldAlert size={13} className="mt-px shrink-0 text-cf-amber" />
+            <ShieldAlert size={13} className="mt-px shrink-0 text-cf-amber-ink" />
             <span>{gap.expressionNote}</span>
           </div>
         )
@@ -144,7 +144,7 @@ export function GapControls({
         </div>
       ) : gaps.length === 0 ? (
         <div className="flex items-start gap-2.5 px-1 py-3 text-[12.5px] text-muted">
-          <ShieldCheck size={16} className="mt-0.5 shrink-0 text-cf-green" />
+          <ShieldCheck size={16} className="mt-0.5 shrink-0 text-cf-green-ink" />
           <span>
             Nothing reached the model in this run — every scored attack was stopped at the edge. That is a real, good outcome, not an
             error; there is nothing to recommend.

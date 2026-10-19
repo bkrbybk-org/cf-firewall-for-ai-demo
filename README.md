@@ -543,12 +543,24 @@ Two honesty rules are enforced server-side and must not be "simplified" away:
 - **Outage alerts, hourly** (`src/vendorAlerts.ts`).
   - **Down:** a vendor is down when at least 50% of at least 3 checks in the last hour got no verdict. With fewer checks the state is unknown and kept.
   - **When it alerts:** only when the state changes (down, then recovered). The state is kept in D1 (`0011`).
-  - **Where it goes:** `npx wrangler secret put ALERT_WEBHOOK_URL` (an https URL, e.g. a Slack incoming webhook) receives `{text, alerts[]}` with vendor names and counts only. Unset, alerts are only logged (`event: "guardrail_alert"`).
+  - **Where it goes:** `npx wrangler secret put ALERT_WEBHOOK_URL` (an https URL). Unset, alerts are only logged (`event: "guardrail_alert"`). Every alert holds vendor names and counts only.
+  - **The body takes the receiver's shape** (since 2026-10-19, `src/alertDelivery.ts`), picked from the URL's host, so you can paste the URL as is:
+    - **Slack** (`hooks.slack.com`): `{text}`.
+    - **Microsoft Teams Workflows** (`*.logic.azure.com`, `*.powerplatform.com`, `*.webhook.office.com`): a `message` with one Adaptive Card.
+    - **Discord** (`discord.com/api/webhooks/…`): `{content}` within 2000 characters, with mentions disabled.
+    - **Anything else**: `{text, alerts[], …}`.
+  - **To force a shape**, set `ALERT_WEBHOOK_FORMAT=slack|teams|discord|json`. Settings → Deployment shows which shape is in use (never the URL).
   - **A rejected key is named** (since 2026-10-18). When most checks without a verdict got HTTP 401/403, the message reads "REJECTED THE KEY", with where to fix it. The Settings row turns red: "Key rejected — N of M checks got HTTP 401/403", with the outage check's "down since".
 - **Verdict watch, after each re-run** (`src/verdictWatch.ts`, since 2026-10-18).
   - **What it tracks:** each vendor's verdict on each of the 12 fixed prompts, kept in D1 (`0012`, `guardrail_prompt_verdicts`).
   - **When it alerts:** when a vendor's verdict on a prompt changes and the new one holds for **2 runs in a row**. One noisy answer is never an alert. An error is not a verdict and never counts. A first sighting is recorded, not announced.
   - **What the message says:** for example "Lakera now BLOCKS harmless prompt han-600 — a new false block (it had allowed it since …)". It holds vendor, prompt id, label and dates only, never the prompt text. It goes to the same webhook (`event: "guardrail_verdict_change"`).
+- **Smoke canary, after each re-run** (since 2026-10-19, `src/smokeCanary.ts`).
+  - **What it sends:** the prod smoke test's chat prompt, to every enabled vendor. It is not part of the drift set and not written to Analytics Engine.
+  - **When it alerts:** on the **first** run that a vendor blocks it ("npm run smoke:prod checks [2] and [3] will fail"), and again when the block clears.
+  - **Why:** a vendor's drift should show up before a deploy's smoke test fails on it (PROGRESS Open bugs #32).
+  - **Settings → Deployment** shows "Smoke prompt: allowed by all" or "Smoke prompt blocked by …".
+  - **Kept in sync:** the script's copy of the prompt is pinned to the constant by a test.
 - **Prompt ids in the verdict data** (blob12, since 2026-10-18). Scheduled rows carry the set's id (`rt-03`, `han-600`). Red Team rows carry the page's join key: a built-in id, or `h` + a hash of a custom prompt's text, sent as `x-demo-prompt`. Chat rows carry none.
 - **Key age** (since 2026-10-18). Each vendor row shows when its key was saved. A key saved before that date shows "saved ≥ N d ago", from the config's last save. An amber **key N d old** badge appears at 90 days: a reminder to check the key in the vendor's console, not a claim that it expired.
 

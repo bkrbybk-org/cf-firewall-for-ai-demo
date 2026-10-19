@@ -140,7 +140,7 @@ export function GatewaySettingsPanel({
           </p>
         )}
         {dropped > 0 && (
-          <p className="mt-1.5 text-[11px] text-cf-amber">
+          <p className="mt-1.5 text-[11px] text-cf-amber-ink">
             Only the first {MAX_METADATA_ENTRIES} entries are sent — AI Gateway ignores the rest.
           </p>
         )}

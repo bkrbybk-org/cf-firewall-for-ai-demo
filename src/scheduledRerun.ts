@@ -22,8 +22,9 @@
 import { loadGuardrailSetup, runPipeline } from "./externalGuardrails";
 import { logVerdicts } from "./guardrailLog";
 import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
+import { SMOKE_PROMPT } from "./smokeCanary";
 import type { Env, GuardrailPipelineResult } from "./types";
-import { runVerdictWatch } from "./verdictWatch";
+import { runCanaryWatch, runVerdictWatch } from "./verdictWatch";
 
 export const RERUN_CRON = "0 */6 * * *";
 // Between prompts: each prompt fans out to every enabled vendor at once, so a short gap keeps 12 prompts from
@@ -75,6 +76,16 @@ export async function runScheduledRerun(
     await runVerdictWatch(env, runs, { fetchImpl: deps.fetchImpl, log });
   } catch (err) {
     log({ event: "guardrail_verdict_watch", skipped: `failed: ${err instanceof Error ? err.name : "error"}` });
+  }
+  // The smoke test's prompt (src/smokeCanary.ts): one more call per vendor, kept out of Analytics Engine so the drift
+  // set's counts do not move. Alerts on the first run any vendor blocks it, so a deploy's smoke test is not the first
+  // to find out (Open bugs #32).
+  try {
+    await sleep(RERUN_GAP_MS);
+    const canary = await runPipeline(env, { prompt: SMOKE_PROMPT, model: "", ray: null }, deps.fetchImpl ?? fetch, { setup: forced });
+    await runCanaryWatch(env, canary, { fetchImpl: deps.fetchImpl, log });
+  } catch (err) {
+    log({ event: "guardrail_smoke_canary", skipped: `failed: ${err instanceof Error ? err.name : "error"}` });
   }
   return s;
 }

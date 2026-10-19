@@ -125,7 +125,7 @@ function Cell({
         }`}
       >
         <span className="inline-flex items-center justify-end gap-1">
-          {c.rank === "best" && <Trophy size={11} aria-hidden className="shrink-0 text-cf-green" />}
+          {c.rank === "best" && <Trophy size={11} aria-hidden className="shrink-0 text-cf-green-ink" />}
           {c.rank === "worst" && <ArrowDown size={11} aria-hidden className="shrink-0 text-muted" />}
           <span className={c.rank === "best" ? "font-bold text-text" : small ? "text-subtle" : "text-text"}>{c.catchPct}%</span>
           {c.rank && <span className="sr-only">{srRank}</span>}
@@ -199,7 +199,7 @@ const VERDICT_TEXT = (v: Verdict, fb: boolean) =>
 function verdictTone(v: Verdict, fb: boolean): string {
   const good = fb ? v === "missed" : v === "caught";
   const bad = fb ? v === "caught" : v === "missed";
-  if (good) return "border-cf-green/60 text-cf-green";
+  if (good) return "border-cf-green/60 text-cf-green-ink";
   if (bad) return "border-cf-red/50 text-cf-red";
   if (v === "alerts") return "border-line-strong text-text";
   return "border-dashed border-line-strong text-subtle"; // error / not seen / not run: not a verdict
@@ -449,7 +449,7 @@ export function VendorBenchmark({
       )}
 
       <p className="mt-2 text-[10.5px] leading-relaxed text-subtle">
-        <Trophy size={10} aria-hidden className="mr-0.5 inline text-cf-green" /> {fb ? "fewest" : "best"} and{" "}
+        <Trophy size={10} aria-hidden className="mr-0.5 inline text-cf-green-ink" /> {fb ? "fewest" : "best"} and{" "}
         <ArrowDown size={10} aria-hidden className="mr-0.5 inline" /> {fb ? "most false blocks" : "lowest"} are marked only
         between controls that scanned the same prompts in that row, and only over {BENCHMARK_MIN_N}+ of them — the edge sees
         every prompt while a guardrail sees only what the edge let through, so those are different tests. Untinted numbers

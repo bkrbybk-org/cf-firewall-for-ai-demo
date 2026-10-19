@@ -27,8 +27,8 @@ import type { RequestConfig } from "../hooks/useChat";
 type NodeTone = "ok" | "warn" | "flag" | "dead" | "guard";
 
 const NODE: Record<NodeTone, string> = {
-  ok: "border-cf-green/60 bg-cf-green/10 text-cf-green",
-  warn: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber",
+  ok: "border-cf-green/60 bg-cf-green/10 text-cf-green-ink",
+  warn: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink",
   flag: "border-cf-red/60 bg-cf-red/10 text-cf-red",
   dead: "border-line bg-surface-2 text-subtle",
   guard: "border-cf-purple/60 bg-cf-purple/10 text-cf-purple",
@@ -36,8 +36,8 @@ const NODE: Record<NodeTone, string> = {
 
 type ChipTone = "ok" | "warn" | "flag" | "mute";
 const CHIP: Record<ChipTone, string> = {
-  ok: "border-cf-green/50 text-cf-green",
-  warn: "border-cf-amber/50 text-cf-amber",
+  ok: "border-cf-green/50 text-cf-green-ink",
+  warn: "border-cf-amber/50 text-cf-amber-ink",
   flag: "border-cf-red/50 text-cf-red",
   mute: "border-line-strong text-subtle",
 };
@@ -147,7 +147,7 @@ function RuleRow({
     ? "text-subtle"
     : block
       ? "bg-cf-red/10 text-cf-red"
-      : "bg-cf-amber/10 text-cf-amber";
+      : "bg-cf-amber/10 text-cf-amber-ink";
   const Icon = !matched ? Check : block ? Ban : Eye;
   return (
     <div className={`flex items-center gap-2 px-2.5 py-1 text-[11px] ${cls}`} title={summary}>
@@ -328,7 +328,7 @@ export function FlowTrace({
             <RuleRow key={r.ruleId} name={r.description || r.ruleId} action={r.action} matched />
           ))}
           {hitCount === 0 && (
-            <div className="px-2.5 py-1 text-[11px] text-cf-green">no rule matched — request allowed</div>
+            <div className="px-2.5 py-1 text-[11px] text-cf-green-ink">no rule matched — request allowed</div>
           )}
           {misses.length + disabledRules.length > 0 &&
             (showMisses ? (
@@ -385,7 +385,7 @@ export function FlowTrace({
           {stoppedInWorker === "external" ? (
             <Step tone="warn" icon={ShieldBan} cut cutColor="amber">
               <Title>
-                <span className="text-cf-amber">Stopped by an external guardrail</span>
+                <span className="text-cf-amber-ink">Stopped by an external guardrail</span>
               </Title>
               <Sub>blocked, or unavailable under fail-closed — the card above says which.</Sub>
             </Step>
@@ -494,7 +494,7 @@ export function FlowTrace({
                 {gateway.gatewayId && <span className="font-mono">{gateway.gatewayId}</span>}
                 {gateway.gatewayId && " · "}
                 cache{" "}
-                <span className={gateway.cached ? "text-cf-green" : "text-subtle"}>
+                <span className={gateway.cached ? "text-cf-green-ink" : "text-subtle"}>
                   {gateway.cached == null ? "unknown" : gateway.cached ? "HIT" : "MISS"}
                 </span>
                 {gateway.latencyMs != null && <> · {gateway.latencyMs} ms</>}

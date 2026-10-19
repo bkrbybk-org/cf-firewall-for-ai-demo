@@ -20,13 +20,13 @@
 //   - **A rejected key is named** (2026-10-18): when most checks without a verdict got HTTP 401/403, the message says
 //     the vendor rejected the key and where to fix it. Still one "down" state — the fix differs, the outage does not.
 
-import { deliverAlert, webhookUrl } from "./alertDelivery";
+import { deliverAlert, webhookFormat, webhookUrl } from "./alertDelivery";
 import { PROVIDERS } from "./externalGuardrails";
 import { aggregate, buildSql, parseRow, type VendorStats, type VerdictRow } from "./guardrailAnalytics";
 import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
 import { RERUN_CRON } from "./scheduledRerun";
 import type { Env, ExternalGuardrailProvider } from "./types";
-import { WATCH_CONFIRM_RUNS, watchStatus } from "./verdictWatch";
+import { WATCH_CONFIRM_RUNS, canaryStatus, watchStatus } from "./verdictWatch";
 
 export const ALERT_CRON = "17 * * * *";
 export const ALERT_WINDOW_HOURS = 1;
@@ -194,10 +194,14 @@ export async function automationStatus(env: Env) {
       minChecks: ALERT_MIN_CHECKS,
       noVerdictRate: ALERT_NO_VERDICT_RATE,
       webhook: env.ALERT_WEBHOOK_URL ? (webhookUrl(env.ALERT_WEBHOOK_URL) ? "set" : "invalid") : "unset",
+      // The body shape it gets (src/alertDelivery.ts) — a format name only, derived from the host, never the URL.
+      webhookFormat: webhookUrl(env.ALERT_WEBHOOK_URL) ? webhookFormat(webhookUrl(env.ALERT_WEBHOOK_URL)!, env.ALERT_WEBHOOK_FORMAT) : null,
       states: await loadAlertStates(env.DB),
     },
     // 2026-10-18: verdict changes on the scheduled prompts. null when the table cannot be read (migration 0012).
     verdictWatch: { confirmRuns: WATCH_CONFIRM_RUNS, ...((await watchStatus(env.DB)) ?? { tracked: null, pending: null }) },
+    // 2026-10-19: the smoke prompt's last verdict per vendor (src/smokeCanary.ts). null when the table cannot be read.
+    smokeCanary: await canaryStatus(env.DB),
   };
 }
 

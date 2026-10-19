@@ -11,9 +11,9 @@ const ACCENT: Record<Tone, string> = {
   purple: "bg-cf-purple",
 };
 const ICON_TONE: Record<Tone, string> = {
-  green: "bg-cf-green/12 text-cf-green",
+  green: "bg-cf-green/12 text-cf-green-ink",
   red: "bg-cf-red/12 text-cf-red",
-  amber: "bg-cf-amber/12 text-cf-amber",
+  amber: "bg-cf-amber/12 text-cf-amber-ink",
   blue: "bg-cf-blue/12 text-cf-blue",
   purple: "bg-cf-purple/12 text-cf-purple",
 };

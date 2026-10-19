@@ -72,7 +72,7 @@ function VerdictPill({ value }: { value: string | null }) {
     <span
       title="What the detector concluded"
       className={`rounded-full border px-1.5 py-px text-[10.5px] whitespace-nowrap ${
-        v === "malicious" ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber" : "border-line bg-surface text-muted"
+        v === "malicious" ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink" : "border-line bg-surface text-muted"
       }`}
     >
       {known ? <b className="font-mono">{v}</b> : <>verdict <b className="font-mono">{value ?? "—"}</b></>}
@@ -86,14 +86,14 @@ function ActionWord({ d }: { d: Detection }) {
   const title = "What the AI security profile does about it";
   if (a === "block") {
     return (
-      <span title={title} className="font-bold text-cf-amber">
+      <span title={title} className="font-bold text-cf-amber-ink">
         blocks
       </span>
     );
   }
   if (v === "malicious" && a === "allow") {
     return (
-      <span title={title} className="text-cf-amber">
+      <span title={title} className="text-cf-amber-ink">
         alerts only
       </span>
     );

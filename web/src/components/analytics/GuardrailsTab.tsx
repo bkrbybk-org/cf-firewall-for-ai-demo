@@ -77,7 +77,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
     <>
       {(d.sampled || d.capped || (d.rowsDropped ?? 0) > 0) && (
         <div className="flex items-start gap-2.5 rounded-xl border border-cf-amber/60 bg-cf-amber/10 px-3.5 py-2.5 text-[12px] text-text">
-          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-cf-amber" />
+          <AlertTriangle size={15} className="mt-0.5 shrink-0 text-cf-amber-ink" />
           <div>
             {d.sampled && (
               <p>
@@ -137,7 +137,7 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
         <Tile
           label="allowed with alerts"
           value={n(t.alerts)}
-          icon={<ShieldAlert size={16} className="text-cf-amber" />}
+          icon={<ShieldAlert size={16} className="text-cf-amber-ink" />}
           tone="border-cf-amber/40 bg-cf-amber/10"
         />
         <Tile
@@ -210,8 +210,8 @@ export function GuardrailsTab({ d, hours }: { d: GuardrailAnalytics | null; hour
                           v.outcome === "block"
                             ? "border-cf-red/50 bg-cf-red/10 text-cf-red"
                             : v.alerts
-                              ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber"
-                              : "border-cf-green/50 bg-cf-green/10 text-cf-green"
+                              ? "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink"
+                              : "border-cf-green/50 bg-cf-green/10 text-cf-green-ink"
                         }`}
                       >
                         {providerLabel(v.provider)} · {v.outcome}
@@ -343,7 +343,7 @@ function FalseBlocks({ vendors, n, window }: { vendors: GuardrailVendorStats[]; 
                     <span className="font-semibold text-text">{providerLabel(r.provider)}</span>{" "}
                     <span className="rounded-full border border-line px-1.5 text-[10.5px] text-subtle">{r.dir}</span>
                   </td>
-                  <td className="py-2 pr-3 font-mono tabular-nums">{rate(r.falseBlocks, r.falseBlocks.block > 0 ? "text-cf-amber" : "text-text")}</td>
+                  <td className="py-2 pr-3 font-mono tabular-nums">{rate(r.falseBlocks, r.falseBlocks.block > 0 ? "text-cf-amber-ink" : "text-text")}</td>
                   <td className="py-2 font-mono tabular-nums">{rate(r.catches, "text-text")}</td>
                 </tr>
               ))}
@@ -397,19 +397,19 @@ function VendorTable({
               <td className={`py-2 pr-3 text-right font-mono tabular-nums ${v.block > 0 ? "font-bold text-cf-red" : "text-muted"}`}>
                 {n(v.block)}
                 {(v.outvoted ?? 0) > 0 && (
-                  <div className="text-[10.5px] font-normal text-cf-amber" title="Quorum mode: blocked, but too few other guardrails voted to stop the turn">
+                  <div className="text-[10.5px] font-normal text-cf-amber-ink" title="Quorum mode: blocked, but too few other guardrails voted to stop the turn">
                     {n(v.outvoted!)} outvoted
                   </div>
                 )}
               </td>
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-muted">
                 {n(v.allow)}
-                {v.alerts > 0 && <div className="text-[10.5px] text-cf-amber">{n(v.alerts)} with alerts</div>}
+                {v.alerts > 0 && <div className="text-[10.5px] text-cf-amber-ink">{n(v.alerts)} with alerts</div>}
                 {(v.redactionApplied ?? 0) > 0 && (
-                  <div className="text-[10.5px] text-cf-green">{n(v.redactionApplied!)} redaction applied</div>
+                  <div className="text-[10.5px] text-cf-green-ink">{n(v.redactionApplied!)} redaction applied</div>
                 )}
                 {v.redaction - (v.redactionApplied ?? 0) > 0 && (
-                  <div className="text-[10.5px] text-cf-amber">{n(v.redaction - (v.redactionApplied ?? 0))} redaction not applied</div>
+                  <div className="text-[10.5px] text-cf-amber-ink">{n(v.redaction - (v.redactionApplied ?? 0))} redaction not applied</div>
                 )}
               </td>
               <td className="py-2 pr-3 text-right font-mono tabular-nums text-muted">

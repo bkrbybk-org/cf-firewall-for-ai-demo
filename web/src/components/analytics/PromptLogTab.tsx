@@ -37,11 +37,11 @@ import type {
 } from "../../lib/types";
 
 const OUTCOME_TONE: Record<string, string> = {
-  reply: "border-cf-green/50 text-cf-green",
+  reply: "border-cf-green/50 text-cf-green-ink",
   guardrails: "border-cf-purple/50 text-cf-purple",
-  external: "border-cf-amber/50 text-cf-amber",
+  external: "border-cf-amber/50 text-cf-amber-ink",
   // Design J: an external guardrail withheld the model's reply — the same control's amber.
-  external_reply: "border-cf-amber/50 text-cf-amber",
+  external_reply: "border-cf-amber/50 text-cf-amber-ink",
   // Guardrail-only: passed every check, the model was never called. Blue, like
   // its series — a neutral "nothing answered", not a reply (green) or a block.
   skipped: "border-cf-blue/50 text-cf-blue",
@@ -165,7 +165,7 @@ function PromptLogRowView({ r }: { r: PromptLogRowData }) {
         </td>
         <td className="px-2.5 py-1.5 text-right whitespace-nowrap">
           {r.redactions > 0 ? (
-            <span className="rounded-full border border-cf-amber/50 px-1.5 py-px text-[10px] font-semibold text-cf-amber">
+            <span className="rounded-full border border-cf-amber/50 px-1.5 py-px text-[10px] font-semibold text-cf-amber-ink">
               {r.redactions}
             </span>
           ) : (
@@ -333,7 +333,7 @@ const fmtDate = (ts: number) => new Date(ts).toLocaleString("en-GB", { hour12: f
 function RetentionFloorNote({ r }: { r: PromptLogRetention }) {
   return (
     <div className="mt-3 flex items-start gap-2 rounded-lg border border-cf-amber/40 bg-cf-amber/[0.08] px-3 py-2 text-[11.5px] leading-relaxed text-text">
-      <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber" />
+      <TriangleAlert size={13} className="mt-0.5 shrink-0 text-cf-amber-ink" />
       <span>
         <b>These counts are at least, not totals.</b> This window reaches back further than the log keeps — the last{" "}
         {r.maxAgeDays} days, and the newest {r.maxRows.toLocaleString()} prompts
@@ -379,7 +379,7 @@ function PromptStats({ a }: { a: PromptAnalytics }) {
         <Tile
           label={`via AI Gateway (of ${total})`}
           value={gateway}
-          icon={<Route size={16} className="text-cf-green" />}
+          icon={<Route size={16} className="text-cf-green-ink" />}
           tone="border-cf-green/40 bg-cf-green/10"
         />
       </div>
@@ -565,7 +565,7 @@ export function PromptLogTab({
       {filtered === 0 && !view.q.trim() ? (
         <Card title={(d.total ?? 0) > 0 ? "No prompts in this time frame" : "No prompts logged yet"}>
           <div className="flex items-start gap-3 text-sm text-muted">
-            <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green" />
+            <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green-ink" />
             {(d.total ?? 0) > 0 ? (
               <p>
                 {d.total} prompt{d.total === 1 ? "" : "s"} are stored, just not in the selected window — widen it above

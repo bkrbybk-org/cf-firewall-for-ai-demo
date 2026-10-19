@@ -61,7 +61,7 @@ const MAX_RUN_PROMPTS = 500;
 const SEV_PILL: Record<RtSeverity, string> = {
   critical: "border-cf-red/60 text-cf-red",
   high: "border-cf-red/40 text-cf-red/90",
-  medium: "border-cf-amber/50 text-cf-amber",
+  medium: "border-cf-amber/50 text-cf-amber-ink",
   low: "border-cf-blue/50 text-cf-blue",
 };
 
@@ -95,7 +95,7 @@ function StateCell({
         // The pill is the edge fact ("reached"); this says no model answered it.
         <span
           title="Guardrail-only mode: passed the edge and every external guardrail, but the model was not called"
-          className="rounded-full border border-cf-amber/50 bg-cf-amber/10 px-1.5 py-px text-[10px] font-semibold text-cf-amber"
+          className="rounded-full border border-cf-amber/50 bg-cf-amber/10 px-1.5 py-px text-[10px] font-semibold text-cf-amber-ink"
         >
           model skipped
         </span>
@@ -722,7 +722,7 @@ export function RedTeamPage() {
               )}
             </span>
             {overCap && (
-              <span className="text-[11.5px] font-semibold text-cf-amber">
+              <span className="text-[11.5px] font-semibold text-cf-amber-ink">
                 {toRun.length} prompts — a saved run holds {MAX_RUN_PROMPTS} at most. Pick fewer techniques or tick a subset.
               </span>
             )}
@@ -880,7 +880,7 @@ export function RedTeamPage() {
                           {/* A harmless row reads the Edge result the other way round — a block is the mistake. */}
                           {!isAttack(a) && (
                             <span
-                              className="shrink-0 rounded-full border border-cf-green/60 px-1.5 py-px text-[10px] font-semibold text-cf-green"
+                              className="shrink-0 rounded-full border border-cf-green/60 px-1.5 py-px text-[10px] font-semibold text-cf-green-ink"
                               title="expected: allow — a harmless prompt. Blocking it is a false block; it is kept out of every attack score."
                             >
                               harmless

@@ -59,10 +59,10 @@ const RANGES = [
 // Matches OUTCOME_TONE in PromptLogTab so the filter chips read as the same
 // vocabulary as the rows they filter.
 const OUTCOME_FILTERS = [
-  { value: "reply", label: "replied", tone: "border-cf-green/50 text-cf-green" },
+  { value: "reply", label: "replied", tone: "border-cf-green/50 text-cf-green-ink" },
   { value: "guardrails", label: "guardrails-blocked", tone: "border-cf-purple/50 text-cf-purple" },
-  { value: "external", label: "external-guardrail-blocked", tone: "border-cf-amber/50 text-cf-amber" },
-  { value: "external_reply", label: "reply withheld", tone: "border-cf-amber/50 text-cf-amber" },
+  { value: "external", label: "external-guardrail-blocked", tone: "border-cf-amber/50 text-cf-amber-ink" },
+  { value: "external_reply", label: "reply withheld", tone: "border-cf-amber/50 text-cf-amber-ink" },
   { value: "skipped", label: "model skipped", tone: "border-cf-blue/50 text-cf-blue" },
   { value: "error", label: "error", tone: "border-cf-red/50 text-cf-red" },
 ];

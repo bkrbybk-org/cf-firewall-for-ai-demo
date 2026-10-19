@@ -61,8 +61,8 @@ const OBSERVE_HOURS = 168;
 const OBSERVE_WINDOW = "last 7 days";
 
 const COVERAGE_TONE: Record<Coverage, string> = {
-  full: "border-cf-green/50 bg-cf-green/10 text-cf-green",
-  partial: "border-cf-amber/50 bg-cf-amber/10 text-cf-amber",
+  full: "border-cf-green/50 bg-cf-green/10 text-cf-green-ink",
+  partial: "border-cf-amber/50 bg-cf-amber/10 text-cf-amber-ink",
   supporting: "border-cf-blue/50 bg-cf-blue/10 text-cf-blue",
   none: "border-line bg-surface-2 text-subtle",
 };
@@ -118,7 +118,7 @@ function ObsMark({ o, compact = false }: { o: Observed; compact?: boolean }) {
   const title = `${o.detail}${ev ? ` — ${ev}` : ""}`;
   if (o.state === "seen") {
     return (
-      <span title={title} className="inline-flex items-center gap-1 text-[11px] font-semibold text-cf-green">
+      <span title={title} className="inline-flex items-center gap-1 text-[11px] font-semibold text-cf-green-ink">
         <CircleDot size={12} aria-hidden /> {compact ? "seen" : "observed"}
       </span>
     );
@@ -352,7 +352,7 @@ function VendorCapabilityMatrix({ obs, onPick }: { obs: Record<VendorId, VendorO
         </table>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[11px] text-muted">
-        <span className="inline-flex items-center gap-1 text-cf-green">
+        <span className="inline-flex items-center gap-1 text-cf-green-ink">
           <CircleDot size={12} aria-hidden /> seen — its data shows it, in the window
         </span>
         <span className="inline-flex items-center gap-1">
@@ -419,7 +419,7 @@ function ControlCard({
                     <span
                       key={v}
                       title={`${vendorFullName(v)}: observed ${seen.map(capName).join(", ")} (${OBSERVE_WINDOW})`}
-                      className="inline-flex items-center gap-1 rounded-full border border-cf-green/50 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-semibold text-cf-green"
+                      className="inline-flex items-center gap-1 rounded-full border border-cf-green/50 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-semibold text-cf-green-ink"
                     >
                       <CircleDot size={10} aria-hidden /> {vendorName(v)}
                     </span>
@@ -680,7 +680,7 @@ export function CompliancePage() {
           )}
 
           <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface px-4 py-3 text-[11.5px] leading-relaxed text-muted shadow-sm">
-            <ShieldCheck size={15} className="mt-0.5 shrink-0 text-cf-green" />
+            <ShieldCheck size={15} className="mt-0.5 shrink-0 text-cf-green-ink" />
             <p>
               Every observation above comes from traffic in this demo — load a matching prompt from the attack library and
               watch each layer's verdict, then check the same turn in{" "}

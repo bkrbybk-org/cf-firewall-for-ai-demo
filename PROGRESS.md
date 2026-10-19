@@ -626,6 +626,56 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-10-19 — Text ink for amber/green; smoke canary; alert formats for Slack, Teams, Discord
+
+**Asked for:** "do 15, 16, 17" from the backlog table. Deploy `b4e3a914-c0ef-4ce0-a16f-d37396449dab`. No migration (the canary
+uses 0012's table).
+
+**#15 Text ink** (the rest of Open bugs #10).
+- **Tokens:** `--amber-ink` / `--green-ink`, as Tailwind `text-cf-amber-ink` / `text-cf-green-ink`.
+- **Light values:** `#8a5300` / `#076b49`. Worst case 4.78 / 4.92:1 over `--bg`, `--surface`, `--surface-2` and a 15% tint of
+  the colour itself (the badges'), computed with the WCAG formula.
+- **Dark:** the palette colours, which already read at 7.5:1 or more.
+- **The rename:** all 130 `text-cf-amber` / `text-cf-green` uses across 28 files moved to the ink tokens. Proven by
+  undoing the rename on the added lines and diffing against the removed ones: identical, so only class names changed.
+- **Unchanged:** chart marks (`fill-` / `stroke-`) keep the validated palette.
+- **Checked:** in the browser, light text computes to `rgb(138,83,0)` and dark to `rgb(240,180,41)`. The deployed CSS
+  carries both new values.
+- **Found, not fixed (out of scope):** in light mode, `--accent` (links, 2.85–3.20:1), `--blue` (3.35–3.76) and
+  `--subtle` (2.72–3.05) are also under 4.5:1 as text.
+
+**#16 Smoke canary** (`src/smokeCanary.ts`, after #32).
+- **What it does:** each 6-hourly re-run also sends `SMOKE_PROMPT`, the one `scripts/prod-smoke.sh` [2]/[3] send, to
+  every enabled vendor.
+- **Kept out of the drift data:** not written to Analytics Engine, so the drift set's counts do not move. The re-run test
+  pins 13 vendor calls but 12 points.
+- **The rule:** a block is announced on the FIRST run that shows it ("checks [2] and [3] will fail"). That includes a
+  first sighting that is already a block. A clear is announced too; errors never count.
+- **Storage:** D1 `guardrail_prompt_verdicts` under `canary/smoke`. The drift watch's `tracked` count leaves those rows
+  out, checked on the real local D1 with seeded rows: `tracked: 1` of 3 rows.
+- **Settings → Deployment** shows "Smoke prompt: allowed by all" or "… blocked by <vendor>".
+- **Sync:** a test reads the script with `?raw` and fails if its `SMOKE_PROMPT` differs, or if [2]/[3] stop sending it or
+  stop requiring a reply.
+
+**#17 Alert formats** (`src/alertDelivery.ts`). The body takes the receiver's shape, from the URL's host, unless
+`ALERT_WEBHOOK_FORMAT` says otherwise:
+- **Slack:** `{text}` (docs.slack.dev).
+- **Discord:** `{content}` cut to 2000, with `allowed_mentions: {parse: []}` (docs.discord.com).
+- **Teams Workflows:** `{type: "message", attachments: [Adaptive Card]}`, Microsoft's own sample shape
+  (learn.microsoft.com). The standard Workflows template fails without `attachments`, per a Microsoft Q&A thread.
+- **Generic JSON:** anything else.
+- **Look-alike hosts** (`hooks.slack.com.evil.example`, `evil-logic.azure.com`, a non-webhook Discord path) stay generic.
+- **Never sent:** no format has been sent to a real Slack, Teams or Discord here. The shapes are from the docs, so the
+  first real alert is their test.
+- **Settings** shows the format in use, never the URL.
+
+**Verified:**
+- **Gates:** 953 tests (+14), 0 type errors, build clean. **Mutation-verified 16 of 16** across the canary, the formats and
+  the smoke-script pin.
+- **Local:** real D1 and Settings in light and dark. No console errors.
+- **Prod:** smoke passes with real replies. `automation.smokeCanary {checked: [], blockedBy: []}` until the first re-run with
+  this code, and the bundle and CSS carry the changes.
+
 ### 2026-10-18 — Rejected keys named; key age; prompt ids; verdict watch; Lakera verified
 
 **Asked for:** "do 1, 2, 5, 7, 14" from the suggestion table. Deploy `3cb87528-ddaf-4c24-b6bf-47fd08c64b86`. Migration

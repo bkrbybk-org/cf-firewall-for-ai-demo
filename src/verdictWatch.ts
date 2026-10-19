@@ -20,6 +20,7 @@
 import { deliverAlert, type Delivery } from "./alertDelivery";
 import { PROVIDERS } from "./externalGuardrails";
 import { SCHEDULED_PROMPTS, SCHEDULED_SET_VERSION } from "./scheduledCorpus";
+import { CANARY_ID } from "./smokeCanary";
 import type { Env, ExternalGuardrailProvider, GuardrailPipelineResult } from "./types";
 
 export const WATCH_CONFIRM_RUNS = 2; // a new verdict must hold this many runs in a row (the logic below is for 2)
@@ -180,14 +181,139 @@ export async function runVerdictWatch(
   }
 }
 
-// For Settings: how many vendor × prompt pairs are watched, and how many hold an unconfirmed verdict. Never throws.
+// For Settings: how many vendor × prompt pairs are watched, and how many hold an unconfirmed verdict — the drift set
+// only (the smoke canary's rows are reported apart, canaryStatus). Never throws.
 export async function watchStatus(db: D1Database | undefined): Promise<{ tracked: number; pending: number } | null> {
   if (!db) return null;
   try {
     const r = await db
-      .prepare("SELECT COUNT(*) AS tracked, SUM(CASE WHEN pending IS NULL THEN 0 ELSE 1 END) AS pending FROM guardrail_prompt_verdicts")
+      .prepare(
+        `SELECT COUNT(*) AS tracked, SUM(CASE WHEN pending IS NULL THEN 0 ELSE 1 END) AS pending
+         FROM guardrail_prompt_verdicts WHERE prompt_id <> ?`,
+      )
+      .bind(CANARY_ID)
       .first<{ tracked: number; pending: number | null }>();
     return { tracked: r?.tracked ?? 0, pending: r?.pending ?? 0 };
+  } catch {
+    return null;
+  }
+}
+
+// ── the smoke canary (src/smokeCanary.ts) ────────────────────────────────────
+// Unlike the drift set, a canary block is announced on the FIRST run that shows it, without waiting for a second:
+// the smoke test would already fail now, and the point is to hear before a deploy. A first sighting that is already a
+// block is announced too (smoke would fail); a first allow is recorded silently. Errors still never count.
+
+export interface CanaryChange {
+  provider: ExternalGuardrailProvider;
+  to: Verdict;
+  from: Verdict | null; // null: first sighting
+}
+
+export function canaryStep(stored: Map<string, Watched>, observed: Observed[], now: number): { writes: Watched[]; changes: CanaryChange[] } {
+  const writes: Watched[] = [];
+  const changes: CanaryChange[] = [];
+  for (const o of observed) {
+    const s = stored.get(pairKey(o.provider, CANARY_ID));
+    if (s && s.outcome === o.outcome) {
+      writes.push({ ...s, pending: null });
+      continue;
+    }
+    if (s || o.outcome === "block") changes.push({ provider: o.provider, to: o.outcome, from: s?.outcome ?? null });
+    writes.push({ provider: o.provider, promptId: CANARY_ID, outcome: o.outcome, since: now, pending: null });
+  }
+  return { writes, changes };
+}
+
+export function canaryText(changes: CanaryChange[]): string {
+  const lines = changes.map((c) =>
+    c.to === "block"
+      ? `🚦 ${PROVIDERS[c.provider].label} now BLOCKS the smoke prompt — npm run smoke:prod checks [2] and [3] will fail until the prompt is changed (src/smokeCanary.ts and scripts/prod-smoke.sh).`
+      : `🚦 ${PROVIDERS[c.provider].label} allows the smoke prompt again.`,
+  );
+  return ["cf-ai-waf-demo — smoke test canary", ...lines].join("\n");
+}
+
+export interface CanarySummary {
+  event: "guardrail_smoke_canary";
+  observed: number;
+  changes: number;
+  blockedBy: ExternalGuardrailProvider[];
+  delivered: Delivery | "none";
+  skipped?: string;
+}
+
+export async function runCanaryWatch(
+  env: Env,
+  pipeline: GuardrailPipelineResult | null,
+  deps: { fetchImpl?: typeof fetch; now?: number; log?: (line: unknown) => void } = {},
+): Promise<CanarySummary> {
+  const log = deps.log ?? ((line: unknown) => console.log(line));
+  const now = deps.now ?? Date.now();
+  const observed: Observed[] = (pipeline?.results ?? [])
+    .filter((v) => v.outcome === "block" || v.outcome === "allow")
+    .map((v) => ({ provider: v.provider, promptId: CANARY_ID, outcome: v.outcome as Verdict }));
+  const blockedBy = observed.filter((o) => o.outcome === "block").map((o) => o.provider);
+  const base = { event: "guardrail_smoke_canary" as const, observed: observed.length, changes: 0, blockedBy, delivered: "none" as const };
+  const done = (s: CanarySummary) => (log(s), s);
+  if (!env.DB) return done({ ...base, skipped: "no DB binding" });
+  if (observed.length === 0) return done({ ...base, skipped: "no verdicts this run" });
+
+  let rows: Row[];
+  try {
+    rows =
+      (
+        await env.DB.prepare("SELECT provider, prompt_id, outcome, since, pending FROM guardrail_prompt_verdicts WHERE prompt_id = ?")
+          .bind(CANARY_ID)
+          .all<Row>()
+      ).results ?? [];
+  } catch {
+    return done({ ...base, skipped: "table guardrail_prompt_verdicts missing (migration 0012 not applied)" });
+  }
+  const stored = new Map<string, Watched>();
+  for (const r of rows) {
+    if (!(r.provider in PROVIDERS) || (r.outcome !== "block" && r.outcome !== "allow")) continue;
+    stored.set(pairKey(r.provider, CANARY_ID), {
+      provider: r.provider as ExternalGuardrailProvider,
+      promptId: CANARY_ID,
+      outcome: r.outcome,
+      since: r.since,
+      pending: null,
+    });
+  }
+  const { writes, changes } = canaryStep(stored, observed, now);
+  await env.DB.batch(
+    writes.map((w) =>
+      env.DB!.prepare(
+        `INSERT INTO guardrail_prompt_verdicts (provider, prompt_id, outcome, since, pending, updated_at) VALUES (?,?,?,?,?,?)
+         ON CONFLICT(provider, prompt_id) DO UPDATE SET outcome = excluded.outcome, since = excluded.since,
+           pending = excluded.pending, updated_at = excluded.updated_at`,
+      ).bind(w.provider, w.promptId, w.outcome, w.since, null, now),
+    ),
+  );
+  if (changes.length === 0) return done(base);
+  const payload = {
+    text: canaryText(changes),
+    canaryChanges: changes.map((c) => ({ ...c, label: PROVIDERS[c.provider].label })),
+    at: new Date(now).toISOString(),
+  };
+  const delivered = await deliverAlert(env, "guardrail_smoke_canary_change", payload, { fetchImpl: deps.fetchImpl, log });
+  return done({ ...base, changes: changes.length, delivered });
+}
+
+// For Settings: which vendors' last verdict on the smoke prompt was a block. null when the table cannot be read; an
+// empty `checked` means no run has given a verdict on it yet.
+export async function canaryStatus(
+  db: D1Database | undefined,
+): Promise<{ checked: ExternalGuardrailProvider[]; blockedBy: ExternalGuardrailProvider[] } | null> {
+  if (!db) return null;
+  try {
+    const { results } = await db
+      .prepare("SELECT provider, outcome FROM guardrail_prompt_verdicts WHERE prompt_id = ?")
+      .bind(CANARY_ID)
+      .all<{ provider: string; outcome: string }>();
+    const known = (results ?? []).filter((r) => r.provider in PROVIDERS) as { provider: ExternalGuardrailProvider; outcome: string }[];
+    return { checked: known.map((r) => r.provider), blockedBy: known.filter((r) => r.outcome === "block").map((r) => r.provider) };
   } catch {
     return null;
   }

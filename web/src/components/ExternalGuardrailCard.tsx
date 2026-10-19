@@ -54,20 +54,20 @@ const MAX_CHIPS = 3;
 function pillClass(v: VendorView): string {
   if (v.state === "notRun") return "border-dashed border-line text-muted";
   if (v.state === "block") return "border-cf-amber bg-cf-amber text-[#1a1206]";
-  if (v.state === "allow" && !v.partial) return "border-cf-green/50 bg-cf-green/10 text-cf-green";
-  if (v.state === "allow") return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
-  return "border-dashed border-cf-amber/70 text-cf-amber";
+  if (v.state === "allow" && !v.partial) return "border-cf-green/50 bg-cf-green/10 text-cf-green-ink";
+  if (v.state === "allow") return "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink";
+  return "border-dashed border-cf-amber/70 text-cf-amber-ink";
 }
 
 // Findings in amber only when they caused a block. An allow's findings — what a
 // vendor redacted or only alerted on — are information, not the reason for a stop,
 // and painting them amber made an allow read like a block.
 function findingText(v: VendorView): string {
-  return v.state === "block" ? "font-semibold text-cf-amber" : "font-medium text-text";
+  return v.state === "block" ? "font-semibold text-cf-amber-ink" : "font-medium text-text";
 }
 function findingChip(v: VendorView): string {
   return v.state === "block"
-    ? "border-cf-amber/60 bg-cf-amber/10 font-bold text-cf-amber"
+    ? "border-cf-amber/60 bg-cf-amber/10 font-bold text-cf-amber-ink"
     : "border-line bg-surface-2 font-semibold text-text";
 }
 
@@ -87,7 +87,7 @@ function Marker({ v }: { v: VendorView }) {
             ? "Ran in parallel with the others and blocked on its own — any one of these blocks would have stopped the turn"
             : "This result is the one that stopped the turn"
       }
-      className="text-[10.5px] font-bold tracking-wider text-cf-amber uppercase"
+      className="text-[10.5px] font-bold tracking-wider text-cf-amber-ink uppercase"
     >
       {vote ? "voted to stop" : independent ? "blocked independently" : "decided"}
     </span>
@@ -147,7 +147,7 @@ function VendorColumn({ v }: { v: VendorView }) {
       {v.latencyMs != null && <div className="mt-1.5 font-mono text-[11px] text-muted">{v.latencyMs} ms</div>}
 
       {v.notes.length > 0 && (
-        <ul className="mt-1.5 flex flex-col gap-1 text-[11.5px] text-cf-amber">
+        <ul className="mt-1.5 flex flex-col gap-1 text-[11.5px] text-cf-amber-ink">
           {v.notes.map((n) => (
             <li key={n}>{n}</li>
           ))}
@@ -219,11 +219,11 @@ function CardShell({
       }`}
     >
       <div className="flex items-start gap-2">
-        <span title={explainer} className={`mt-0.5 shrink-0 cursor-help ${warn ? "text-cf-amber" : "text-muted"}`}>
+        <span title={explainer} className={`mt-0.5 shrink-0 cursor-help ${warn ? "text-cf-amber-ink" : "text-muted"}`}>
           {warn ? <ShieldAlert size={16} aria-hidden="true" /> : <Shield size={16} aria-hidden="true" />}
         </span>
         <div className="min-w-0">
-          <div id={headId} className={`font-bold ${warn ? "text-cf-amber" : "text-text"}`}>
+          <div id={headId} className={`font-bold ${warn ? "text-cf-amber-ink" : "text-text"}`}>
             {view.headline}
           </div>
           <div className="text-[11.5px] text-muted">{view.subline}</div>
@@ -263,7 +263,7 @@ function CompactRow({ v }: { v: VendorView }) {
         {v.latencyMs != null && <span className="ml-auto font-mono text-[11px] text-muted">{v.latencyMs} ms</span>}
       </div>
       {v.notes.length > 0 && (
-        <ul className="mt-0.5 flex flex-col gap-0.5 text-[11px] text-cf-amber">
+        <ul className="mt-0.5 flex flex-col gap-0.5 text-[11px] text-cf-amber-ink">
           {v.notes.map((n) => (
             <li key={n}>{n}</li>
           ))}
@@ -423,7 +423,7 @@ function VendorTable({ vendors }: { vendors: VendorView[] }) {
       label: "Notes",
       render: ({ c }) =>
         c.notes.length > 0 ? (
-          <ul className="flex flex-col gap-1 text-[11px] text-cf-amber">
+          <ul className="flex flex-col gap-1 text-[11px] text-cf-amber-ink">
             {c.notes.map((n) => (
               <li key={n}>{n}</li>
             ))}
@@ -510,7 +510,7 @@ function PipelineBody({ view, layout, pipeline }: { view: PipelineView; layout: 
   const withReport = view.vendors.filter((v) => v.reportId);
   return (
     <>
-      {view.caveat && <div className="mt-2 text-[11.5px] text-cf-amber">{view.caveat}</div>}
+      {view.caveat && <div className="mt-2 text-[11.5px] text-cf-amber-ink">{view.caveat}</div>}
       {view.why && (
         <div className="mt-2 text-[11.5px] text-muted">
           <span className="font-semibold text-text">Where they differ:</span> {view.why}
@@ -655,7 +655,7 @@ export function ExternalGuardrailBadge({
     return (
       <span
         title={`${name} blocked ${reply ? "this reply" : "this prompt"}, but quorum mode needs ${quorum.needed} votes to stop a turn and only ${quorum.votes} came in — so it went on. The block is still ${name}'s verdict.`}
-        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
       >
         {name} · blocked · outvoted ({tally}) · {result.latencyMs} ms
       </span>
@@ -665,7 +665,7 @@ export function ExternalGuardrailBadge({
     return (
       <span
         title={`${result.error ?? "No verdict"} — set to fail closed, so it counted as a vote to stop; too few votes came in.`}
-        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
       >
         {name} unavailable · fail-closed vote outvoted ({tally})
       </span>
@@ -675,7 +675,7 @@ export function ExternalGuardrailBadge({
     return (
       <span
         title={`${name} redacted this prompt and, as configured, the model received ${name}'s redacted prompt instead of the original.`}
-        className="rounded-full border border-cf-green/60 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green"
+        className="rounded-full border border-cf-green/60 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green-ink"
       >
         {name} · allow · redaction applied · {result.latencyMs} ms
       </span>
@@ -700,7 +700,7 @@ export function ExternalGuardrailBadge({
                   ? `${name} redacted part of this prompt, but only one redaction is applied per turn — the model received ${providerLabel(appliedBy)}'s redacted prompt.`
                   : `${name} redacted part of this prompt, but its redaction is not applied (Settings: off for this vendor) — the model received the original prompt.`
           }
-          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
         >
           {name} · allow · {result.redactionApplied ? "redaction applied" : "redaction not applied"} · {result.latencyMs} ms
         </span>
@@ -733,7 +733,7 @@ export function ExternalGuardrailBadge({
       return (
         <span
           title={`${name} ${why}: it logged ${n === 1 ? "a detection" : `${n} detections`} (${(result.detected ?? []).join(", ")}) but did not block.`}
-          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
         >
           {name} · allow · {n} alert{n === 1 ? "" : "s"}
           {mode} · {result.latencyMs} ms
@@ -744,14 +744,14 @@ export function ExternalGuardrailBadge({
       return (
         <span
           title="Prisma AIRS returned a verdict, but at least one of its detection services timed out or errored — the allow covers only the checks that ran."
-          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+          className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
         >
           {name} · allow (incomplete scan){result.category ? ` · ${result.category}` : ""} · {result.latencyMs} ms
         </span>
       );
     }
     return (
-      <span className="rounded-full border border-cf-green/60 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green">
+      <span className="rounded-full border border-cf-green/60 bg-cf-green/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-green-ink">
         {name} · allow
         {result.category ? ` · ${result.category}` : ""} · {result.latencyMs} ms
       </span>
@@ -761,7 +761,7 @@ export function ExternalGuardrailBadge({
     return (
       <span
         title={result.error}
-        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber"
+        className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
       >
         {name} unavailable — {reply ? "reply shown unchecked" : "sent unscanned"}
       </span>

@@ -7,6 +7,7 @@
 // CF_AIG_TOKEN is set is not exposed, so it is not listed.
 import { useState, type ReactNode } from "react";
 import type { ExternalGuardrailsState, GatewayOption, ModelsResponse } from "../../lib/types";
+import { PROVIDER_LABELS } from "../../lib/guardrailView";
 import { CLOUDFLARE_LINKS, type ProductLink } from "../../lib/productLinks";
 import { ProductLinks } from "../ProductLinks";
 import { PANEL } from "./primitives";
@@ -16,7 +17,7 @@ type Tone = "on" | "off" | "neutral" | "unknown";
 function Value({ tone, children }: { tone: Tone; children: ReactNode }) {
   const cls =
     tone === "on"
-      ? "border-cf-green/50 text-cf-green"
+      ? "border-cf-green/50 text-cf-green-ink"
       : tone === "off"
         ? "border-line-strong text-muted"
         : tone === "unknown"
@@ -62,6 +63,9 @@ function Row({
 }
 
 const code = (s: string) => <code className="font-mono text-[11px] text-muted">{s}</code>;
+
+// The alert webhook's body shape (src/alertDelivery.ts), as the operator would name it.
+const FORMAT_NAMES = { slack: "Slack", teams: "Teams", discord: "Discord", json: "generic JSON" } as const;
 
 // An account can hold many gateways; the Worker lists the two demo gateways first,
 // so the first few are the ones that matter and the rest wait behind a toggle.
@@ -144,11 +148,19 @@ export function DeploymentPanel({
               <Value tone={state.automation.alerts.webhook === "set" ? "on" : "off"}>
                 Outage alerts:{" "}
                 {state.automation.alerts.webhook === "set"
-                  ? "webhook"
+                  ? `webhook${state.automation.alerts.webhookFormat ? ` (${FORMAT_NAMES[state.automation.alerts.webhookFormat]})` : ""}`
                   : state.automation.alerts.webhook === "invalid"
                     ? "webhook invalid — logs only"
                     : "logs only"}
               </Value>
+              {/* The smoke prompt's canary (src/smokeCanary.ts): a block here means the next npm run smoke:prod fails. */}
+              {state.automation.smokeCanary && state.automation.smokeCanary.checked.length > 0 && (
+                <Value tone={state.automation.smokeCanary.blockedBy.length ? "off" : "on"}>
+                  {state.automation.smokeCanary.blockedBy.length
+                    ? `Smoke prompt blocked by ${state.automation.smokeCanary.blockedBy.map((p) => PROVIDER_LABELS[p] ?? p).join(", ")}`
+                    : "Smoke prompt: allowed by all"}
+                </Value>
+              )}
             </span>
           )
         }
@@ -173,6 +185,13 @@ export function DeploymentPanel({
                   .
                 </>
               )}
+              {state.automation.smokeCanary !== undefined && (
+                <>
+                  {" "}
+                  Smoke canary: each re-run also sends the prod smoke test's prompt, and alerts the first time a vendor blocks
+                  it — the smoke test's route checks would then fail.
+                </>
+              )}
               {state.automation.alerts.states.length > 0 && (
                 <>
                   {" "}
@@ -189,7 +208,8 @@ export function DeploymentPanel({
         setBy={
           <>
             Cron Triggers in {code("wrangler.jsonc")}; secret {code("ALERT_WEBHOOK_URL")} (https) for alerts, unset = Worker
-            logs only
+            logs only. A Slack, Teams (Workflows) or Discord URL gets that service's format; {code("ALERT_WEBHOOK_FORMAT")}{" "}
+            overrides it
           </>
         }
         product={{ name: "Cron Triggers", links: CLOUDFLARE_LINKS.cron }}

@@ -331,11 +331,16 @@ export interface GuardrailAutomation {
     minChecks: number;
     noVerdictRate: number; // 0.5 = half the checks
     webhook: "set" | "unset" | "invalid"; // never the URL itself
+    // The body shape the webhook gets, from its host or ALERT_WEBHOOK_FORMAT; null when unset. Absent from an older Worker.
+    webhookFormat?: "slack" | "teams" | "discord" | "json" | null;
     states: { provider: ExternalGuardrailProvider; state: "ok" | "down"; since: number; updatedAt: number }[];
   };
   // 2026-10-18 (src/verdictWatch.ts): vendor × prompt pairs watched for a changed verdict. tracked / pending null when
   // the table could not be read. Absent from an older Worker.
   verdictWatch?: { confirmRuns: number; tracked: number | null; pending: number | null };
+  // 2026-10-19 (src/smokeCanary.ts): the vendors that gave a verdict on the smoke prompt, and those that blocked it.
+  // null when the table could not be read. Absent from an older Worker.
+  smokeCanary?: { checked: ExternalGuardrailProvider[]; blockedBy: ExternalGuardrailProvider[] } | null;
 }
 
 export type GuardrailAccess =

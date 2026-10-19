@@ -84,7 +84,9 @@ replied() {
   return 0
 }
 
-# Plain enough that every enabled vendor allowed it on 2026-10-19 (all five verdicts were allow or error).
+# Plain enough that every enabled vendor allowed it on 2026-10-19 (all five verdicts were allow or error). A COPY of
+# src/smokeCanary.ts SMOKE_PROMPT — the 6-hourly re-run sends that one to every vendor and alerts the first time one
+# blocks it, so a vendor's drift is heard before a deploy fails here. src/smokeCanary.test.ts fails if the two differ.
 SMOKE_PROMPT="What is the capital of France?"
 
 hr

@@ -20,7 +20,7 @@ export function SectionHeader({
   children?: ReactNode; // the one-paragraph explanation of what "scope" means here
 }) {
   const chip =
-    scopeTone === "viewer" ? "border-cf-blue/50 bg-cf-blue/10 text-cf-blue" : "border-cf-amber/60 bg-cf-amber/10 text-cf-amber";
+    scopeTone === "viewer" ? "border-cf-blue/50 bg-cf-blue/10 text-cf-blue" : "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink";
   return (
     <div className="flex items-start gap-3">
       <div className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-line bg-surface-2 text-muted">

@@ -160,7 +160,7 @@ export function EdgeTab({
               value={est ? estValue(est.logged) : capped ? `${logged}+` : logged}
               rate={est ? estRate(est.logged, est.level) : pctOf(logged)}
               delta={deltaOf(logged, prev?.logged)}
-              icon={<ShieldAlert size={16} className="text-cf-amber" />}
+              icon={<ShieldAlert size={16} className="text-cf-amber-ink" />}
               tone="border-cf-amber/40 bg-cf-amber/10"
             />
             <Tile
@@ -181,7 +181,7 @@ export function EdgeTab({
           {!hasEvents && !hasScores ? (
             <Card title="No events in this window">
               <div className="flex items-start gap-3 text-sm text-muted">
-                <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green" />
+                <ShieldCheck size={18} className="mt-0.5 shrink-0 text-cf-green-ink" />
                 <p>
                   Nothing recorded in the last {hours}h. Send a few attacks from the{" "}
                   <Link to="/" className="text-accent hover:underline">

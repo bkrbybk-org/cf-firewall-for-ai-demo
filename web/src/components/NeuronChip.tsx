@@ -12,12 +12,12 @@ export function NeuronChip({ state }: { state: NeuronState }) {
     if (!d.configured) {
       body = "Neuron monitor: off";
     } else if (d.error) {
-      tone = "border-cf-amber text-cf-amber";
+      tone = "border-cf-amber text-cf-amber-ink";
       body = "Neuron monitor: error";
     } else {
       const pct = d.pctUsed ?? 0;
       if (pct >= 100) tone = "border-cf-red text-cf-red";
-      else if (pct >= 80) tone = "border-cf-amber text-cf-amber";
+      else if (pct >= 80) tone = "border-cf-amber text-cf-amber-ink";
       body = `${Math.round(d.totalNeurons ?? 0).toLocaleString()} / ${(d.freeLimit ?? 0).toLocaleString()} (${pct.toFixed(1)}%)`;
     }
   }
