@@ -1,6 +1,8 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-10-05 — guardrail card layouts (columns / compact, per viewer); docs re-checked against the code; #23 and #24 fixed, #22 still live in prod_
+_Last updated: 2026-10-20 — docs re-checked against the code (README layout, endpoints, Tests table; this file's
+header, Pages, Repository layout, Version control and backlog). Newest feature entry: 2026-10-19 (prompt × vendor grid,
+per-run trend). Live problem: Cato 401 (#31), needs a new key_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -14,14 +16,15 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 
 > **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
 > **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
-> comes first, then the **2026-10** entries newest-first (guardrail card layouts, #23/#24 fixes, the
-> Prisma AIRS report panel, CrowdStrike AIDR, the guardrail pipeline, OpenAPI 3.0, Prisma AIRS), then
+> comes first, then the **2026-10** entries newest-first (from the 2026-10-19 grid and trend back to the first
+> external guardrail, Prisma AIRS, on 2026-10-01), then
 > 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
 > migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
 > true that day; the Architecture, Pages and Open bugs sections describe what is true now.
 > The prod AI Gateway outage found on 2026-09-30 was **resolved the same day** (Open bug #1).
-> **⚠️ The Compliance page's MEASURE 2.7 "blocked" count is wrong in prod (Open bug #22) — it counts every
-> WAF block in the zone, not AI Security's. Read #22 before showing that page to a customer.**
+> Compliance MEASURE 2.7 (Open bug #22) was **fixed 2026-10-07**: it counts AI Security rules only.
+> **🔴 Live on prod: Cato AI Security has answered HTTP 401 since 2026-10-13 (Open bug #31)** — every Cato check
+> fails open until the user saves a new key.
 
 ---
 
@@ -319,7 +322,11 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   all fit one viewport (sidebar + library are `shrink-0` with far more content than the screen), so
   the whole column scrolls instead of the chat pane collapsing to zero height — a real layout bug
   fixed this session (see Open bugs history / Implemented). `/gateway` redirects here.
-- **`/analytics`**: three tabs (edge / AI Gateway / prompt log). Edge and gateway tabs share a
+- **`/analytics`** (vendor-agnostic since 2026-10-12 — see that entry and README's Analytics section for the current
+  shape): **All vendors** (side-by-side table, per-prompt grid, per-run trend), **Cloudflare · AI Security (edge)**,
+  **Cloudflare · AI Gateway**, one page per **external guardrail** (Analytics Engine verdicts), and the **prompt log**
+  when `PROMPT_LOG_ENABLED` is on. The text below describes the original three tabs, which still exist inside it:
+  edge / AI Gateway / prompt log. Edge and gateway tabs share a
   1h/24h/7d range picker; **prompt log has its own independent range** (1h/24h/7d/**all**/**custom**
   date-time picker), defaulting to **1h**, since it's reviewed differently (recent activity vs. "the
   whole demo session"). Prompt log is a **sortable, paginated table** (click any column header;
@@ -342,11 +349,15 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   detail cards. **Six frameworks**: NIST AI RMF · ISO 42001 · OWASP LLM Top 10 · MITRE ATLAS ·
   Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025). The OWASP LLM01 and
   MITRE AML.T0051 cards link to `/redteam`.
-- **`/guardrails` — External Guardrails** (2026-10): the traffic-flow diagram (enable/disable each
-  provider, order, sequential/parallel, guardrail-only), the per-viewer **Chat card layout** switch
-  (columns / compact, browser storage only), then one settings card per provider (region, key — write-only,
-  profile, fail mode, *Test connection*).
-- **Page width**: `/analytics`, `/redteam`, `/compliance` and `/guardrails` run to `max-w-[1600px]`; the chat page
+- **`/settings`** (was `/guardrails` until 2026-10-07, which now redirects to `/settings#system`): **Your
+  preferences** (per viewer, browser storage: theme, card layout, turn details, raw responses) kept apart from
+  **System settings** (shared, D1, admin-gated on prod): the traffic-flow diagram (sequential / parallel / quorum,
+  order, guardrail-only, check replies), the six providers as a collapsible list (key with its age, region, profile,
+  fail mode, health incl. "Key rejected", console / docs links, *Test connection*), *Test all vendors*, and the
+  read-only Deployment panel (vars, secrets, bindings, cron automation status).
+- **`/compliance`** is vendor-agnostic too since 2026-10-12: All vendors, Cloudflare (graded) and each external
+  guardrail (observed).
+- **Page width**: `/analytics`, `/redteam`, `/compliance` and `/settings` run to `max-w-[1600px]`; the chat page
   keeps its own three-pane shell.
 
 ---
@@ -413,19 +424,26 @@ New in 2026-10: `src/openapi30.ts` (OAS 3.0.3 for API Shield), the external-guar
 `components/PipelineDiagram.tsx`, `ExternalGuardrailCard.tsx`, `GuardrailReportPanel.tsx`,
 `CardLayoutPicker.tsx`, `web/src/lib/guardrailView.ts` + `cardLayout.ts`, `hooks/useGuardrailCardLayout.ts` —
 and the honesty fixes `src/percentile.ts` (#24) and `src/coverage.ts` (#23). README's layout is the
-up-to-date one; the tree above predates all of this.
+up-to-date one (re-checked against the tree 2026-10-20); the tree above predates all of this.
+`GuardrailsPage.tsx` became `SettingsPage.tsx` on 2026-10-07, and `CardLayoutPicker.tsx` no longer exists (the layout
+switch is in `components/settings/PreferencesSection.tsx`). Later in 2026-10: the other four vendor clients, migrations
+`0007`–`0012`, the cron modules (`scheduledCorpus`, `scheduledRerun`, `vendorAlerts`, `alertDelivery`, `verdictWatch`,
+`smokeCanary`), and the vendor-agnostic analytics / compliance parts — all listed in README.
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
 dev:worker` / `npm run dev:web` · `npm run smoke:prod` (5 authenticated checks against prod through
 Access). `.claude/launch.json` has `wrangler-dev` (8787), `wrangler-dev-promptlog` (8788, prompt log
-on via `--var`), `wrangler-dev-guardrail-admins` (8789, an admin list set, so `/guardrails` is read-only
-locally) and `vite-dev` configs.
+on via `--var`), `wrangler-dev-guardrail-admins` (8789, an admin list set, so Settings → System is read-only
+locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `/__scheduled?cron=…`) and `vite-dev`
+(5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 32+ commits, and **everything is merged to `main`,
-which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Prod was last
-deployed 2026-10-05 as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
+ran none of the recent work, both long untrue): 104 commits on 2026-10-20, and **everything is merged to `main`,
+which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
+entry under Implemented names its own deploy id; the newest is `a07cfa44-38ac-46d3-a3a3-aa40ab05baaf` (2026-10-19,
+prompt × vendor grid and per-run trend, commit `830ebc1`; `0fa2edd` after it is docs only). The history below stops at
+2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
 `f293eccc` (2026-10-01, OpenAPI 3.0 rendering, Swagger on 3.0, API docs link); before that `30312678` (the 3.0 endpoint alone) and `4a7e311c` (external guardrails); before that
@@ -460,7 +478,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **688 across 46 files** (measured 2026-10-07; README's Tests table has the
+**Tests** — `npm test`, **959 across 67 files** (measured 2026-10-20; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -4111,6 +4129,12 @@ below are kept as written. Items they still list as open but that are done are t
     - **So it is on Lakera's side:** a detector update, or an edit to the project's policy in Lakera's console. Which
       one is not provable from here.
     - **Its latency also fell,** to about 70–150 ms from about 150–250 ms, from 2026-10-15 06:00.
+- **Since then (2026-10-18/19, see those entries):** verdict watch, prompt ids, smoke canary and scheduled reply checks
+  are live. First reply run (2026-10-19 06:00): AIRS (`dlp`) and Lakera (`pii/us_social_security_number`) withheld
+  the SSN reply; AIDR and Cisco allowed it; the harmless reply was allowed by all.
+  - **Open, offered to the user, not approved:** Prisma AIRS answers `allow` with detections (e.g. `toxic_content` on
+    `rt-05`, the profile's action is allow) and the parser does not set `detectOnly`, so the grid shows "missed" where
+    other vendors read "alerts only". The fix would set the flag only.
 - **🔴 Cato has answered HTTP 401 since 2026-10-13 06:00 UTC** (Open bugs #31). Every check since then fails open, so
   live chat runs without Cato. **Needs the user:** a new key in Settings.
 - **Needs the user** (the admin gate, credentials, or a policy call):
@@ -4129,8 +4153,9 @@ below are kept as written. Items they still list as open but that are done are t
 - **Self, but it spends money on prod or touches it:**
   - **The Red Team corpus on prod, twice, compared:** `/api/redteam-runs` still lists 0 saved runs on prod.
   - **`npm run corpus:thai` on prod.**
-  - **Dynamic Route with `tier=free`.**
-  - **Whether custom metadata lands in the gateway logs.**
+  - ~~**Dynamic Route with `tier=free`.**~~ **Done 2026-10-19** (Open bugs #6): `tier=free` → llama-3.2-1b,
+    `tier=pro` → gpt-oss-120b.
+  - ~~**Whether custom metadata lands in the gateway logs.**~~ **Done 2026-10-19** (#6): it does.
 - ~~**Self, code, small:** set `verified: true` for Lakera Guard.~~ **Done 2026-10-18** (see that day's entry), from 192
   live verdicts all parsed. Original note: real prompt and reply blocks have been seen and parsed
   (`prompt_attack`, `moderated_content/*`), but the "unverified" badge is still on.
