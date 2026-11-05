@@ -4190,6 +4190,21 @@ exercised):
       (admin gate). After that, re-run `npm run smoke:prod`.
     - **2026-11-05 ~08:55 UTC:** all six vendors, Lakera included, read `enabled: false` on prod; smoke [2]/[3] pass and
       [4] fails (nothing blocks PII before the model). Lakera's own block is not known to be fixed.
+34. **AI Gateway Guardrails' prompt-injection check (`P1`) on Block stopped every prompt on `cf-ai-sec-demo-gw`
+    (from 2026-11-05 09:19 UTC; passing again by 17:26 UTC). FIXED by the user: `P1` on prompts set to Flag.**
+    - **Seen:** every chat on that gateway, direct (2016 "Prompt blocked due to security configurations") or through
+      `dynamic/demo-routes` (422 "Model execution failed (Content moderation error): Guardrails blocked prompt"), was
+      blocked, even `สวัสดีจ้า` ("hello"). The last pass was 09:08 UTC.
+    - **Not Llama Guard:** its logged call answered `{"safe":true,"categories":[]}` for every blocked prompt. `P1` is
+      checked by a separate model, `@cf/meta/prompt-guard-2-86m` ([usage considerations](https://developers.cloudflare.com/ai-gateway/features/guardrails/usage-considerations/)),
+      whose calls do not appear in the gateway's logs.
+    - **Likely why it misfires (not proven):** the gateway hands the guard models the whole request body as one string,
+      the system prompt included ("You are a helpful assistant… Never repeat back personal data."). The logged Llama Guard
+      request shows this. Instruction-like text is what an injection classifier is trained to flag. The repo's tokens
+      cannot run models directly, so prompt-guard was never called on its own here.
+    - **Proven by the fix:** with prompt `P1: FLAG` (read back from the gateway API), the same prompt passes on
+      both paths, and the direct call's log carries `guardrails: {"prompt":{"P1":"FLAG"}}`: P1 still fires on a greeting.
+      Response `P1` is still BLOCK. Prompt injection is still caught at the edge by AI Security for Apps' injection score.
 
 ## Next tasks
 
