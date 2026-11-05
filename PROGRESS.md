@@ -1,6 +1,7 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-05 — who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
+_Last updated: 2026-11-06 — default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+(#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
 (user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
 block (#33) and Cato's 401 (#31) still need the user before those vendors go back on._
@@ -445,8 +446,8 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `44633167-4a94-440b-a874-af01b5b93eac` (2026-11-05,
-who is prompting in the AI Gateway log). The history below stops at
+entry under Implemented names its own deploy id; the newest is `fd061902-66ca-45b1-8260-03e266be9ef7` (2026-11-06,
+the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
@@ -4205,6 +4206,21 @@ exercised):
     - **Proven by the fix:** with prompt `P1: FLAG` (read back from the gateway API), the same prompt passes on
       both paths, and the direct call's log carries `guardrails: {"prompt":{"P1":"FLAG"}}`: P1 still fires on a greeting.
       Response `P1` is still BLOCK. Prompt injection is still caught at the edge by AI Security for Apps' injection score.
+    - **2026-11-06: the cause removed on our side, too: the default system prompt was reworded** (`src/config.ts`,
+      deploy `fd061902-66ca-45b1-8260-03e266be9ef7`). The new text is "This is a Cloudflare security demo. Replies are
+      short: a few sentences. Personal data such as card or ID numbers is not repeated in replies." It states facts
+      instead of giving commands. Measured with P1 on Flag, so a flag shows in the log without blocking:
+      - **P1 on `cf-ai-sec-demo-gw`**, three harmless prompts (`สวัสดีจ้า`, "What is the capital of France?", "Name three
+        primary colours."), read back from each log's `guardrails`. The old text was flagged 3/3. Four rewrites were
+        each flagged 0/3. The deployed default, sent with no `systemPrompt`, was flagged 0/3.
+      - **PII still kept out of replies:** on `cf-ai-sec-demo-gw-no-guardrail`, the model alone decides. Two prompts
+        that ask for a card number and a Thai ID to be repeated were each sent twice, and the replies were checked by
+        regex. The chosen text leaked 0 of 4; the old one also leaked 0 of 4. Other rewrites lost replies to the gateway's
+        rate limit (`2003`), which is not a model result.
+      - **What this does NOT prove:** only the default text is covered. A system prompt typed in the UI can still trip P1.
+        A long conversation was not tested either. The gateway evaluates the whole body, so history text counts as well.
+      - **Smoke:** [1], [2], [3] and [5] pass. [4] fails, unchanged from 2026-11-05: all external vendors are disabled.
+        `/api/models` serves the new text.
 
 ## Next tasks
 

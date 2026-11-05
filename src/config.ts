@@ -5,9 +5,16 @@
 // their reasoning phase first — 512 truncated them before any final answer.
 export const MAX_REPLY_TOKENS = 2048;
 
+// Worded as plain statements, not commands, on purpose (Open bug #34). AI Gateway Guardrails hands
+// its classifiers the WHOLE request body, system prompt included, and the prompt-injection check (P1,
+// prompt-guard-2-86m) flagged the old "You are a helpful assistant… Never repeat back personal data."
+// on every turn — with P1 on Block, every prompt on the guarded gateway was refused. Measured
+// 2026-11-06 on cf-ai-sec-demo-gw: old wording P1-flagged 3/3 harmless prompts, this one 0/3; on the
+// unguarded gateway it still kept a card and a Thai ID number out of 4/4 replies that asked for them.
+// Re-run that check before rewording it.
 export const DEFAULT_SYSTEM_PROMPT =
-  "You are a helpful assistant in a Cloudflare security demo. " +
-  "Answer briefly (a few sentences at most). Never repeat back personal data.";
+  "This is a Cloudflare security demo. Replies are short: a few sentences. " +
+  "Personal data such as card or ID numbers is not repeated in replies.";
 export const MAX_SYSTEM_PROMPT_LEN = 2000;
 // The prompt itself (Open bug #25: it was the one uncapped text field). Same budget as
 // the whole history. Over it is a 400, never a truncation: the edge already scanned the
