@@ -1,7 +1,7 @@
 // The write gate for guardrail settings (#26). Tokens are signed here with a
 // generated RSA key, served through a fake certs endpoint — no network.
 import { beforeEach, describe, expect, it } from "vitest";
-import { _resetAccessKeyCache, adminEmails, guardrailWriteAccess, verifyAccessJwt } from "./accessAuth";
+import { _resetAccessKeyCache, adminEmails, guardrailWriteAccess, requesterLabel, verifyAccessJwt, withRequester } from "./accessAuth";
 
 const TEAM = "team.cloudflareaccess.com";
 const AUD = "aud-123";
@@ -122,5 +122,37 @@ describe("adminEmails", () => {
   it("splits on commas and whitespace, lowercases, drops blanks", () => {
     expect(adminEmails(" A@x.com,b@x.com\n  c@x.com ,, ")).toEqual(["a@x.com", "b@x.com", "c@x.com"]);
     expect(adminEmails(undefined)).toEqual([]);
+  });
+});
+
+describe("requesterLabel + withRequester — who is prompting, in AI Gateway metadata (2026-11-05)", () => {
+  const req = (h: Record<string, string> = {}) => new Request("https://x/api/chat", { method: "POST", headers: h });
+  const env = { ACCESS_TEAM_DOMAIN: TEAM, ACCESS_AUD: AUD };
+
+  it("names a verified person by email and a service token by its client id", async () => {
+    const f = certs([A.jwk]);
+    const person = await sign(A.kp, "k1", claims({ email: "alice@example.com" }));
+    expect(await requesterLabel(req({ "cf-access-jwt-assertion": person }), env, f, NOW)).toBe("alice@example.com");
+    const svc = await sign(A.kp, "k1", claims({ email: undefined, common_name: "abc.access" }));
+    expect(await requesterLabel(req({ "cf-access-jwt-assertion": svc }), env, f, NOW)).toBe("service-token:abc.access");
+  });
+
+  it("is null without a verified login — the unsigned email header is never trusted", async () => {
+    const f = certs([A.jwk]);
+    expect(await requesterLabel(req({ "cf-access-authenticated-user-email": "spoof@example.com" }), env, f, NOW)).toBeNull();
+    const forged = await sign((await keypair("k1")).kp, "k1", claims({ email: "spoof@example.com" }));
+    expect(await requesterLabel(req({ "cf-access-jwt-assertion": forged }), env, f, NOW)).toBeNull();
+    const t = await sign(A.kp, "k1", claims());
+    expect(await requesterLabel(req({ "cf-access-jwt-assertion": t }), { ACCESS_TEAM_DOMAIN: TEAM }, f, NOW)).toBeNull();
+  });
+
+  it("puts the server entry first, drops a caller-supplied user, and keeps the 5-entry cap", () => {
+    const five = { a: "1", b: "2", c: "3", d: "4", e: "5" };
+    expect(withRequester(five, "alice@example.com", 5)).toEqual({ user: "alice@example.com", a: "1", b: "2", c: "3", d: "4" });
+    expect(Object.keys(withRequester(five, "alice@example.com", 5)!)[0]).toBe("user");
+    expect(withRequester({ User: "mallory", a: "1" }, null, 5)).toEqual({ a: "1" });
+    expect(withRequester({ user: "mallory" }, "alice@example.com", 5)).toEqual({ user: "alice@example.com" });
+    expect(withRequester(undefined, null, 5)).toBeUndefined();
+    expect(withRequester({ user: "mallory" }, null, 5)).toBeUndefined();
   });
 });

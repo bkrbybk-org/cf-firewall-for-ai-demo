@@ -158,6 +158,46 @@ export async function guardrailWriteAccess(
   return { canEdit: true, mode: "admin", who: id.email };
 }
 
+// Who sent this request, as AI Gateway log metadata (`user`). Only a VERIFIED Access JWT
+// counts: the plain Cf-Access-Authenticated-User-Email header is not signed, so trusting it
+// would let anything that reaches the Worker without passing Access write any name it liked
+// into the gateway's log. null = nobody verified (local dev, Access not configured, or a bad
+// token) — never a guess. A service token is named by its client id (Access's `common_name`),
+// which is an identifier, not the secret.
+export async function requesterLabel(
+  request: Request,
+  env: Pick<Env, "ACCESS_TEAM_DOMAIN" | "ACCESS_AUD">,
+  fetchImpl?: FetchLike,
+  nowMs?: number,
+): Promise<string | null> {
+  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) return null;
+  const token = request.headers.get("cf-access-jwt-assertion");
+  if (!token) return null;
+  const id = await verifyAccessJwt(token, { teamDomain: env.ACCESS_TEAM_DOMAIN, aud: env.ACCESS_AUD }, fetchImpl, nowMs);
+  if (!id) return null;
+  if (id.email) return id.email;
+  if (id.commonName) return `service-token:${id.commonName}`;
+  return null;
+}
+
+// The metadata key the Worker owns. A caller's own `user` entry is always dropped, verified
+// identity or not, so a `user` value in the gateway log only ever means "Access verified this".
+export const REQUESTER_METADATA_KEY = "user";
+
+// AI Gateway keeps only the first `max` entries, so the server's entry goes FIRST and the
+// caller's entries fill what is left — the identity can never be the one that gets dropped.
+export function withRequester(
+  meta: Record<string, string> | undefined,
+  requester: string | null,
+  max: number,
+): Record<string, string> | undefined {
+  const rest = Object.entries(meta ?? {}).filter(([k]) => k.toLowerCase() !== REQUESTER_METADATA_KEY);
+  const out = requester
+    ? [[REQUESTER_METADATA_KEY, requester.slice(0, 128)] as [string, string], ...rest.slice(0, max - 1)]
+    : rest.slice(0, max);
+  return out.length ? Object.fromEntries(out) : undefined;
+}
+
 // Test hook: the key cache is module state.
 export function _resetAccessKeyCache(): void {
   keyCache.clear();

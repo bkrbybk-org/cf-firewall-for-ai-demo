@@ -593,7 +593,7 @@ export const openapi = {
           routeMetadata: {
             type: "object",
             additionalProperties: true,
-            description: "Gateway route only. Tags for AI Gateway logs and a route's Conditional nodes. At most 5 entries are kept; values are coerced to strings (sent as `cf-aig-metadata`).",
+            description: "Gateway route only. Tags for AI Gateway logs and a route's Conditional nodes. At most 5 entries are kept; values are coerced to strings (sent as `cf-aig-metadata`). The key `user` is reserved: the Worker drops a caller's own and, when the request carries a verified Cloudflare Access login, sends `user` first (the email, or `service-token:<client id>`), leaving 4 entries for the caller.",
           },
           skipCache: bool("Gateway route only — `cf-aig-skip-cache`."),
           cacheTtl: { type: "integer", exclusiveMinimum: 0, description: "Gateway route only. Seconds — `cf-aig-cache-ttl`." },

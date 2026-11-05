@@ -59,7 +59,7 @@ import {
   queryAiManagedRules,
   queryZoneRules,
 } from "./cloudflare";
-import { guardrailWriteAccess } from "./accessAuth";
+import { guardrailWriteAccess, requesterLabel, withRequester } from "./accessAuth";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
 import { expectOf, logVerdicts, promptIdOf, sourceOf } from "./guardrailLog";
@@ -831,13 +831,16 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
 
   // AI Gateway path — always REST (see runGatewayRest doc comment for why).
   if (gateway) {
+    // Who is prompting goes into the gateway log as `user` (a verified Access login only; see
+    // requesterLabel). Resolved here, not at parse time, because only this route reaches a gateway.
+    const metadata = withRequester(routeMetadata, await requesterLabel(request, env), MAX_METADATA_ENTRIES);
     const r = await runGatewayRest(env, {
       model,
       route: dynamicRoute || undefined,
       gatewayId,
       messages,
       stream,
-      metadata: routeMetadata,
+      metadata,
       skipCache,
       cacheTtl,
       cacheKey,

@@ -1,7 +1,9 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-05 — per-vendor switch for the scheduled re-runs (migration 0013). Live problems, both need the
-user: **Lakera blocks every harmless prompt since 2026-11-04 (#33), so every chat prompt on prod is stopped**; Cato 401 (#31)_
+_Last updated: 2026-11-05 — who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
+scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
+(user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
+block (#33) and Cato's 401 (#31) still need the user before those vendors go back on._
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -24,8 +26,9 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 > Compliance MEASURE 2.7 (Open bug #22) was **fixed 2026-10-07**: it counts AI Security rules only.
 > **🔴 Live on prod: Cato AI Security has answered HTTP 401 since 2026-10-13 (Open bug #31)** — every Cato check
 > fails open until the user saves a new key.
-> **🔴 Live on prod since 2026-11-04: Lakera blocks every harmless prompt (Open bug #33)**, so with Lakera enabled no chat
-> prompt reaches the model, and smoke [2] and [3] fail.
+> **🔴 Since 2026-11-04: Lakera blocks every harmless prompt (Open bug #33)**, so with Lakera enabled no chat
+> prompt reaches the model. By 2026-11-05 ~08:55 UTC every vendor was disabled on prod: smoke [2]/[3] pass again and [4]
+> fails, because nothing blocks PII before the model while the zone rules stay on Log.
 
 ---
 
@@ -442,8 +445,8 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `f36f8092-f30e-4654-a7a2-7b3aa21c1b38` (2026-11-05,
-the per-vendor scheduled re-run switch). The history below stops at
+entry under Implemented names its own deploy id; the newest is `44633167-4a94-440b-a874-af01b5b93eac` (2026-11-05,
+who is prompting in the AI Gateway log). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
@@ -479,7 +482,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **963 across 67 files** (measured 2026-11-05; README's Tests table has the
+**Tests** — `npm test`, **966 across 67 files** (measured 2026-11-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -644,6 +647,34 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-05 — Who is prompting, in the AI Gateway log (`user` metadata)
+
+**Asked:** include who is prompting in AI Gateway's logs (the user's screenshot: a gateway log entry with no user).
+
+- **What it does:** on the gateway route, `/api/chat` adds a `user` entry to `cf-aig-metadata`: the verified Cloudflare
+  Access login's email, or `service-token:<client id>` for a service token (Access's `common_name`, an identifier, not
+  the secret). No verified login (local dev, a bad token) → no entry, never a guess. The direct route never reaches a
+  gateway, so it has nothing to tag.
+- **Why the JWT and not the email header:** `Cf-Access-Authenticated-User-Email` is not signed. `requesterLabel()`
+  (`src/accessAuth.ts`) reuses `verifyAccessJwt`, the same check the guardrail admin gate uses.
+- **Not spoofable, and never the entry that is dropped:** `withRequester()` always removes a caller's own `user` key
+  (any case), then puts the server's entry FIRST and keeps 4 of the caller's: AI Gateway saves only the first 5. A
+  `user` value in the gateway log therefore only ever means "Access verified this".
+- **Why not AI Gateway's own `cf.user_id`:** Cloudflare adds that only when a request reaches the gateway through a
+  custom domain protected by Access ([custom metadata docs](https://developers.cloudflare.com/ai-gateway/observability/custom-metadata/)),
+  and it is the JWT `sub`, not an email. This app calls the gateway's REST API from the Worker with its own token.
+- **Tests:** 966 (3 new, `src/accessAuth.test.ts`): a person by email, a service token by client id; null for the unsigned
+  header alone, a forged token and missing Access config; server entry first, caller's `user` dropped, cap kept.
+- **Verified on prod** (deploy `44633167-4a94-440b-a874-af01b5b93eac`): a gateway chat sent with the `.env` service token
+  and `routeMetadata: {"user":"mallory","demo":"meta-check"}`; the log read back from the AI Gateway logs API
+  (`…/gateways/cf-ai-sec-demo-gw-no-guardrail/logs/01a1aaea-c8ba-7307-a46b-a48f28e93a36`) carries
+  `metadata: {"user":"service-token:8dbcf1c1….access","demo":"meta-check"}`. The email form is proven by unit test only,
+  since only a browser login carries one.
+- **Smoke:** [1], [2], [3], [5] pass. **[4] FAILS, for a reason that is not this change:** every external guardrail is
+  disabled on prod (`GET /api/external-guardrails`, all six `enabled: false`; pipeline now sequential, quorum 2), and the
+  zone rules are on Log by design (#28), so the PII prompt reaches the model. The user turned the vendors off, likely
+  because of Lakera (#33). Not "fixed" here: re-enabling vendors is the user's call (admin gate).
 
 ### 2026-11-05 — Per-vendor switch: leave a vendor out of the scheduled re-runs
 
@@ -4157,6 +4188,8 @@ exercised):
     - **The change is on Lakera's side:** a policy or threshold edit in the project, or a detector update. Fix in Lakera's
       console (the project's Crime / Hate thresholds), or disable Lakera in Settings meanwhile. Either needs the user
       (admin gate). After that, re-run `npm run smoke:prod`.
+    - **2026-11-05 ~08:55 UTC:** all six vendors, Lakera included, read `enabled: false` on prod; smoke [2]/[3] pass and
+      [4] fails (nothing blocks PII before the model). Lakera's own block is not known to be fixed.
 
 ## Next tasks
 
