@@ -281,7 +281,7 @@ export const openapi = {
             in: "query",
             required: false,
             schema: { type: "string", enum: ["chat", "redteam", "scheduled", "all"], default: "chat" },
-            description: "`redteam` = turns the Red Team page sent; `scheduled` = the Worker's own 6-hourly re-run (12 fixed prompts to the enabled vendors, no model; set in code, never from a header); `chat` = everything else (the chat page, the API, external scanners).",
+            description: "`redteam` = turns the Red Team page sent; `scheduled` = the Worker's own 6-hourly re-run (12 fixed prompts, plus 2 fixed prompt + reply pairs where a vendor checks replies, to the enabled vendors that are included in it, no model; set in code, never from a header); `chat` = everything else (the chat page, the API, external scanners).",
           },
           {
             name: "provider",
@@ -860,13 +860,14 @@ export const openapi = {
           secondKeyLast4: nullable("string", "The only part of the second key ever returned."),
           redactionSupported: bool("This vendor's redacted prompt can be sent to the model — only where its redaction field was seen in a real response (CrowdStrike AIDR, Cato)."),
           applyRedaction: bool("Send this vendor's redacted prompt to the model instead of the original. Always false where `redactionSupported` is false."),
+          scheduled: bool("Included in the 6-hourly scheduled re-run (default true). False: the cron sends this vendor nothing — no fixed prompts, reply pairs or smoke canary; chat and Red Team traffic still reach it while it is enabled."),
           updatedAt: nullable("integer", "Epoch ms."),
           apiKeySavedAt: nullable("integer", "Epoch ms the key was saved. null with a key set = saved before 2026-10-18, see `apiKeySavedNoLaterThan`."),
           apiKeySavedNoLaterThan: nullable("integer", "Epoch ms the key was saved by, at the latest (the config's last save) — only when `apiKeySavedAt` is unknown. The key's age is then at least now − this."),
           secondKeySavedAt: nullable("integer", "As `apiKeySavedAt`, for the second key."),
           secondKeySavedNoLaterThan: nullable("integer", "As `apiKeySavedNoLaterThan`, for the second key."),
         },
-        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "profileLabel", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "secondKeyLabel", "secondKeySet", "secondKeyLast4", "redactionSupported", "applyRedaction", "updatedAt", "apiKeySavedAt", "apiKeySavedNoLaterThan", "secondKeySavedAt", "secondKeySavedNoLaterThan"],
+        ["provider", "label", "supported", "enabled", "region", "endpoint", "regions", "profileName", "requiresProfile", "profileLabel", "keyLabel", "vendor", "failMode", "apiKeySet", "apiKeyLast4", "secondKeyLabel", "secondKeySet", "secondKeyLast4", "redactionSupported", "applyRedaction", "scheduled", "updatedAt", "apiKeySavedAt", "apiKeySavedNoLaterThan", "secondKeySavedAt", "secondKeySavedNoLaterThan"],
       ),
       ExternalGuardrailsState: obj(
         {
@@ -951,6 +952,7 @@ export const openapi = {
           },
           clearApiKey: bool("Delete every stored key of the provider (also disables it)."),
           applyRedaction: bool("Only for a provider with `redactionSupported` (true is a 400 otherwise; false is always accepted)."),
+          scheduled: bool("Include this vendor in the 6-hourly scheduled re-run. Any provider; a non-boolean is a 400."),
         },
         ["provider"],
       ),

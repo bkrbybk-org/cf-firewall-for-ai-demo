@@ -19,9 +19,11 @@ import {
   executePipeline,
   normalizeOrder,
   RAW_MAX_CHARS,
+  loadAll,
   loadGuardrailSetup,
   runPipeline,
   runReplyCheck,
+  save,
   secondKeyAad,
   stopsTurn,
   willCheckReply,
@@ -817,6 +819,43 @@ describe("usableRedaction", () => {
       expect(usableRedaction(bad, "0123456789"), JSON.stringify(bad)).toBe(false);
     }
     expect(usableRedaction("x".repeat(4 * 10 + 1000), "0123456789")).toBe(true);
+  });
+});
+
+describe("scheduled — the per-vendor scheduled re-run switch (2026-11-05)", () => {
+  it("defaults on, takes a boolean only, and is shown", () => {
+    const lakera = defaultConfig("lakera-guard");
+    expect(lakera.scheduled).toBe(true);
+    const off = validateUpdate({ scheduled: false }, lakera);
+    expect(off.ok && off.next.scheduled).toBe(false);
+    expect(validateUpdate({ scheduled: "no" }, lakera)).toMatchObject({ ok: false });
+    // A save that does not mention it keeps what is stored.
+    const kept = validateUpdate({ failMode: "allow" }, { ...lakera, scheduled: false });
+    expect(kept.ok && kept.next.scheduled).toBe(false);
+    expect(toPublicConfig({ ...lakera, scheduled: false })).toMatchObject({ scheduled: false });
+  });
+
+  it("a row from before migration 0013 reads as included, as it behaved; 0 reads as left out; saves write it", async () => {
+    const base = { region: "global", profile_name: "p", fail_mode: "block", api_key_enc: null, api_key_last4: null, enabled: 0, updated_at: 1 };
+    const rows = [
+      { ...base, provider: "lakera-guard" },
+      { ...base, provider: "cisco-ai-defense", region: "us", scheduled: 0 },
+    ];
+    const binds: unknown[][] = [];
+    const db = {
+      prepare: (sql: string) => ({
+        all: async () => ({ results: sql.startsWith("SELECT") ? rows : [] }),
+        bind: (...args: unknown[]) => {
+          binds.push(args);
+          return { run: async () => ({}) };
+        },
+      }),
+    } as unknown as D1Database;
+    const all = await loadAll(db);
+    expect(all.find((c) => c.provider === "lakera-guard")!.scheduled).toBe(true);
+    expect(all.find((c) => c.provider === "cisco-ai-defense")!.scheduled).toBe(false);
+    await save(db, { ...defaultConfig("lakera-guard"), scheduled: false });
+    expect(binds[0][10]).toBe(0); // the 11th column: scheduled
   });
 });
 

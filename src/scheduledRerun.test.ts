@@ -33,6 +33,19 @@ async function envWith(enabled: boolean, pipeline: Record<string, unknown> | nul
   return { env, points };
 }
 
+async function rowFor(provider: string, region = "global") {
+  return {
+    provider,
+    enabled: 1,
+    region,
+    profile_name: "proj",
+    fail_mode: "allow",
+    api_key_enc: await encryptSecret("k", SECRET, provider),
+    api_key_last4: "k",
+    updated_at: 1,
+  };
+}
+
 describe("runScheduledRerun", () => {
   it("does nothing, and says so, with no external guardrail enabled", async () => {
     const { env, points } = await envWith(false);
@@ -88,6 +101,46 @@ describe("runScheduledRerun", () => {
     const s = await runScheduledRerun(env, { fetchImpl: (async () => Response.json({})) as typeof fetch, log: () => {}, sleep: async () => {} });
     expect(s).toMatchObject({ prompts: 12, replies: 0 });
     expect(points.filter((p) => (p.blobs as string[])[2] === "reply")).toEqual([]);
+  });
+
+  // 2026-11-05: the per-vendor switch. A left-out vendor gets no prompt, no reply pair and no canary — that is the
+  // point of the switch (its quota) — while the others run as before, and the summary names who was left out.
+  it("sends nothing to a vendor left out of scheduled re-runs, and names it", async () => {
+    const { env, points } = await envWith(true);
+    const rows = [
+      { ...(await rowFor("lakera-guard")), scheduled: 1 },
+      { ...(await rowFor("cisco-ai-defense", "us")), scheduled: 0 },
+    ];
+    (env as unknown as { DB: unknown }).DB = {
+      prepare: () => ({ first: async () => null, all: async () => ({ results: rows }) }),
+    };
+    const urls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      urls.push(url);
+      return Response.json({ flagged: false, metadata: { request_uuid: "u" } });
+    }) as typeof fetch;
+    const s = await runScheduledRerun(env, { fetchImpl, log: () => {}, sleep: async () => {} });
+    expect(s).toMatchObject({ vendors: 1, prompts: 12, replies: 2, excluded: ["cisco-ai-defense"] });
+    expect(urls).toHaveLength(15);
+    expect(urls.every((u) => u.startsWith("https://api.lakera.ai/"))).toBe(true);
+    expect(points.every((p) => (p.blobs as string[])[3] === "lakera-guard")).toBe(true);
+  });
+
+  it("does nothing, and says why, when every enabled vendor is left out", async () => {
+    const { env, points } = await envWith(true);
+    const rows = [{ ...(await rowFor("lakera-guard")), scheduled: 0 }];
+    (env as unknown as { DB: unknown }).DB = {
+      prepare: () => ({ first: async () => null, all: async () => ({ results: rows }) }),
+    };
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return Response.json({});
+    }) as typeof fetch;
+    const s = await runScheduledRerun(env, { fetchImpl, log: () => {}, sleep: async () => {} });
+    expect(s).toMatchObject({ vendors: 0, prompts: 0, excluded: ["lakera-guard"], skipped: "every enabled vendor is left out of scheduled re-runs" });
+    expect(calls).toEqual([]);
+    expect(points).toEqual([]);
   });
 
   it("run ids start 'sch' and fit the ray column's shape", () => {

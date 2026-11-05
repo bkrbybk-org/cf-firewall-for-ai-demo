@@ -18,6 +18,10 @@
 //     exactly what this should show.
 //   - **Each row names its prompt** (blob12, 2026-10-18), and after the run each vendor's verdict per prompt goes to the
 //     verdict watch (src/verdictWatch.ts), which alerts once a changed verdict has held for two runs.
+//   - **A vendor can be left out** (2026-11-05, `scheduled` per vendor, migration 0013): the cron then sends it nothing
+//     — no prompts, no reply pairs, no canary — so it spends none of that vendor's quota. Chat and Red Team still use it.
+//     Its watch rows are left as they are (no verdict is not a verdict), and Analytics shows its re-runs stopping, which
+//     is what happened.
 
 import { loadGuardrailSetup, runPipeline, runReplyCheck } from "./externalGuardrails";
 import { logVerdicts } from "./guardrailLog";
@@ -41,6 +45,7 @@ export interface RerunSummary {
   vendors: number;
   prompts: number;
   replies?: number; // reply pairs sent (0 when no enabled vendor can check a reply)
+  excluded?: string[]; // enabled vendors left out by their switch, by id — so the log says why they are missing
   ms: number;
   skipped?: string;
 }
@@ -59,7 +64,22 @@ export async function runScheduledRerun(
     log(s);
     return s;
   }
-  const forced = { pipeline: { ...setup.pipeline, mode: "parallel" as const, guardrailOnly: true }, enabled: setup.enabled };
+  const included = setup.enabled.filter((c) => c.scheduled);
+  const excluded = setup.enabled.filter((c) => !c.scheduled).map((c) => c.provider);
+  const leftOut = excluded.length > 0 ? { excluded } : {};
+  if (included.length === 0) {
+    const s = {
+      ...base,
+      vendors: 0,
+      prompts: 0,
+      ...leftOut,
+      ms: Date.now() - started,
+      skipped: "every enabled vendor is left out of scheduled re-runs",
+    };
+    log(s);
+    return s;
+  }
+  const forced = { pipeline: { ...setup.pipeline, mode: "parallel" as const, guardrailOnly: true }, enabled: included };
   let sent = 0;
   const runs: { id: string; pipeline: GuardrailPipelineResult | null }[] = [];
   for (const p of SCHEDULED_PROMPTS) {
@@ -82,7 +102,7 @@ export async function runScheduledRerun(
     runs.push({ id: r.id, pipeline: result });
     replies++;
   }
-  const s = { ...base, vendors: setup.enabled.length, prompts: sent, replies, ms: Date.now() - started };
+  const s = { ...base, vendors: included.length, prompts: sent, replies, ...leftOut, ms: Date.now() - started };
   log(s);
   // Verdict changes per vendor and prompt (src/verdictWatch.ts). After the run's own summary, and never able to fail it:
   // the verdicts above are already recorded.

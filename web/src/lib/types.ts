@@ -300,6 +300,8 @@ export interface ExternalGuardrailConfig {
   // whether the operator chose to. Absent from an older Worker, which reads as false.
   redactionSupported?: boolean;
   applyRedaction?: boolean;
+  // In the 6-hourly scheduled re-run (2026-11-05). Absent from an older Worker, which reads as included (true).
+  scheduled?: boolean;
   updatedAt: number | null; // epoch ms
   // Key age (2026-10-18), epoch ms. `…SavedAt` is exact; a key saved before dates were kept has none, and
   // `…SavedNoLaterThan` bounds it instead (age is AT LEAST now − that). All null with no key. Absent from an older Worker.
@@ -359,6 +361,7 @@ export interface ExternalGuardrailUpdate {
   secondKey?: string; // only for a provider with secondKeyLabel; empty = keep the saved one
   clearApiKey?: boolean; // removes every key the provider holds
   applyRedaction?: boolean; // only for a provider with redactionSupported
+  scheduled?: boolean; // include in the scheduled re-run
 }
 
 // Which FIXED prompt a test scans. "pii" exists because a vendor may answer PII with an

@@ -1,8 +1,7 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-10-20 — docs re-checked against the code (README layout, endpoints, Tests table; this file's
-header, Pages, Repository layout, Version control and backlog). Newest feature entry: 2026-10-19 (prompt × vendor grid,
-per-run trend). Live problem: Cato 401 (#31), needs a new key_
+_Last updated: 2026-11-05 — per-vendor switch for the scheduled re-runs (migration 0013). Live problems, both need the
+user: **Lakera blocks every harmless prompt since 2026-11-04 (#33), so every chat prompt on prod is stopped**; Cato 401 (#31)_
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -16,7 +15,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 
 > **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
 > **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
-> comes first, then the **2026-10** entries newest-first (from the 2026-10-19 grid and trend back to the first
+> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-05 scheduled re-run switch back to the first
 > external guardrail, Prisma AIRS, on 2026-10-01), then
 > 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
 > migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
@@ -25,6 +24,8 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 > Compliance MEASURE 2.7 (Open bug #22) was **fixed 2026-10-07**: it counts AI Security rules only.
 > **🔴 Live on prod: Cato AI Security has answered HTTP 401 since 2026-10-13 (Open bug #31)** — every Cato check
 > fails open until the user saves a new key.
+> **🔴 Live on prod since 2026-11-04: Lakera blocks every harmless prompt (Open bug #33)**, so with Lakera enabled no chat
+> prompt reaches the model, and smoke [2] and [3] fail.
 
 ---
 
@@ -439,10 +440,10 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 104 commits on 2026-10-20, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `a07cfa44-38ac-46d3-a3a3-aa40ab05baaf` (2026-10-19,
-prompt × vendor grid and per-run trend, commit `830ebc1`; `0fa2edd` after it is docs only). The history below stops at
+entry under Implemented names its own deploy id; the newest is `f36f8092-f30e-4654-a7a2-7b3aa21c1b38` (2026-11-05,
+the per-vendor scheduled re-run switch). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
 `595fa250` (the guardrail pipeline); before that
@@ -478,7 +479,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **959 across 67 files** (measured 2026-10-20; README's Tests table has the
+**Tests** — `npm test`, **963 across 67 files** (measured 2026-11-05; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -644,7 +645,41 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
-### 2026-10-19 (latest) — Prompt × vendor grid; catch and false-block rate per run
+### 2026-11-05 — Per-vendor switch: leave a vendor out of the scheduled re-runs
+
+**Asked:** an option to disable the scheduled checking. Chosen with the user: **per vendor**, for the 6-hourly re-run
+(the hourly outage check reads Analytics Engine only and calls no vendor, so it costs no vendor quota).
+
+- **What it does:** Settings → each vendor's row gains **Include in scheduled re-runs** (on by default), saved with
+  the row. Off: the cron sends that vendor nothing — not the 12 prompts, the 2 reply pairs or the smoke canary (about 15
+  calls a run, 60 a day). Chat and the Red Team still use it while it is enabled.
+- **Server:** migration `0013_scheduled_opt_out.sql` adds `external_guardrails.scheduled` (`INTEGER NOT NULL DEFAULT 1`,
+  additive; every existing row keeps running). A row read before the migration counts as included. `PUT
+  /api/external-guardrails` takes `scheduled` (boolean only, 400 otherwise); the public config returns it.
+  `runScheduledRerun` filters the enabled vendors by it, and its summary line names who was left out (`excluded`). With
+  every enabled vendor left out it logs `skipped: "every enabled vendor is left out of scheduled re-runs"` and calls
+  nothing.
+- **What it leaves alone, on purpose:** a left-out vendor's verdict-watch rows stay as they were (no verdict is not a
+  verdict); its run trend on Analytics stops, dated "no verdict since …", which is what happened. The outage check then
+  sees only chat traffic for it, so it usually reads "unknown" (fewer than 3 checks) rather than down.
+- **Shown:** the row summary says "no scheduled re-runs"; Settings → Deployment names the enabled vendors that are left
+  out ("Left out of it: …").
+- **Tests:** 963 (4 new). Rerun: a left-out vendor gets none of the 15 calls while Lakera gets all of them, and the
+  summary names Cisco; all left out = no call and no data point. Config: default on, boolean only, kept when a save
+  omits it, a pre-0013 row reads as included, a saved `false` binds 0. **Mutation-checked:** dropping the rerun filter
+  turns both rerun tests red.
+- **Verified:** locally on real D1 (the PUT stores `scheduled = 0`, a string is a 400, the page's checkbox and Save
+  round-trip it, the summary chip and the Deployment line appear and clear), light and dark, no console errors.
+  Prod: migration applied before deploy `f36f8092-f30e-4654-a7a2-7b3aa21c1b38`. The deployed bundle carries "Include in
+  scheduled re-runs", "no scheduled re-runs" and "Left out of it", `/api/openapi.json` documents the field, and
+  `GET /api/external-guardrails` returns `scheduled: true` for all six vendors (nothing switched off: that is the
+  user's choice, behind the admin gate).
+- **Smoke: [2] and [3] FAIL, for a reason that predates this deploy:** Lakera blocks every harmless prompt since
+  2026-11-04 00:00 (Open bugs #33). [1], [4] and [5] pass. Recorded rather than waved through. The change was committed
+  anyway, so git matches what prod runs.
+- Also fixed: the `source=scheduled` description in `src/openapi.ts` now mentions the reply pairs (found 2026-10-20).
+
+### 2026-10-19 — Prompt × vendor grid; catch and false-block rate per run
 
 **Asked for:** "do 16, 15" from the backlog table. Deploy `a07cfa44-38ac-46d3-a3a3-aa40ab05baaf`. No migration.
 
@@ -4102,6 +4137,26 @@ exercised):
       "the model replied".
     - **The lesson, the same one as #21 and the percentile bug:** a check that passes on a status code is a check of the
       status code. A vendor's drift can now fail smoke by name, which is the honest outcome: the route is then unproven.
+33. **🔴 Lakera Guard blocks every harmless prompt since 2026-11-04 00:00 UTC, and answers HTTP 400 on half the
+    scheduled runs since 2026-10-30: live on prod. Needs the user.** Found 2026-11-05 when smoke failed after deploy
+    `f36f8092` (that deploy touches no chat code; the failure predates it).
+    - **Smoke [2] and [3] fail** with "an external guardrail stopped the prompt (lakera-guard) — the route was not
+      exercised". [1], [4] and [5] pass.
+    - **Not the smoke prompt.** Three harmless prompts sent through prod's `/api/chat` ("What is the capital of
+      France?", "Name three primary colours.", "How many days are in a week?") were all blocked by Lakera with
+      `moderated_content/crime` and `moderated_content/hate`, and allowed by AIRS, AIDR and Cisco. With Lakera enabled
+      and the pipeline parallel, **every chat prompt on prod is stopped**.
+    - **When:** the smoke canary (`guardrail_prompt_verdicts`, `canary/smoke`) recorded Lakera's block from the
+      2026-11-04 00:00 run. Analytics Engine, Lakera scheduled prompt rows per run: harmless blocked 2/6 up to the
+      2026-11-03 06:00 run, **6/6** at 2026-11-04 00:00, 06:00 and 12:00.
+    - **The 400s:** 154 scheduled rows `failed_open` with HTTP 400 from 2026-10-30 12:00 to 2026-11-05 06:00, whole runs
+      at a time (9 of the 16 runs from 2026-11-01 12:00 to 2026-11-05 06:00, including the last three). Live chat calls to Lakera on
+      2026-11-05 answered normally. The 400's body is never shown (Lakera's 400 quotes the bad value), so its reason is not
+      known here. The request body has not changed in this app since 2026-10-19.
+    - **No alert reached anyone:** `ALERT_WEBHOOK_URL` is still unset, so the canary's block alert was only logged.
+    - **The change is on Lakera's side:** a policy or threshold edit in the project, or a detector update. Fix in Lakera's
+      console (the project's Crime / Hate thresholds), or disable Lakera in Settings meanwhile. Either needs the user
+      (admin gate). After that, re-run `npm run smoke:prod`.
 
 ## Next tasks
 
@@ -4135,6 +4190,10 @@ below are kept as written. Items they still list as open but that are done are t
   - **Open, offered to the user, not approved:** Prisma AIRS answers `allow` with detections (e.g. `toxic_content` on
     `rt-05`, the profile's action is allow) and the parser does not set `detectOnly`, so the grid shows "missed" where
     other vendors read "alerts only". The fix would set the flag only.
+- **🔴 Lakera blocks every harmless prompt since 2026-11-04 00:00 UTC** (Open bugs #33): every chat prompt on prod is
+  stopped while it is enabled, and smoke [2]/[3] fail. **Needs the user:** Lakera's project thresholds, or disable it.
+  Lakera also answers HTTP 400 on half the scheduled runs since 2026-10-30; if that is a quota, the new per-vendor
+  "Include in scheduled re-runs" switch (2026-11-05) spares it.
 - **🔴 Cato has answered HTTP 401 since 2026-10-13 06:00 UTC** (Open bugs #31). Every check since then fails open, so
   live chat runs without Cato. **Needs the user:** a new key in Settings.
 - **Needs the user** (the admin gate, credentials, or a policy call):

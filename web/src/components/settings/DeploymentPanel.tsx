@@ -171,7 +171,19 @@ export function DeploymentPanel({
               {state.automation.rerun.replies
                 ? `, and ${state.automation.rerun.replies} fixed prompt + reply pairs (a harmless reply, one with a test SSN) to those that can check a reply`
                 : ""}
-              , shown as "scheduled re-runs" on Analytics. Outage check: hourly, a vendor is <b>down</b> when at least{" "}
+              , shown as "scheduled re-runs" on Analytics.
+              {(() => {
+                // Enabled but switched out of the re-run (its row's "Include in scheduled re-runs").
+                const out = (state.providers ?? []).filter((c) => c.enabled && c.scheduled === false);
+                return out.length > 0 ? (
+                  <>
+                    {" "}
+                    Left out of it: <b>{out.map((c) => c.label).join(", ")}</b> (chat still uses{" "}
+                    {out.length === 1 ? "it" : "them"}).
+                  </>
+                ) : null;
+              })()}{" "}
+              Outage check: hourly, a vendor is <b>down</b> when at least{" "}
               {Math.round(state.automation.alerts.noVerdictRate * 100)}% of at least {state.automation.alerts.minChecks} checks
               in the last {state.automation.alerts.windowHours}h got no verdict; an alert is sent when that changes, and
               says so when the vendor rejected the key (HTTP 401/403).

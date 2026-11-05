@@ -318,6 +318,7 @@ function ProviderCard({
   const [profileName, setProfileName] = useState(config.profileName);
   const [failMode, setFailMode] = useState(config.failMode);
   const [applyRedaction, setApplyRedaction] = useState(!!config.applyRedaction);
+  const [scheduled, setScheduled] = useState(config.scheduled !== false);
   const [apiKey, setApiKey] = useState("");
   const [secondKey, setSecondKey] = useState(""); // only used when config.secondKeyLabel is set
   const [toggleErr, setToggleErr] = useState<string | null>(null);
@@ -333,6 +334,7 @@ function ProviderCard({
     profileName !== config.profileName ||
     failMode !== config.failMode ||
     applyRedaction !== !!config.applyRedaction ||
+    scheduled !== (config.scheduled !== false) ||
     apiKey !== "" ||
     secondKey !== "";
   // Every credential the provider needs is saved — one key, or both of a pair.
@@ -370,6 +372,8 @@ function ProviderCard({
     setSaveErr(null);
     const update: ExternalGuardrailUpdate = { provider: p, region, profileName, failMode };
     if (config.redactionSupported) update.applyRedaction = applyRedaction;
+    // Sent only when changed: an older Worker that does not know the field never sees it.
+    if (scheduled !== (config.scheduled !== false)) update.scheduled = scheduled;
     if (apiKey) update.apiKey = apiKey;
     if (secondKey) update.secondKey = secondKey;
     try {
@@ -471,6 +475,7 @@ function ProviderCard({
     config.requiresProfile || config.profileName ? config.profileName || `no ${config.profileLabel}` : null,
     config.failMode === "block" ? "fail closed" : "fail open",
     config.applyRedaction ? "redaction applied" : null,
+    config.scheduled === false ? "no scheduled re-runs" : null,
   ].filter(Boolean) as string[];
   // The vendor's console and docs. The console follows the SAVED region (Falcon and Datadog have one per region), like
   // the summary: an unsaved pick must not send the operator to another region's console.
@@ -764,6 +769,28 @@ function ProviderCard({
             </label>
           </div>
         )}
+
+        {/* 2026-11-05: per vendor, so one vendor's quota (or a dead key) can be spared without pausing the others. */}
+        <div className="lg:col-span-2">
+          <label className="flex items-start gap-2 text-[12.5px] text-text">
+            <input
+              type="checkbox"
+              checked={scheduled}
+              disabled={saving}
+              onChange={(e) => setScheduled(e.target.checked)}
+              className="mt-0.5 accent-[var(--color-accent)]"
+            />
+            <span>
+              <b>Include in scheduled re-runs</b>
+              <span className="block text-[11.5px] leading-relaxed text-muted">
+                Every 6 hours the Worker sends {config.label} a fixed set of prompts (and reply pairs where it checks
+                replies, plus the smoke prompt) — about 15 calls a run — to show drift on Analytics and to watch its
+                verdicts. Off: the cron sends it nothing. Chat and the Red Team still use it, and its re-run history
+                on Analytics simply stops.
+              </span>
+            </span>
+          </label>
+        </div>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
