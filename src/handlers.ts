@@ -66,8 +66,11 @@ import {
   decryptForti,
   defaultFortiConfig,
   loadForti,
+  runFortiChat,
   saveForti,
   testForti,
+  type FortiConfig,
+  type FortiCredentials,
   toPublicForti,
   validateFortiUpdate,
   type FortiTestSample,
@@ -151,11 +154,23 @@ async function resolveGateways(env: Env): Promise<GatewayEntry[]> {
   }
 }
 
+// Whether the chat page may offer the FortiAIGate route, and with which models. Any failure (no D1, no table yet)
+// reads as "not enabled": a route that cannot be configured is not offered.
+async function fortiRouteInfo(env: Env): Promise<{ enabled: boolean; models: string[] }> {
+  if (!env.DB) return { enabled: false, models: [] };
+  try {
+    const c = await loadForti(env.DB);
+    return c.enabled ? { enabled: true, models: c.models } : { enabled: false, models: [] };
+  } catch {
+    return { enabled: false, models: [] };
+  }
+}
+
 // GET /api/models — model menu + system-prompt defaults + the account's AI
 // Gateways for the dropdown. Prices are included so the client can estimate
 // cost for streamed replies (where the server never sees the finished text).
 export async function handleModels(env: Env): Promise<Response> {
-  const gateways = await resolveGateways(env);
+  const [gateways, fortiaigate] = await Promise.all([resolveGateways(env), fortiRouteInfo(env)]);
   const defaultGateway =
     gateways.find((g) => g.id === (env.CF_AI_GATEWAY_ID || DEFAULT_AI_GATEWAY_ID))?.id ?? gateways[0]?.id;
   return Response.json({
@@ -164,6 +179,8 @@ export async function handleModels(env: Env): Promise<Response> {
     defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
     maxSystemPromptLen: MAX_SYSTEM_PROMPT_LEN,
     gateways, // [{ id, label, guarded }] — populates the gateway dropdown
+    // The FortiAIGate route: offered by the chat page only while enabled; its models are FortiAIGate's public names.
+    fortiaigate,
     defaultGateway,
     // Caps for the numeric AI Gateway settings. Served rather than re-declared
     // in the client: handleChat clamps to these values anyway, so a hand-copied
@@ -465,7 +482,7 @@ async function logPrompt(
   env: Env,
   fields: {
     ray: string | null;
-    route: "direct" | "gateway";
+    route: "direct" | "gateway" | "fortiaigate";
     model: string;
     gatewayId: string | null;
     guarded: boolean;
@@ -595,6 +612,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   let dynamicRoute = "";
   let badRoute: string | null = null;
   let routeMetadata: Record<string, string> | undefined;
+  let fortiaigate = false;
+  let requestedModel: string | undefined;
   // Skip writing this turn to the D1 prompt_log table — independent of AI
   // Gateway's own `collectLog`/`cf-aig-collect-log`, which is a different log
   // (the gateway's request log) from a different route (only exists on the
@@ -622,6 +641,9 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     if (typeof body.model === "string" && ALLOWED_IDS.has(body.model)) {
       model = body.model;
     }
+    // The FortiAIGate route checks its model against FortiAIGate's saved list, not the Workers AI registry.
+    if (body.fortiaigate === true) fortiaigate = true;
+    if (typeof body.model === "string") requestedModel = body.model;
     if (typeof body.systemPrompt === "string" && body.systemPrompt.trim() !== "") {
       systemPrompt = body.systemPrompt.trim().slice(0, MAX_SYSTEM_PROMPT_LEN);
     }
@@ -695,6 +717,43 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
     );
   }
 
+  // The FortiAIGate route (src/fortiAiGate.ts). Same rule as a bad Dynamic Route above: a route that cannot run is a
+  // 400 that says why, never a quiet fall back to Workers AI — that would show a Cloudflare answer as FortiAIGate's.
+  let forti: { cfg: FortiConfig; creds: FortiCredentials } | null = null;
+  if (fortiaigate) {
+    if (gateway) {
+      return Response.json({ error: "Choose one route: `fortiaigate` and `gateway` cannot both be true" }, { status: 400 });
+    }
+    const hint = guardrailSetupHint(env);
+    if (hint) return Response.json({ error: `The FortiAIGate route is not set up: ${hint}` }, { status: 400 });
+    let cfg: FortiConfig;
+    try {
+      cfg = await loadForti(env.DB!);
+    } catch (err) {
+      return Response.json({ error: clientError(err, "FortiAIGate settings") }, { status: 502 });
+    }
+    if (!cfg.enabled) {
+      return Response.json({ error: "The FortiAIGate route is not enabled (Settings → FortiAIGate)" }, { status: 400 });
+    }
+    // Re-checked at use: the allowed suffix is a Worker var and may have changed since the URL was saved.
+    const u = cfg.baseUrl ? checkBaseUrl(cfg.baseUrl, env.FORTIAIGATE_ALLOWED_HOST_SUFFIX) : null;
+    if (!u?.ok) return Response.json({ error: "The saved FortiAIGate base URL is missing or no longer allowed" }, { status: 400 });
+    if (!requestedModel || !cfg.models.includes(requestedModel)) {
+      return Response.json(
+        { error: `model must be one of FortiAIGate's saved models: ${cfg.models.join(", ")}` },
+        { status: 400 },
+      );
+    }
+    let creds: FortiCredentials;
+    try {
+      creds = await decryptForti(cfg, env.GUARDRAIL_SECRET_KEY!);
+    } catch {
+      return Response.json({ error: "The saved FortiAIGate credentials could not be decrypted — re-enter them in Settings" }, { status: 502 });
+    }
+    model = requestedModel;
+    forti = { cfg: { ...cfg, baseUrl: u.origin }, creds };
+  }
+
   // Resolve the AI Gateway (only when gateway routing is on). The requested
   // gateway id can be any gateway in the account (the dropdown is populated
   // live from the account); it's sanity-checked to the gateway-id charset and
@@ -713,6 +772,10 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // guardrails/usage-considerations). Every gateway call here is REST, so a streamed
   // turn on the guarded gateway could never show a reply block. Buffered, it can.
   let notStreamed: NotStreamedReason | undefined;
+  if (stream && forti) {
+    stream = false;
+    notStreamed = "fortiaigate";
+  }
   if (stream && guarded) {
     stream = false;
     notStreamed = "guarded-gateway";
@@ -733,7 +796,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   ];
   let started = Date.now();
   const ray = request.headers.get("cf-ray");
-  const route: "direct" | "gateway" = gateway ? "gateway" : "direct";
+  const route: "direct" | "gateway" | "fortiaigate" = forti ? "fortiaigate" : gateway ? "gateway" : "direct";
   const logBase = { ray, route, model, gatewayId: gateway ? gatewayId : null, guarded };
   // Returns the scheduled write so a later update (the streamed reply, which
   // only exists once the stream ends) can chain onto it. Both run under
@@ -830,7 +893,7 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   };
   const withheld = (
     rc: GuardrailPipelineResult,
-    fields: { model: string; usage: unknown; cost: number | null; gateway?: unknown },
+    fields: { model: string; usage: unknown; cost: number | null; gateway?: unknown; fortiaigate?: unknown },
     tokens: { promptTokens: number; completionTokens: number },
     modelMs: number,
   ): Response => {
@@ -840,6 +903,52 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
       { headers: replyHeaders(rc) },
     );
   };
+
+  // FortiAIGate path — the turn goes through FortiAIGate to the model it fronts (AWS Bedrock here). Buffered, never
+  // streamed (notStreamed above). External guardrails already ran on the prompt and still check the reply.
+  if (forti) {
+    const r = await runFortiChat(forti.cfg, forti.creds, { model, messages, maxTokens: MAX_REPLY_TOKENS });
+    const fortiMeta = { latencyMs: r.latencyMs };
+    if (r.kind === "error") {
+      log("error", { reply: null, streamed: false });
+      return Response.json({ error: r.message, model, fortiaigate: fortiMeta }, { status: r.status, headers: extHeaders });
+    }
+    if (r.kind === "blocked") {
+      // A 200 like FortiAIGate's own, never a 403 (that means the edge WAF here). No reply, no usage — FortiAIGate
+      // reported 0 tokens — and the block message is NOT passed on as text: the card says who stopped it.
+      log("fortiaigate", { reply: null, streamed: false, latencyMs: r.latencyMs });
+      return Response.json(
+        { fortiaigateBlocked: true, by: r.by, model: r.model, ray, fortiaigate: fortiMeta, externalGuardrails: external ?? undefined, notStreamed },
+        { headers: extHeaders },
+      );
+    }
+    const historyChars = history.reduce((n, t) => n + t.content.length, 0);
+    const estimated = r.promptTokens == null || r.completionTokens == null;
+    const promptTokens = r.promptTokens ?? Math.ceil((systemPrompt.length + historyChars + prompt.length) / 4);
+    const completionTokens = r.completionTokens ?? Math.ceil(r.reply.length / 4);
+    const usage = { prompt_tokens: promptTokens, completion_tokens: completionTokens, total_tokens: promptTokens + completionTokens, estimated };
+    // Bedrock pricing behind FortiAIGate is not known here: null ("not measured"), never 0.
+    const cost = null;
+    const { rc, modelMs } = await checkTheReply(r.reply, r.model);
+    if (rc?.stoppedBy) {
+      return withheld(rc, { model: r.model, usage, cost, fortiaigate: fortiMeta }, { promptTokens, completionTokens }, modelMs);
+    }
+    log("reply", { reply: r.reply, promptTokens, completionTokens, streamed: false, latencyMs: r.latencyMs });
+    return Response.json(
+      {
+        reply: r.reply,
+        model: r.model,
+        ray,
+        usage,
+        cost,
+        fortiaigate: fortiMeta,
+        externalGuardrails: external ?? undefined,
+        replyGuardrails: rc ?? undefined,
+        notStreamed,
+      },
+      { headers: replyHeaders(rc) },
+    );
+  }
 
   // AI Gateway path — always REST (see runGatewayRest doc comment for why).
   if (gateway) {

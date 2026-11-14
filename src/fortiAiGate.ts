@@ -12,11 +12,11 @@
 //     and the Access service token are sent to that host, so a URL elsewhere would hand them to whoever owns it.
 //   - **Credentials are write-only**, encrypted with GUARDRAIL_SECRET_KEY like the vendor keys, each with its own AAD
 //     so a ciphertext copied into another column fails to decrypt. Only the last 4 characters are ever returned.
-//   - **No chat route yet, on purpose.** Fortinet documents neither the HTTP status nor the body of a block (only an
-//     org-wide plain-text block message), and says a stream can be cut after HTTP 200. CLAUDE.md: never parse a vendor
-//     response before seeing a real one. *Test connection* is how that evidence is collected: it returns the status,
-//     the response SHAPE (responseShape.ts — names, types, booleans, never text) and whether the configured block
-//     message appeared. The chat route is built from that evidence, not before it.
+//   - **The chat route was built only after a real allow and a real block were seen** (2026-11-14). Fortinet documents
+//     neither the HTTP status nor the body of a block (only an org-wide plain-text block message), and says a stream
+//     can be cut after HTTP 200. CLAUDE.md: never parse a vendor response before seeing a real one. *Test connection*
+//     collected that evidence: the status, the response SHAPE (responseShape.ts — names, types, booleans, never text)
+//     and whether the configured block message appeared. The route is non-streaming for the same reason.
 
 import { decryptSecret, encryptSecret } from "./externalGuardrails";
 import { shapeOf, type Shape } from "./responseShape";
@@ -42,6 +42,7 @@ export const FORTI_AAD = {
 } as const;
 
 export interface FortiConfig {
+  enabled: boolean; // the chat page offers the FortiAIGate route (migration 0015)
   baseUrl: string | null; // an https origin, no path
   models: string[];
   blockMessage: string | null; // null = Fortinet's default
@@ -58,6 +59,7 @@ export interface FortiConfig {
 
 export function defaultFortiConfig(): FortiConfig {
   return {
+    enabled: false,
     baseUrl: null,
     models: [],
     blockMessage: null,
@@ -76,6 +78,7 @@ export function defaultFortiConfig(): FortiConfig {
 // Built field by field, never by spreading the row, so a ciphertext column added later cannot leak through it.
 export function toPublicForti(c: FortiConfig, suffix: string | undefined) {
   return {
+    enabled: c.enabled,
     baseUrl: c.baseUrl,
     models: c.models,
     blockMessage: c.blockMessage ?? FORTIAIGATE_DEFAULT_BLOCK_MESSAGE,
@@ -90,7 +93,7 @@ export function toPublicForti(c: FortiConfig, suffix: string | undefined) {
     updatedAt: c.updatedAt,
     allowedHostSuffix: suffix?.trim().toLowerCase() || null,
     // Said by the server, so the page cannot drift from what the Worker does.
-    chatRoute: false as const,
+    chatRoute: c.enabled,
   };
 }
 export type PublicFortiConfig = ReturnType<typeof toPublicForti>;
@@ -206,11 +209,27 @@ export function validateFortiUpdate(body: unknown, current: FortiConfig, suffix:
     if (id.value != null && secret.value != null) newAccess = { clientId: id.value, clientSecret: secret.value };
   }
 
+  if (b.enabled !== undefined) {
+    if (typeof b.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
+    next.enabled = b.enabled;
+  }
+  // An enabled route must be able to run: checked on the RESULT, so clearing the URL or the last model while it is on
+  // is refused too, rather than leaving a route the chat page offers but every turn fails.
+  if (next.enabled) {
+    const missing = [
+      next.baseUrl ? null : "a base URL",
+      next.virtualKeyEnc != null || vk.value != null ? null : "a virtual key",
+      next.models.length ? null : "a model",
+    ].filter(Boolean);
+    if (missing.length) return { ok: false, error: `FortiAIGate cannot be enabled without ${missing.join(", ")}` };
+  }
+
   return { ok: true, next, newVirtualKey: vk.value, newAccess };
 }
 
 // ── D1 ───────────────────────────────────────────────────────────────────────
 interface Row {
+  enabled?: number;
   base_url: string | null;
   models: string | null;
   block_message: string | null;
@@ -238,6 +257,8 @@ export async function loadForti(db: D1Database): Promise<FortiConfig> {
   const r = await db.prepare("SELECT * FROM fortiaigate_config WHERE id = 1").first<Row>();
   if (!r) return defaultFortiConfig();
   return {
+    // A row read before migration 0015 has no column: off, as the migration default.
+    enabled: r.enabled === 1,
     baseUrl: r.base_url,
     models: parseModels(r.models),
     blockMessage: r.block_message,
@@ -256,11 +277,11 @@ export async function loadForti(db: D1Database): Promise<FortiConfig> {
 export async function saveForti(db: D1Database, c: FortiConfig): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO fortiaigate_config (id, base_url, models, block_message, virtual_key_enc, virtual_key_last4,
+      `INSERT INTO fortiaigate_config (id, enabled, base_url, models, block_message, virtual_key_enc, virtual_key_last4,
          virtual_key_set_at, access_client_id_enc, access_client_id_last4, access_client_secret_enc,
          access_client_secret_last4, access_set_at, updated_at)
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET base_url = excluded.base_url, models = excluded.models,
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled, base_url = excluded.base_url, models = excluded.models,
          block_message = excluded.block_message, virtual_key_enc = excluded.virtual_key_enc,
          virtual_key_last4 = excluded.virtual_key_last4, virtual_key_set_at = excluded.virtual_key_set_at,
          access_client_id_enc = excluded.access_client_id_enc, access_client_id_last4 = excluded.access_client_id_last4,
@@ -269,6 +290,7 @@ export async function saveForti(db: D1Database, c: FortiConfig): Promise<void> {
          updated_at = excluded.updated_at`,
     )
     .bind(
+      c.enabled ? 1 : 0,
       c.baseUrl,
       JSON.stringify(c.models),
       c.blockMessage,
@@ -459,4 +481,104 @@ export async function testForti(
     return { ...out, outcome: "replied", replyChars: content.length };
   }
   return { ...out, outcome: "http_error", error: res.ok ? "HTTP 2xx without a reply in choices[0].message.content" : `HTTP ${res.status}` };
+}
+
+// ── The chat route ───────────────────────────────────────────────────────────
+// Built from what FortiAIGate 8.0.2 really answered on 2026-11-14 (PROGRESS, "First real responses"), not from its
+// docs, which describe neither:
+//   - allow: HTTP 200, a standard chat.completion;
+//   - block: ALSO HTTP 200, `finish_reason: "content_filter"`, `id: "chatcmpl-blocked"`, the organisation's block
+//     message as the assistant's content, usage all 0.
+// So a 200 is never enough: a block must be recognised and returned as a block, or the block message would be shown
+// as if the model had said it. `content_filter` alone could also be the model provider's own filter passed through,
+// so who stopped it is said separately (`by`).
+
+export type FortiChatResult =
+  | { kind: "reply"; reply: string; model: string; promptTokens: number | null; completionTokens: number | null; latencyMs: number }
+  | { kind: "blocked"; model: string; by: "fortiaigate" | "content_filter"; latencyMs: number }
+  | { kind: "error"; status: number; message: string; latencyMs: number };
+
+const CHAT_TIMEOUT_MS = 60_000;
+const TOKEN = /^[a-z][a-z0-9_]{0,39}$/; // what responseShape would reveal: a code, never a sentence
+
+interface ChatCompletion {
+  id?: unknown;
+  model?: unknown;
+  choices?: { finish_reason?: unknown; message?: { content?: unknown } }[];
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+  error?: { code?: unknown };
+}
+
+// Whose block this is, or null when it is not one. Exported for the tests: this is the line between a reply and a block.
+export function fortiBlockOf(body: ChatCompletion, blockMessage: string): "fortiaigate" | "content_filter" | null {
+  const choice = body.choices?.[0];
+  const content = typeof choice?.message?.content === "string" ? choice.message.content.trim() : "";
+  if (body.id === "chatcmpl-blocked" || (blockMessage !== "" && content === blockMessage.trim())) return "fortiaigate";
+  if (choice?.finish_reason === "content_filter") return "content_filter";
+  return null;
+}
+
+export async function runFortiChat(
+  c: FortiConfig,
+  creds: FortiCredentials,
+  input: { model: string; messages: { role: string; content: string }[]; maxTokens: number },
+  fetchImpl: typeof fetch = fetch,
+  now: () => number = Date.now,
+): Promise<FortiChatResult> {
+  const headers: Record<string, string> = { authorization: `Bearer ${creds.virtualKey}`, "content-type": "application/json" };
+  if (creds.access) {
+    headers["cf-access-client-id"] = creds.access.clientId;
+    headers["cf-access-client-secret"] = creds.access.clientSecret;
+  }
+  const started = now();
+  let res: Response;
+  try {
+    res = await fetchImpl(`${c.baseUrl}${FORTIAIGATE_CHAT_PATH}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: input.model, messages: input.messages, max_tokens: input.maxTokens, stream: false }),
+      redirect: "manual", // as in the test: never carry the credentials to wherever Access redirects
+      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+    });
+  } catch (err) {
+    const timedOut = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    return {
+      kind: "error",
+      status: 504,
+      message: timedOut ? `FortiAIGate did not answer within ${CHAT_TIMEOUT_MS / 1000} s` : "FortiAIGate could not be reached (tunnel, DNS or cloudflared)",
+      latencyMs: now() - started,
+    };
+  }
+  const latencyMs = now() - started;
+  if (res.status >= 300 && res.status < 400) {
+    return { kind: "error", status: 502, message: "Cloudflare Access refused the FortiAIGate service token (redirected to its login)", latencyMs };
+  }
+  let body: ChatCompletion = {};
+  try {
+    body = (await res.json()) as ChatCompletion;
+  } catch {
+    /* not JSON: handled as an error below */
+  }
+  if (!res.ok) {
+    // Written here, never copied from the body: a vendor error message can echo the request. Only a code-shaped value
+    // (`model_not_found`) is passed on.
+    const code = typeof body.error?.code === "string" && TOKEN.test(body.error.code) ? ` (${body.error.code})` : "";
+    return { kind: "error", status: 502, message: `FortiAIGate answered HTTP ${res.status}${code}`, latencyMs };
+  }
+  const ranModel = typeof body.model === "string" && body.model ? body.model : input.model;
+  const by = fortiBlockOf(body, c.blockMessage ?? FORTIAIGATE_DEFAULT_BLOCK_MESSAGE);
+  if (by) return { kind: "blocked", model: ranModel, by, latencyMs };
+  const content = body.choices?.[0]?.message?.content;
+  if (typeof content !== "string" || content.trim() === "") {
+    return { kind: "error", status: 502, message: "FortiAIGate answered HTTP 200 without a reply", latencyMs };
+  }
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+  return {
+    kind: "reply",
+    reply: content,
+    model: ranModel,
+    promptTokens: num(body.usage?.prompt_tokens),
+    completionTokens: num(body.usage?.completion_tokens),
+    latencyMs,
+  };
 }

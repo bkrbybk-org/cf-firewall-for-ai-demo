@@ -168,7 +168,7 @@ function RequestChips({ cfg }: { cfg: RequestConfig }) {
   return (
     <div className="mt-1.5 flex flex-col gap-1.5">
       <div className="flex flex-wrap gap-1.5">
-        <MiniChip tone="mute">{cfg.route === "gateway" ? "AI Gateway" : "Workers AI"}</MiniChip>
+        <MiniChip tone="mute">{cfg.route === "gateway" ? "AI Gateway" : cfg.route === "fortiaigate" ? "FortiAIGate" : "Workers AI"}</MiniChip>
         <MiniChip tone={cfg.stream ? "ok" : "mute"}>{cfg.stream ? "stream" : "no stream"}</MiniChip>
         <MiniChip tone={cfg.multiTurn ? "ok" : "mute"}>{cfg.multiTurn ? "multi-turn" : "single-turn"}</MiniChip>
         {cfg.excludeFromLog && <MiniChip tone="warn">prompt log off</MiniChip>}
@@ -207,7 +207,8 @@ export type GuardrailsBlock = { direction?: "prompt" | "response"; detail?: stri
 // passed and guardrail-only mode skipped the model on purpose. Either way the
 // edge verdict alone would say "reached the model", which is false — the trace
 // has to end inside the Worker.
-export type StoppedInWorker = "external" | "skipped";
+// "fortiaigate": FortiAIGate (the third route) answered with its block — after the Worker, inside the model call.
+export type StoppedInWorker = "external" | "skipped" | "fortiaigate";
 
 export function FlowTrace({
   d,
@@ -259,6 +260,8 @@ export function FlowTrace({
   const denied = outcome === "denied";
   const stopped = blocked || denied;
   const dynamicRoute = requestCfg?.dynamicRoute;
+  // The third route: the reply came through FortiAIGate, not Workers AI or AI Gateway.
+  const forti = requestCfg?.route === "fortiaigate";
   const ai = d.ai;
   const scored = ai && d.scored;
   const score = ai?.injectionScore ?? null;
@@ -376,6 +379,26 @@ export function FlowTrace({
             )}
           </Sub>
         </Step>
+      ) : stoppedInWorker === "fortiaigate" ? (
+        <>
+          <Step tone="ok" icon={Server}>
+            <Title>Worker</Title>
+            <Sub>
+              edge allowed{outcome === "log" ? " (log-only rules flagged it — visible in analytics)" : ""} · routed to
+              FortiAIGate · <span className="font-mono">POST /ai/openai/v1/chat/completions</span>
+            </Sub>
+          </Step>
+          <Step tone="guard" icon={ShieldBan} cut cutColor="purple">
+            <Title>
+              <span className="text-cf-purple">Blocked by FortiAIGate</span>
+            </Title>
+            <Sub>its block came back in place of a reply (HTTP 200, finish_reason content_filter).</Sub>
+          </Step>
+          <Step tone="dead" icon={Sparkles} last>
+            <Title>Model behind FortiAIGate</Title>
+            <Sub>not known whether it ran — FortiAIGate answers a blocked prompt and a blocked reply the same way.</Sub>
+          </Step>
+        </>
       ) : stoppedInWorker ? (
         <>
           <Step tone="ok" icon={Server}>
@@ -462,7 +485,11 @@ export function FlowTrace({
             <Title>Worker</Title>
             <Sub>
               request allowed{outcome === "log" ? " (flagged by log-only rules — visible in analytics)" : ""} ·{" "}
-              {gateway ? (
+              {forti ? (
+                <>
+                  routed to FortiAIGate · <span className="font-mono">POST /ai/openai/v1/chat/completions</span>
+                </>
+              ) : gateway ? (
                 <>
                   routed via AI Gateway{dynamicRoute ? " Dynamic Routing" : ""} ·{" "}
                   <span className="font-mono">POST /ai/v1/chat/completions</span>
@@ -508,12 +535,20 @@ export function FlowTrace({
               </Sub>
             </Step>
           )}
+          {forti && (
+            <Step tone="ok" icon={Route}>
+              <Title>FortiAIGate</Title>
+              <Sub>Fortinet's inline gateway let the prompt and the reply through (its policy acts inside the call).</Sub>
+            </Step>
+          )}
           <Step tone="ok" icon={Sparkles} last>
-            <Title>{dynamicRoute ? "Workers AI / Third-party AI" : "Workers AI"}</Title>
+            <Title>{forti ? "Model behind FortiAIGate" : dynamicRoute ? "Workers AI / Third-party AI" : "Workers AI"}</Title>
             <Sub>
-              {dynamicRoute
-                ? "the route's model config picked the model that generated the reply above."
-                : "model generated the reply above."}
+              {forti
+                ? "the model FortiAIGate fronts (AWS Bedrock here) generated the reply above."
+                : dynamicRoute
+                  ? "the route's model config picked the model that generated the reply above."
+                  : "model generated the reply above."}
             </Sub>
           </Step>
         </>

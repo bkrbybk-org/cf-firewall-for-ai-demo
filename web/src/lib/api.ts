@@ -263,6 +263,7 @@ export interface ChatRequest {
   history?: ChatTurn[];
   stream?: boolean;
   gateway?: boolean; // route inference through AI Gateway
+  fortiaigate?: boolean; // route through FortiAIGate (never with gateway); model = one of its saved models
   gatewayId?: string; // gateway only — which configured gateway to use
   skipCache?: boolean; // gateway only
   // Dynamic Routing: a route name configured in the gateway dashboard. Empty

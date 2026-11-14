@@ -33,6 +33,8 @@ export interface ModelsResponse {
   // because a cached or older Worker may not send it — treat absent as OFF,
   // matching the server's own opt-in default.
   promptLog?: { enabled: boolean; maxAgeDays?: number; maxRows?: number };
+  // The FortiAIGate route: offered only while enabled; `models` are FortiAIGate's public names. Absent (older Worker) = off.
+  fortiaigate?: { enabled: boolean; models: string[] };
 }
 
 // GET /api/zone-rules — the zone's WAF custom rules, read live from the
@@ -115,10 +117,19 @@ export interface ChatResponse {
   replyGuardrails?: GuardrailPipelineResult;
   externalReplyBlocked?: boolean;
   notStreamed?: NotStreamedReason;
+  // The FortiAIGate route (src/fortiAiGate.ts): FortiAIGate answered with its block — a 200 like a reply, but there is
+  // no reply. `by` says whose: FortiAIGate's own, or only finish_reason content_filter.
+  fortiaigateBlocked?: boolean;
+  by?: "fortiaigate" | "content_filter";
+  fortiaigate?: FortiAiGateMeta;
+}
+
+export interface FortiAiGateMeta {
+  latencyMs: number; // Worker-observed round trip to FortiAIGate
 }
 
 // Why a turn that asked to stream came back in one piece (src/types.ts has the why).
-export type NotStreamedReason = "guarded-gateway" | "reply-scan";
+export type NotStreamedReason = "guarded-gateway" | "reply-scan" | "fortiaigate";
 
 // ── External guardrails (GET/PUT /api/external-guardrails) ─────────────────
 // Third-party guardrails the Worker forwards each prompt to before calling the
@@ -364,7 +375,8 @@ export interface FortiAiGateConfig {
   accessSavedAt: number | null;
   updatedAt: number | null;
   allowedHostSuffix: string | null;
-  chatRoute: false;
+  enabled: boolean;
+  chatRoute: boolean;
 }
 export interface FortiAiGateState {
   configured: boolean;
@@ -374,6 +386,7 @@ export interface FortiAiGateState {
   access?: GuardrailAccess;
 }
 export interface FortiAiGateUpdate {
+  enabled?: boolean;
   baseUrl?: string | null;
   models?: string[];
   blockMessage?: string | null;

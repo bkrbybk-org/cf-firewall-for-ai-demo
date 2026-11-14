@@ -21,6 +21,8 @@ const NOT_STREAMED_WHY: Record<NotStreamedReason, string> = {
   "guarded-gateway":
     "Answered in one piece: AI Gateway Guardrails can only block a reply it sees whole. Streamed through the REST API, a reply would only be checked and logged.",
   "reply-scan": "Answered in one piece: the external guardrails check the whole reply before it is shown.",
+  fortiaigate:
+    "Answered in one piece: the FortiAIGate route is never streamed — FortiAIGate answers a block as a normal-looking reply marked content_filter, which only the whole response shows.",
 };
 
 function CacheBadge({ cached }: { cached?: boolean | null }) {
@@ -55,6 +57,30 @@ function TurnControls({ ray, ...input }: Omit<ControlMatrixInput, "edge"> & { ra
 function TurnVerdict(props: React.ComponentProps<typeof Verdict>) {
   const [show] = useShowTurnDetails();
   return show ? <Verdict {...props} /> : null;
+}
+
+// FortiAIGate answered with its block (the third route). Purple like AI Gateway Guardrails — both act inside the model
+// call — but named, so neither is credited with the other's block. The block message itself is not repeated: it is
+// FortiAIGate's fixed text, and showing it in a reply bubble is exactly what this card exists to avoid.
+function FortiAiGateCard({ m }: { m: Extract<Msg, { kind: "fortiaigate" }> }) {
+  return (
+    <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl border border-cf-purple/60 bg-cf-purple/10 p-4 text-sm shadow-sm">
+      <div className="mb-1.5 flex items-center gap-2 font-bold text-cf-purple">
+        <ShieldBan size={16} /> {m.by === "content_filter" ? "Stopped by a content filter behind FortiAIGate" : "Blocked by FortiAIGate"}
+      </div>
+      <div className="leading-relaxed text-text">
+        {m.by === "content_filter"
+          ? "The response came back with finish_reason content_filter but without FortiAIGate's own block markers, so the model provider behind it may have stopped it."
+          : "FortiAIGate's policy stopped this turn and returned its block message instead of a reply."}{" "}
+        FortiAIGate does not say whether it stopped the prompt or the reply. This is a separate control from the edge WAF{" "}
+        <code className="font-mono">cf.llm.*</code> rules, whose verdict still appears below.
+      </div>
+      <div className="mt-2 text-[11px] text-muted">
+        {m.model && <span className="font-mono">{m.model}</span>}
+        {m.latencyMs != null && <> · {m.latencyMs} ms</>}
+      </div>
+    </div>
+  );
 }
 
 function GuardrailsCard({ m }: { m: Extract<Msg, { kind: "guardrails" }> }) {
@@ -228,6 +254,10 @@ export function Chat({
   onExcludeFromLogChange,
   route,
   onRouteChange,
+  fortiEnabled,
+  fortiModels,
+  fortiModel,
+  onFortiModelChange,
   gateways,
   gatewayId,
   onGatewayIdChange,
@@ -255,6 +285,11 @@ export function Chat({
   onExcludeFromLogChange: (v: boolean) => void;
   route: Route;
   onRouteChange: (r: Route) => void;
+  /** The FortiAIGate route is enabled (/api/models → fortiaigate), and its models. */
+  fortiEnabled: boolean;
+  fortiModels: string[];
+  fortiModel: string;
+  onFortiModelChange: (m: string) => void;
   gateways: GatewayOption[];
   gatewayId: string;
   onGatewayIdChange: (id: string) => void;
@@ -418,6 +453,12 @@ export function Chat({
                           · latency <b className="font-mono text-text">{m.meta.gateway.latencyMs} ms</b>
                         </span>
                       )}
+                      {m.meta.fortiaigate && (
+                        <span>
+                          · through <b className="text-text">FortiAIGate</b> ·{" "}
+                          <b className="font-mono text-text">{m.meta.fortiaigate.latencyMs} ms</b>
+                        </span>
+                      )}
                       {m.meta.ray && (
                         <span>
                           · ray <span className="font-mono text-text">{m.meta.ray}</span>
@@ -522,6 +563,23 @@ export function Chat({
                 )}
               </div>
             );
+          if (m.kind === "fortiaigate")
+            return (
+              <div key={m.id} className="contents">
+                <FortiAiGateCard m={m} />
+                <Stamp side="assistant" ts={m.ts} />
+                <TurnControls
+                  kind="fortiaigate"
+                  ray={m.ray}
+                  route="fortiaigate"
+                  fortiaigateBy={m.by}
+                  pipeline={m.pipeline}
+                />
+                {m.ray && (
+                  <TurnVerdict ray={m.ray} prompt={promptBefore(idx)} requestCfg={cfgBefore(idx)} stoppedInWorker="fortiaigate" />
+                )}
+              </div>
+            );
           if (m.kind === "guardrails")
             return (
               <div key={m.id} className="contents">
@@ -587,7 +645,7 @@ export function Chat({
       <div className="flex flex-wrap items-center gap-3.5 text-[13px] text-muted">
         {/* Route toggle: Workers AI (direct) ↔ AI Gateway */}
         <div className="inline-flex overflow-hidden rounded-full border border-line">
-          {(["direct", "gateway"] as Route[]).map((r) => (
+          {((fortiEnabled ? ["direct", "gateway", "fortiaigate"] : ["direct", "gateway"]) as Route[]).map((r) => (
             <button
               key={r}
               type="button"
@@ -596,26 +654,45 @@ export function Chat({
                 route === r ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:text-text"
               }`}
             >
-              {r === "direct" ? "Workers AI" : "AI Gateway"}
+              {r === "direct" ? "Workers AI" : r === "gateway" ? "AI Gateway" : "FortiAIGate"}
             </button>
           ))}
         </div>
-        {!gateway && (
+        {route === "fortiaigate" ? (
+          // FortiAIGate's own models (its public names), not the Workers AI registry.
           <label htmlFor="model" className="flex items-center gap-1.5">
             Model
             <select
               id="model"
-              value={selectedModel}
-              onChange={(e) => onModelChange(e.target.value)}
-              className="max-w-80 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
+              value={fortiModel}
+              onChange={(e) => onFortiModelChange(e.target.value)}
+              className="max-w-80 rounded-lg border border-line bg-surface px-2.5 py-2 font-mono text-[12.5px] text-text outline-none focus:border-accent"
             >
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
+              {fortiModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
                 </option>
               ))}
             </select>
           </label>
+        ) : (
+          !gateway && (
+            <label htmlFor="model" className="flex items-center gap-1.5">
+              Model
+              <select
+                id="model"
+                value={selectedModel}
+                onChange={(e) => onModelChange(e.target.value)}
+                className="max-w-80 rounded-lg border border-line bg-surface px-2.5 py-2 text-[13px] text-text outline-none focus:border-accent"
+              >
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )
         )}
         <Switch checked={stream} onChange={onStreamChange} label="stream replies" />
         <Switch

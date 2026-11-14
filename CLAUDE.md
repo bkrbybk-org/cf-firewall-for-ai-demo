@@ -180,6 +180,14 @@ alters what a customer sees in a demo. State it and let them choose.
   false` (allow with alerts here), and REST evaluations never appear in Datadog's UI.
   Cisco AI Defense likewise ships an open-source client, `cisco-ai-defense/ai-defense-python-sdk` — the source of record
   for roles (`user`/`assistant`/`system`) and for reply checking (`inspect_response` sends the reply alone as `assistant`).
+- FortiAIGate (Fortinet's self-hosted AI gateway, the third chat route — `src/fortiAiGate.ts`) is the user's own
+  deployment: AWS us-east-1 → Bedrock ap-southeast-1, behind a Cloudflare Tunnel at `faig.nttlab.org` with an Access
+  Service Auth policy (it also accepts the `.env` service token). `FAIG_KEY` in `.env` is its virtual key: use it only
+  in curl headers when the user asks; never save it into any D1 (local tests use fake values). Local workerd cannot
+  reach `faig.nttlab.org` ("could not be reached") — test the route on prod, where switching it on needs the user (admin
+  gate). Its docs document neither the block nor the model names: public names come from `GET /ai/openai/v1/models`
+  (`bedrock-apse1-…-v1-0`, not the Bedrock id), and a block is HTTP 200 with `finish_reason: content_filter`, `id:
+  chatcmpl-blocked` and the block message as the content (seen 2026-11-14).
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,

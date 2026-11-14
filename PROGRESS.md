@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-14 — FortiAIGate connection settings in Settings (migration 0014; no chat route yet). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-14 — FortiAIGate as a third chat route (migration 0015; off until the user enables it), after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
 (user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
@@ -446,7 +446,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `f2d048ae-669a-4086-9e51-3993f46b54d2` (2026-11-14, FortiAIGate test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `e67e7146-fc94-46eb-b6c2-e50804468cca` (2026-11-14, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -483,7 +483,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **977 across 68 files** (measured 2026-11-14; README's Tests table has the
+**Tests** — `npm test`, **985 across 68 files** (measured 2026-11-14; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -648,6 +648,61 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-14 — FortiAIGate as a third chat route
+
+**Asked:** an enable switch for FortiAIGate. Asked back, the user chose a **third route** (next to Workers AI and AI
+Gateway, picked per chat) over replacing all chat.
+
+- **Built from the real responses** recorded below (allow and block, 2026-11-14), not from Fortinet's docs. A block is
+  HTTP **200**, so a 200 is never treated as a reply by itself. `fortiBlockOf` returns `fortiaigate` for `id:
+  "chatcmpl-blocked"` or the configured block message as the content. It returns `content_filter` for
+  `finish_reason: "content_filter"` alone, because the provider behind FortiAIGate can set that too. The card and the
+  control strip say which.
+- **Server:** migration `0015_fortiaigate_enabled.sql` adds `enabled` (default 0, additive). Enabling is refused without
+  a base URL, a virtual key and a model, and emptying them while on is refused. `/api/models` serves `fortiaigate:
+  {enabled, models}`. `POST /api/chat` takes `fortiaigate: true` and refuses with a 400, never falling back to Workers AI,
+  when:
+  - the route is not enabled;
+  - the model is not in the saved list;
+  - `gateway` is also true;
+  - the URL is no longer allowed.
+  
+  The route is checked before the external guardrails run, so a refused turn costs no vendor calls. It is always JSON
+  (`notStreamed: "fortiaigate"`). A block answers 200 `{fortiaigateBlocked, by, model, ray, fortiaigate: {latencyMs}}`
+  without the block message. A reply carries FortiAIGate's usage (estimated when absent) and **cost `null`**: Bedrock
+  pricing is not known here. External guardrails still check the prompt before it and the reply after. Errors are
+  written here, with only a code-shaped value (`model_not_found`) passed on. Redirects are never followed. The prompt log
+  gains route and outcome `fortiaigate`; D1 has no constraint on either, and the openapi enums were updated.
+- **Web:**
+  - The chat route toggle gains **FortiAIGate**, only while it is enabled, with its own model list.
+  - A purple **Blocked by FortiAIGate** card, never an assistant bubble, so it never enters multi-turn history.
+  - Replies show "through FortiAIGate · N ms".
+  - The flow trace and request chip name FortiAIGate.
+  - The control strip puts FortiAIGate in the gateway slot. After a block the model cell is **unknown**, since FortiAIGate
+    answers a blocked prompt and a blocked reply the same way.
+  - Settings: an **Enabled** switch on the row, and a "chat route" badge while it is on.
+  - The Red Team page is unchanged; it keeps Direct and AI Gateway, which is a separate scoring decision.
+- **Tests:** 985 (8 new):
+  - fortiAiGate: the enable rule; the real block body; each marker; a reply; errors.
+  - controlMatrix: block, `content_filter`, pass, not reached.
+  
+  **Mutation-checked:** dropping the block return, the enable check or the `content_filter` rule each turns tests red.
+- **Verified locally** (test values only; the real virtual key was never stored):
+  - Enabling with nothing saved is a 400. Saving then enabling gives `enabled: true`, `chatRoute: true`, and
+    `/api/models` lists the model.
+  - Asking for both routes is a 400. A Workers AI model id on the FortiAIGate route is a 400.
+  - A turn with `stream: true` came back as JSON. **Local workerd cannot reach `faig.nttlab.org`**, so the turn reported
+    "could not be reached" (504) and the chat showed it as an error card.
+  - In the browser pane: the route toggle shows three routes, the model list shows the FortiAIGate model, and the Settings
+    row shows the switch and the badge, in light and dark. The only console error was that expected 504.
+- **Prod** (migration 0015 applied before deploy `e67e7146-fc94-46eb-b6c2-e50804468cca`):
+  - `/api/models` → `fortiaigate: {enabled: false, models: []}`. The saved config is unchanged, with 4 catalog models.
+  - A FortiAIGate turn while off is the 400 "not enabled".
+  - The bundle `index-Bsff7afj.js` carries "Blocked by FortiAIGate", "Model behind FortiAIGate" and the switch title.
+  - Smoke: [1], [2], [3] and [5] pass; [4] fails, unchanged (all vendors disabled).
+  - **Not yet proven on prod:** a real reply and a real block through the route. That needs the user to switch it on
+    (admin gate) and send one harmless prompt and one injection on the FortiAIGate route.
 
 ### 2026-11-14 — FortiAIGate connection settings (Settings → System → Providers, a row under the vendors)
 

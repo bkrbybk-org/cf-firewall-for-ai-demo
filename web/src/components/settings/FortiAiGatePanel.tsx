@@ -1,10 +1,11 @@
 // Settings → System → FortiAIGate: connection settings for Fortinet's self-hosted inline AI gateway
 // (src/fortiAiGate.ts). It is a PROXY, not an external guardrail, so it sits apart from the Providers list and
-// never joins the pipeline. No chat route uses it yet: Test connection collects the evidence (status, response
-// shape, block message seen) that the route will be built from, and the card says so.
+// never joins the pipeline. Its Enabled switch offers it as a third chat route (/api/chat with fortiaigate: true);
+// Test connection shows the evidence that route was built from (status, response shape, block message seen).
 import { useEffect, useId, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, Info, Loader2, ShieldAlert } from "lucide-react";
 import { getFortiAiGate, saveFortiAiGate, testFortiAiGate } from "../../lib/api";
+import { Switch } from "../Switch";
 import type { FortiAiGateState, FortiAiGateTestResponse, FortiAiGateTestSample, FortiAiGateUpdate } from "../../lib/types";
 
 const INPUT_CLS =
@@ -152,7 +153,8 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
 
   return (
     <section className="rounded-xl border border-line bg-surface shadow-sm">
-      <h4 className="m-0 px-3 py-2.5 sm:px-4">
+      <div className="flex items-center gap-3 px-3 py-2.5 sm:px-4">
+      <h4 className="m-0 min-w-0 flex-1">
         {/* Accordion pattern, as the vendor rows: a heading holding the toggle, outside the locked fieldset so a
             read-only viewer can still open it and read it. */}
         <button
@@ -176,12 +178,14 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
               >
                 inline proxy
               </span>
-              <span
-                title="Fortinet documents neither the status nor the body of a block. The chat route is built once Test connection has shown a real allow and a real block."
-                className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber-ink"
-              >
-                not used by chat yet
-              </span>
+              {c?.enabled && (
+                <span
+                  title="The chat page offers FortiAIGate as a third route, next to Workers AI and AI Gateway."
+                  className="rounded-full border border-cf-purple/60 bg-cf-purple/10 px-2 py-px text-[10.5px] font-semibold text-cf-purple"
+                >
+                  chat route
+                </span>
+              )}
             </span>
             <span className="mt-0.5 block text-[11.5px] font-normal leading-relaxed text-muted">
               {summary.length ? summary.join(" · ") : loadErr ? "Could not load" : "Loading…"}
@@ -190,6 +194,17 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
           </span>
         </button>
       </h4>
+      {/* Outside the heading button, like the vendor rows; a non-admin viewer gets it disabled. */}
+      {c && (
+        <Switch
+          checked={c.enabled}
+          onChange={(on) => void send({ enabled: on }, on ? "Enabled — the chat page now offers the FortiAIGate route." : "Disabled.")}
+          disabled={locked || saving}
+          label={c.enabled ? "Enabled" : "Disabled"}
+          title="Offer FortiAIGate as a third chat route, next to Workers AI and AI Gateway"
+        />
+      )}
+      </div>
 
       <div id={`${ids}body`} hidden={!open} className="border-t border-line">
       <p className="m-0 px-3 pt-3 text-[11.5px] leading-relaxed text-muted sm:px-4">
@@ -391,7 +406,7 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
               {dirty
                 ? "Save first — the test uses the saved settings."
                 : canTest
-                  ? "A fixed prompt, through FortiAIGate to the model, with the saved settings. The result shows the status and the response's shape (field names and types, never text) — the evidence the chat route will be built from."
+                  ? "A fixed prompt, through FortiAIGate to the model, with the saved settings. The result shows the status and the response's shape (field names and types, never text) — the evidence the chat route is checked against."
                   : "Needs a saved base URL, virtual key and model."}
             </Hint>
 

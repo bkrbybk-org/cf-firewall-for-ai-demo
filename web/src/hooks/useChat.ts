@@ -13,9 +13,10 @@ import { parseEdgeBlock } from "../lib/edgeBlock";
 import { fmtTime } from "../lib/format";
 import { parseMetadata } from "../lib/metadata";
 import { createStore, nextMsgId, useStore } from "../lib/sessionStore";
-import type { GatewayMeta, GuardrailPipelineResult, Model, NotStreamedReason, Usage } from "../lib/types";
+import type { FortiAiGateMeta, GatewayMeta, GuardrailPipelineResult, Model, NotStreamedReason, Usage } from "../lib/types";
 
-export type Route = "direct" | "gateway";
+// "fortiaigate": the third route, through FortiAIGate to its own models (offered only while it is enabled).
+export type Route = "direct" | "gateway" | "fortiaigate";
 
 // Every message carries both a display time and the epoch ms behind it. The
 // epoch value is what anchors a later verdict lookup to when the request
@@ -69,6 +70,7 @@ export type Msg =
         usage?: Usage;
         cost?: number | null;
         gateway?: GatewayMeta; // set when this reply was routed via AI Gateway
+        fortiaigate?: FortiAiGateMeta; // set when this reply came through FortiAIGate
         dynamicRoute?: string; // set when a dynamic route chose the model
         externalGuardrails?: GuardrailPipelineResult; // the pipeline verdicts that let it through
         notStreamed?: NotStreamedReason; // asked to stream, answered in one piece — and why
@@ -87,6 +89,19 @@ export type Msg =
       detection?: string;
       reason?: string;
       code?: string; // the rule's reason_code, when the edge's Custom JSON carried one
+    }
+  | {
+      id: number;
+      // FortiAIGate answered with its block (the third route). Its own kind: never "guardrails" (that is AI Gateway),
+      // never an assistant message — the block message is not a reply and must not enter multi-turn history.
+      kind: "fortiaigate";
+      ts: string;
+      tsMs: number;
+      ray?: string;
+      by: "fortiaigate" | "content_filter";
+      model?: string;
+      latencyMs?: number;
+      pipeline?: GuardrailPipelineResult; // the external guardrails that let it through first, if any
     }
   | {
       id: number;
@@ -236,6 +251,7 @@ export function useChat(cfg: {
           history: history.length ? history : undefined,
           stream: stream || undefined,
           gateway: gateway || undefined,
+          fortiaigate: route === "fortiaigate" || undefined,
           gatewayId: gateway ? gatewayId || undefined : undefined,
           skipCache: gateway ? skipCache : undefined,
           dynamicRoute: gateway && dynamicRoute ? dynamicRoute : undefined,
@@ -364,6 +380,19 @@ export function useChat(cfg: {
             pipeline: data.externalGuardrails ?? undefined,
           });
           outcome = { kind: "blocked", ray };
+        } else if (status >= 200 && status < 300 && data?.fortiaigateBlocked) {
+          // Checked before `reply`: FortiAIGate's block is a 200 too, and its block message must never render as a reply.
+          push({
+            id: nextId(),
+            kind: "fortiaigate",
+            ...stamp(),
+            ray,
+            by: data.by ?? "fortiaigate",
+            model: data.model,
+            latencyMs: data.fortiaigate?.latencyMs,
+            pipeline: data.externalGuardrails ?? undefined,
+          });
+          outcome = { kind: "blocked", ray };
         } else if (status >= 200 && status < 300 && data?.guardrailOnly) {
           push({ id: nextId(), kind: "guardrailOnly", ...stamp(), ray, pipeline: data.externalGuardrails });
           outcome = { kind: "skipped", ray };
@@ -381,6 +410,7 @@ export function useChat(cfg: {
               usage: data.usage,
               cost,
               gateway: gwMeta,
+              fortiaigate: data.fortiaigate,
               dynamicRoute: data.dynamicRoute,
               externalGuardrails: data.externalGuardrails,
               notStreamed: data.notStreamed,

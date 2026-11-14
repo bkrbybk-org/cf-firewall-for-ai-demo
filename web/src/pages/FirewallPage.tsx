@@ -41,6 +41,9 @@ export function FirewallPage() {
   const [stream, setStream] = useState(true);
   const [multiTurn, setMultiTurn] = useState(false);
   const [route, setRoute] = useState<Route>("direct");
+  // The FortiAIGate route (/api/models → fortiaigate): offered only while enabled, with its own model list.
+  const [forti, setForti] = useState<{ enabled: boolean; models: string[] }>({ enabled: false, models: [] });
+  const [fortiModel, setFortiModel] = useState("");
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
   // Dynamic Routing: a route name configured in the gateway dashboard.
@@ -68,7 +71,7 @@ export function FirewallPage() {
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
     models,
-    model: selectedModel,
+    model: route === "fortiaigate" ? fortiModel : selectedModel,
     systemPrompt,
     stream,
     multiTurn,
@@ -102,6 +105,9 @@ export function FirewallPage() {
         setGatewayId(data.defaultGateway ?? data.gateways?.[0]?.id ?? "");
         setLimits(data.limits);
         setPromptLogEnabled(data.promptLog?.enabled ?? false);
+        const f = data.fortiaigate ?? { enabled: false, models: [] };
+        setForti(f);
+        setFortiModel(f.models[0] ?? "");
       })
       .catch(() => {});
   }, []);
@@ -159,6 +165,10 @@ export function FirewallPage() {
           promptLogEnabled={promptLogEnabled}
           route={route}
           onRouteChange={setRoute}
+          fortiEnabled={forti.enabled && forti.models.length > 0}
+          fortiModels={forti.models}
+          fortiModel={fortiModel}
+          onFortiModelChange={setFortiModel}
           gateways={gateways}
           gatewayId={gatewayId}
           onGatewayIdChange={setGatewayId}

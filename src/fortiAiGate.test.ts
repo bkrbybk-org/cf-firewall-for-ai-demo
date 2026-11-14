@@ -8,6 +8,8 @@ import {
   checkBaseUrl,
   decryptForti,
   defaultFortiConfig,
+  fortiBlockOf,
+  runFortiChat,
   testForti,
   toPublicForti,
   validateFortiUpdate,
@@ -160,5 +162,75 @@ describe("testForti — observations, never a verdict, never text", () => {
     expect(r.error).toMatch(/Model Catalog/);
     expect(r.responseShape).toEqual({ error: { message: "string", type: "string = not_found_error", param: "null", code: "string = model_not_found" } });
     expect(JSON.stringify(r)).not.toContain("is not available");
+  });
+});
+
+describe("enabled — the chat route switch", () => {
+  it("refuses to enable without URL, virtual key and model, and refuses to empty them while on", async () => {
+    expect(validateFortiUpdate({ enabled: true }, defaultFortiConfig(), SUFFIX)).toMatchObject({ ok: false });
+    expect(validateFortiUpdate({ enabled: "yes" }, defaultFortiConfig(), SUFFIX)).toMatchObject({ ok: false });
+    const v = validateFortiUpdate({ enabled: true, baseUrl: "https://faig.example.com", models: ["m1"], virtualKey: "vk-0000" }, defaultFortiConfig(), SUFFIX);
+    if (!v.ok) throw new Error(v.error);
+    const on = await applyCredentials(v, SECRET, 1);
+    expect(on.enabled).toBe(true);
+    expect(toPublicForti(on, SUFFIX)).toMatchObject({ enabled: true, chatRoute: true });
+    expect(validateFortiUpdate({ models: [] }, on, SUFFIX)).toMatchObject({ ok: false });
+    expect(validateFortiUpdate({ baseUrl: null }, on, SUFFIX)).toMatchObject({ ok: false });
+    expect(validateFortiUpdate({ enabled: false, models: [] }, on, SUFFIX)).toMatchObject({ ok: true });
+  });
+});
+
+describe("runFortiChat — a block is never a reply", () => {
+  const cfg: FortiConfig = { ...defaultFortiConfig(), enabled: true, baseUrl: "https://faig.example.com", models: ["m1"] };
+  const creds = { virtualKey: "vk", access: null };
+  const input = { model: "m1", messages: [{ role: "user", content: "hi" }], maxTokens: 64 };
+  const fake = (res: Response | Error) =>
+    (async () => {
+      if (res instanceof Error) throw res;
+      return res;
+    }) as unknown as typeof fetch;
+  // The real block body of 2026-11-14.
+  const realBlock = {
+    choices: [{ finish_reason: "content_filter", index: 0, message: { content: FORTIAIGATE_DEFAULT_BLOCK_MESSAGE, role: "assistant" } }],
+    id: "chatcmpl-blocked",
+    model: "bedrock-apse1-amazon.nova-micro-v1-0",
+    object: "chat.completion",
+    usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 },
+  };
+
+  it("the real block is a block by FortiAIGate, not a reply carrying its message", async () => {
+    const r = await runFortiChat(cfg, creds, input, fake(Response.json(realBlock)));
+    expect(r).toMatchObject({ kind: "blocked", by: "fortiaigate", model: "bedrock-apse1-amazon.nova-micro-v1-0" });
+    expect(JSON.stringify(r)).not.toContain("safety systems");
+  });
+
+  it("each marker alone is enough; content_filter alone is attributed to the provider filter", () => {
+    expect(fortiBlockOf({ id: "chatcmpl-blocked", choices: [{ message: { content: "x" } }] }, "")).toBe("fortiaigate");
+    expect(fortiBlockOf({ choices: [{ message: { content: ` ${FORTIAIGATE_DEFAULT_BLOCK_MESSAGE} ` } }] }, FORTIAIGATE_DEFAULT_BLOCK_MESSAGE)).toBe("fortiaigate");
+    expect(fortiBlockOf({ choices: [{ finish_reason: "content_filter", message: { content: "" } }] }, FORTIAIGATE_DEFAULT_BLOCK_MESSAGE)).toBe("content_filter");
+    expect(fortiBlockOf({ choices: [{ finish_reason: "stop", message: { content: "Paris." } }] }, FORTIAIGATE_DEFAULT_BLOCK_MESSAGE)).toBeNull();
+  });
+
+  it("a reply carries the model and FortiAIGate's usage", async () => {
+    const r = await runFortiChat(
+      cfg,
+      creds,
+      input,
+      fake(Response.json({ id: "x", model: "m1", choices: [{ finish_reason: "stop", message: { content: "Paris." } }], usage: { prompt_tokens: 12, completion_tokens: 3 } })),
+    );
+    expect(r).toMatchObject({ kind: "reply", reply: "Paris.", promptTokens: 12, completionTokens: 3 });
+  });
+
+  it("errors are written here: no vendor text, only a code-shaped value, and Access's redirect is named", async () => {
+    const e404 = await runFortiChat(cfg, creds, input, fake(Response.json({ error: { message: "secret echo", code: "model_not_found" } }, { status: 404 })));
+    expect(e404).toMatchObject({ kind: "error", status: 502, message: "FortiAIGate answered HTTP 404 (model_not_found)" });
+    const odd = await runFortiChat(cfg, creds, input, fake(Response.json({ error: { code: "Has Spaces 123" } }, { status: 500 })));
+    expect(odd).toMatchObject({ kind: "error", message: "FortiAIGate answered HTTP 500" });
+    const redirect = await runFortiChat(cfg, creds, input, fake(new Response(null, { status: 302, headers: { location: "https://x" } })));
+    expect(redirect).toMatchObject({ kind: "error", message: expect.stringMatching(/Access/) });
+    const down = await runFortiChat(cfg, creds, input, fake(new TypeError("internal error")));
+    expect(down).toMatchObject({ kind: "error", status: 504 });
+    const empty = await runFortiChat(cfg, creds, input, fake(Response.json({ choices: [{ message: { content: " " } }] })));
+    expect(empty.kind).toBe("error");
   });
 });

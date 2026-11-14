@@ -174,3 +174,25 @@ describe("controlMatrix — quorum (#7)", () => {
     expect(c).toMatchObject({ state: "stopped", decisive: true });
   });
 });
+
+describe("controlMatrix — the FortiAIGate route (2026-11-14)", () => {
+  it("a FortiAIGate block is decisive in the gateway slot, the model is unknown, and AI Gateway is not credited", () => {
+    const cells = byKey(m({ kind: "fortiaigate", route: "fortiaigate", fortiaigateBy: "fortiaigate" }));
+    expect(cells.faig).toMatchObject({ label: "FortiAIGate", state: "stopped", decisive: true, stateLabel: "blocked" });
+    expect(cells.aig).toBeUndefined();
+    expect(cells.model).toMatchObject({ state: "unavailable", stateLabel: "unknown" });
+  });
+
+  it("content_filter alone is not called a FortiAIGate block", () => {
+    const c = byKey(m({ kind: "fortiaigate", route: "fortiaigate", fortiaigateBy: "content_filter" })).faig;
+    expect(c).toMatchObject({ state: "stopped", stateLabel: "content filter" });
+    expect(c.detail).toMatch(/or the model provider/);
+  });
+
+  it("a reply passed FortiAIGate and reached the model; a turn stopped earlier never reached FortiAIGate", () => {
+    const ok = byKey(m({ kind: "assistant", route: "fortiaigate" }));
+    expect(ok.faig).toMatchObject({ state: "passed" });
+    expect(ok.model).toMatchObject({ state: "reached" });
+    expect(byKey(m({ kind: "external", route: "fortiaigate" })).faig).toMatchObject({ state: "notReached" });
+  });
+});

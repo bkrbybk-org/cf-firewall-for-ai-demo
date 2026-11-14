@@ -77,7 +77,9 @@ export interface ChatTurn {
 // the user does cannot run on a stream. "guarded-gateway" — AI Gateway Guardrails only
 // logs a streamed reply on the REST API (Open bug #30); "reply-scan" — the external
 // guardrails check the reply (design J).
-export type NotStreamedReason = "guarded-gateway" | "reply-scan";
+// "fortiaigate" — the FortiAIGate route is buffered: FortiAIGate can cut a stream after HTTP 200 and a block arrives as a
+// 200 with finish_reason content_filter, which only a whole response shows (src/fortiAiGate.ts).
+export type NotStreamedReason = "guarded-gateway" | "reply-scan" | "fortiaigate";
 
 export interface ChatRequestBody {
   prompt?: unknown;
@@ -85,6 +87,9 @@ export interface ChatRequestBody {
   systemPrompt?: unknown;
   history?: unknown; // ChatTurn[] — validated server-side
   stream?: unknown; // true → SSE response instead of JSON
+  // The FortiAIGate route (src/fortiAiGate.ts): true sends the turn through FortiAIGate to a model from its saved list.
+  // Never together with `gateway` (400). Refused when FortiAIGate is not enabled — never a silent fallback.
+  fortiaigate?: unknown;
   // AI Gateway routing (optional). When gateway is true the Worker calls AI
   // Gateway's OpenAI-compatible REST endpoint (handlers.ts, "AI Gateway routing
   // (REST)") instead of the env.AI.run() binding. The request still hits the
@@ -157,11 +162,11 @@ export interface NeuronUsage {
 export interface PromptLogRow {
   ray: string;
   ts: number; // epoch ms
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
   model: string;
   gatewayId: string | null;
   guarded: number; // 0/1 (SQLite has no bool)
-  outcome: "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "error"; // external = an external guardrail blocked the prompt; external_reply = one withheld the reply (the model ran); skipped = guardrail-only, model not called
+  outcome: "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "fortiaigate" | "error"; // fortiaigate = FortiAIGate blocked the turn (src/fortiAiGate.ts); external = an external guardrail blocked the prompt; external_reply = one withheld the reply (the model ran); skipped = guardrail-only, model not called
   prompt: string;
   reply: string | null; // null for streamed replies (not captured) or blocks
   redactions: number; // PII spans masked in prompt+reply

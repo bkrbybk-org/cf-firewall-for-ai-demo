@@ -45,8 +45,9 @@ export type EdgeKnowledge = Outcome | "pending" | "unavailable";
 export interface ControlMatrixInput {
   // Which chat message ended the turn.
   // "replyWithheld" (design J): the model answered and the reply check withheld the reply.
-  kind: "assistant" | "blocked" | "guardrails" | "external" | "guardrailOnly" | "replyWithheld";
-  route: "direct" | "gateway";
+  // "fortiaigate": FortiAIGate (the third route) answered with its block.
+  kind: "assistant" | "blocked" | "guardrails" | "external" | "guardrailOnly" | "replyWithheld" | "fortiaigate";
+  route: "direct" | "gateway" | "fortiaigate";
   // The edge verdict for this ray, when the lookup has finished; "pending" while it
   // runs; "unavailable" when it cannot be had (no ray, analytics off, expired).
   edge: EdgeKnowledge;
@@ -54,6 +55,7 @@ export interface ControlMatrixInput {
   replyPipeline?: GuardrailPipelineResult; // the reply check, when the reply was checked
   guarded?: boolean; // gateway route: this gateway has Guardrails on
   guardrailsDirection?: "prompt" | "response"; // kind "guardrails" only
+  fortiaigateBy?: "fortiaigate" | "content_filter"; // kind "fortiaigate" only: its own block, or only finish_reason
 }
 
 const STATE_LABEL: Record<CellState, string> = {
@@ -198,8 +200,25 @@ function externalCells(i: ControlMatrixInput): MatrixCell[] {
   ];
 }
 
+// The FortiAIGate route takes the gateway slot: like AI Gateway Guardrails it acts inside the model call. Purple, the
+// same layer, since a viewer reads the strip by position; the label says which product it was.
+function fortiaigateCell(i: ControlMatrixInput): MatrixCell {
+  const L = "FortiAIGate";
+  if (i.kind === "fortiaigate") {
+    return i.fortiaigateBy === "content_filter"
+      ? cell("faig", "gatewayGuardrails", L, "stopped", "Stopped with finish_reason content_filter — FortiAIGate, or the model provider behind it.", true, "content filter")
+      : cell("faig", "gatewayGuardrails", L, "stopped", "FortiAIGate blocked the turn (its block message, not a model reply).", true, "blocked");
+  }
+  if (i.kind === "assistant" || i.kind === "replyWithheld") {
+    return cell("faig", "gatewayGuardrails", L, "passed", "The turn went through FortiAIGate and it did not block the prompt or the reply.");
+  }
+  const why = i.kind === "guardrailOnly" ? "Guardrail-only mode skips the model call, and FortiAIGate with it." : "The turn was stopped before FortiAIGate.";
+  return cell("faig", "gatewayGuardrails", L, "notReached", why);
+}
+
 function gatewayGuardrailsCell(i: ControlMatrixInput): MatrixCell {
   const L = "AI Gateway Guardrails";
+  if (i.route === "fortiaigate") return fortiaigateCell(i);
   if (i.route === "direct") return cell("aig", "gatewayGuardrails", L, "off", "Direct Workers AI route — there is no gateway on this turn.", false, "n/a · direct");
   if (i.kind === "guardrails") {
     return i.guardrailsDirection === "response"
@@ -216,6 +235,11 @@ function gatewayGuardrailsCell(i: ControlMatrixInput): MatrixCell {
 
 function modelCell(i: ControlMatrixInput): MatrixCell {
   const L = "Model";
+  if (i.kind === "fortiaigate") {
+    // FortiAIGate checks the prompt and the reply and answers a block the same way for both, so whether the model
+    // ran is not known. Said, not guessed.
+    return cell("model", "model", L, "unavailable", "Not known: FortiAIGate answers a blocked prompt and a blocked reply the same way.", false, "unknown");
+  }
   if (i.kind === "assistant") return cell("model", "model", L, "reached", "The model answered.");
   if (i.kind === "replyWithheld") {
     return cell("model", "model", L, "reached", "The model answered, but an external guardrail withheld the reply.", false, "answered · withheld");

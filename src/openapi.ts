@@ -151,7 +151,7 @@ export const openapi = {
             },
             content: {
               "application/json": {
-                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked"), ref("ExternalReplyBlocked"), ref("GuardrailOnlyResult")] },
+                schema: { oneOf: [ref("ChatReply"), ref("GuardrailsBlocked"), ref("ExternalGuardrailBlocked"), ref("ExternalReplyBlocked"), ref("GuardrailOnlyResult"), ref("FortiAiGateBlocked")] },
               },
               "text/event-stream": {
                 schema: {
@@ -310,11 +310,11 @@ export const openapi = {
         parameters: [
           { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 200, default: 25 } },
           { name: "offset", in: "query", schema: { type: "integer", minimum: 0, default: 0 } },
-          { name: "route", in: "query", schema: { type: "string", enum: ["direct", "gateway"] } },
+          { name: "route", in: "query", schema: { type: "string", enum: ["direct", "gateway", "fortiaigate"] } },
           {
             name: "outcome",
             in: "query",
-            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `external_reply`, `skipped`, `error`. Unknown values are ignored.",
+            description: "Comma-separated subset of `reply`, `guardrails`, `external`, `external_reply`, `skipped`, `fortiaigate`, `error`. Unknown values are ignored.",
             schema: { type: "string" },
             example: "guardrails,error",
           },
@@ -425,7 +425,7 @@ export const openapi = {
         operationId: "getFortiAiGate",
         summary: "FortiAIGate connection settings (credentials redacted)",
         description: [
-          "FortiAIGate is Fortinet's **self-hosted inline AI gateway**: it forwards a model request to the provider it fronts and applies its policy on the way. It has no verdict-only API, so it is **not** an external guardrail: nothing here reaches the guardrail pipeline, the scheduled re-runs or the vendor analytics. `chatRoute: false` — no chat route uses it yet; that comes once a real allow and a real block have been seen.",
+          "FortiAIGate is Fortinet's **self-hosted inline AI gateway**: it forwards a model request to the provider it fronts and applies its policy on the way. It has no verdict-only API, so it is **not** an external guardrail: nothing here reaches the guardrail pipeline, the scheduled re-runs or the vendor analytics. `enabled` (also `chatRoute`) says whether the chat page offers the FortiAIGate route (`POST /api/chat` with `fortiaigate: true`).",
           "",
           "Credentials are write-only: only `virtualKeySet`/`accessSet` and their last 4 characters are returned.",
         ].join("\n"),
@@ -448,6 +448,7 @@ export const openapi = {
           content: {
             "application/json": {
               schema: obj({
+                enabled: bool("Offer the FortiAIGate chat route. Refused without a saved base URL, virtual key and model."),
                 baseUrl: nullable("string", "https origin, e.g. https://fortiaigate.example.com. Empty or null clears it."),
                 models: arr({ type: "string", maxLength: 128 }),
                 blockMessage: nullable("string", "FortiAIGate's organisation block message (≤ 500 characters). Null or empty = Fortinet's default."),
@@ -681,6 +682,7 @@ export const openapi = {
           },
           stream: bool("`true` → an SSE response instead of JSON — except on the guarded AI Gateway, which is always answered as JSON so Guardrails can block the reply (the JSON then carries `notStreamed`)."),
           gateway: bool("`true` → route through AI Gateway. Needs `CF_AIG_TOKEN`."),
+          fortiaigate: bool("`true` → route through FortiAIGate (Fortinet's self-hosted inline AI gateway) to a model from its saved list (`/api/models` → `fortiaigate.models`). 400 when FortiAIGate is not enabled, when `model` is not one of its saved models, or together with `gateway: true` — never a silent fallback to Workers AI. Always answered as JSON (`notStreamed: \"fortiaigate\"` if `stream` was asked). Cost is `null`: Bedrock pricing behind FortiAIGate is not known here."),
           gatewayId: { type: "string", pattern: "^[a-zA-Z0-9_-]{1,64}$", description: "Gateway route only. An id not on the account falls back to the default gateway." },
           dynamicRoute: {
             type: "string",
@@ -721,6 +723,7 @@ export const openapi = {
           ),
           cost: nullable("number", "Estimated USD from Workers AI unit pricing. 0 for a cache hit; null for a model with no price entry."),
           gateway: ref("GatewayMeta"),
+          fortiaigate: obj({ latencyMs: int() }, ["latencyMs"], "Set on the FortiAIGate route: the Worker-observed round trip to FortiAIGate."),
           dynamicRoute: str("Echoed when the reply came from a Dynamic Route."),
           externalGuardrails: ref("GuardrailPipelineResult"),
           replyGuardrails: ref("GuardrailPipelineResult"),
@@ -730,9 +733,9 @@ export const openapi = {
       ),
       NotStreamedReason: {
         type: "string",
-        enum: ["guarded-gateway", "reply-scan"],
+        enum: ["guarded-gateway", "reply-scan", "fortiaigate"],
         description:
-          "Present when the request asked for `stream: true` and was answered as JSON instead. `guarded-gateway`: the guarded AI Gateway was picked, and on the REST API Guardrails only **logs** a streamed reply, so the turn is buffered to let it block one. `reply-scan`: the external guardrails check the reply before it is returned.",
+          "Present when the request asked for `stream: true` and was answered as JSON instead. `guarded-gateway`: the guarded AI Gateway was picked, and on the REST API Guardrails only **logs** a streamed reply, so the turn is buffered to let it block one. `reply-scan`: the external guardrails check the reply before it is returned. `fortiaigate`: the FortiAIGate route is always buffered — FortiAIGate answers a block as an HTTP 200 marked `finish_reason: content_filter`, which only a whole response shows.",
       },
       GatewayMeta: obj(
         {
@@ -898,6 +901,19 @@ export const openapi = {
         ["mode", "guardrailOnly", "results", "notRun", "stoppedBy", "latencyMs"],
         "What the pipeline did for one prompt. `results` is in run order (sequential) or configured order (parallel); `notRun` lists enabled guardrails skipped because an earlier one stopped the turn.",
       ),
+      FortiAiGateBlocked: obj(
+        {
+          fortiaigateBlocked: { const: true },
+          by: { type: "string", enum: ["fortiaigate", "content_filter"], description: "`fortiaigate`: FortiAIGate's own block (`id: chatcmpl-blocked` or its block message). `content_filter`: only `finish_reason: content_filter`, which the model provider behind it can also set." },
+          model: str(),
+          ray: nullable("string"),
+          fortiaigate: obj({ latencyMs: int("Worker-observed round trip to FortiAIGate.") }, ["latencyMs"]),
+          externalGuardrails: ref("GuardrailPipelineResult"),
+          notStreamed: ref("NotStreamedReason"),
+        },
+        ["fortiaigateBlocked", "by", "model", "ray", "fortiaigate"],
+        "FortiAIGate stopped the turn. FortiAIGate itself answers a block with HTTP 200 and its block message as the assistant's content (seen live 2026-11-14); this Worker never passes that message on as a reply. HTTP status is **200**.",
+      ),
       ExternalGuardrailBlocked: obj(
         {
           externalGuardrailBlocked: { const: true },
@@ -1041,9 +1057,10 @@ export const openapi = {
               accessSavedAt: nullable("integer", "Epoch ms."),
               updatedAt: nullable("integer", "Epoch ms."),
               allowedHostSuffix: nullable("string", "FORTIAIGATE_ALLOWED_HOST_SUFFIX: the base URL's host must be this or a subdomain. Null = no URL can be saved."),
-              chatRoute: { const: false, description: "No chat route uses FortiAIGate yet." },
+              enabled: bool("The chat page offers the FortiAIGate route."),
+              chatRoute: bool("Same as `enabled`: whether a chat route uses FortiAIGate."),
             },
-            ["baseUrl", "models", "blockMessage", "virtualKeySet", "accessSet", "allowedHostSuffix", "chatRoute"],
+            ["baseUrl", "models", "blockMessage", "virtualKeySet", "accessSet", "allowedHostSuffix", "enabled", "chatRoute"],
           ),
         },
         ["configured"],
@@ -1094,6 +1111,11 @@ export const openapi = {
           gateways: arr(ref("GatewayOption")),
           defaultGateway: str("Absent when no gateway is configured."),
           limits: obj({ maxAttempts: int(), retryDelayMs: int() }, ["maxAttempts", "retryDelayMs"], "Caps the Worker clamps the numeric gateway settings to."),
+          fortiaigate: obj(
+            { enabled: bool("The chat page offers the FortiAIGate route."), models: arr(str("A FortiAIGate public model name.")) },
+            ["enabled", "models"],
+            "The FortiAIGate route. `models` is empty while it is off.",
+          ),
           promptLog: obj(
             {
               enabled: bool("Prompt-log feature flag AND a bound D1."),
@@ -1103,7 +1125,7 @@ export const openapi = {
             ["enabled", "maxAgeDays", "maxRows"],
           ),
         },
-        ["default", "models", "defaultSystemPrompt", "maxSystemPromptLen", "gateways", "limits", "promptLog"],
+        ["default", "models", "defaultSystemPrompt", "maxSystemPromptLen", "gateways", "limits", "fortiaigate", "promptLog"],
       ),
 
       // ── edge analytics ──────────────────────────────────────────────────
@@ -1379,11 +1401,11 @@ export const openapi = {
         {
           ray: str("The join key to `/api/verdict`."),
           ts: int("Epoch ms."),
-          route: { type: "string", enum: ["direct", "gateway"] },
+          route: { type: "string", enum: ["direct", "gateway", "fortiaigate"] },
           model: str(),
           gatewayId: nullable("string", "Null on the direct route."),
           guarded: flag("Gateway has Guardrails."),
-          outcome: { type: "string", enum: ["reply", "guardrails", "external", "external_reply", "skipped", "error"], description: "`external` = an external guardrail blocked the prompt; `skipped` = guardrail-only mode let it through and no model was called. In both, no model ran, so `latencyMs` is null. `external_reply` = the model answered and the reply check withheld the reply: `reply` is null, `latencyMs` is the model's time." },
+          outcome: { type: "string", enum: ["reply", "guardrails", "external", "external_reply", "skipped", "fortiaigate", "error"], description: "`fortiaigate` = FortiAIGate blocked the turn (it answered with its block, so no model reply exists). `external` = an external guardrail blocked the prompt; `skipped` = guardrail-only mode let it through and no model was called. In both, no model ran, so `latencyMs` is null. `external_reply` = the model answered and the reply check withheld the reply: `reply` is null, `latencyMs` is the model's time." },
           prompt: str("PII-redacted at write time."),
           reply: nullable("string", "PII-redacted. Null for a blocked turn, or a streamed turn whose stream has not finished (or was never captured)."),
           redactions: int("PII spans masked across prompt + reply."),

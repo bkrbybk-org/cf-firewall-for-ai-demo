@@ -59,6 +59,9 @@ function summaryLine(
       cls === "log"
         ? `Passed the edge (${ruleCount} log-only rule${ruleCount === 1 ? "" : "s"} flagged it)`
         : "Passed the edge — no rule matched";
+    if (stoppedInWorker === "fortiaigate") {
+      return `${edge}, then FortiAIGate blocked it — the prompt or the reply; FortiAIGate does not say which.`;
+    }
     return stoppedInWorker === "external"
       ? `${edge}, then an external guardrail stopped it. The model never ran.`
       : `${edge}, and every external guardrail. The model was skipped (guardrail-only).`;

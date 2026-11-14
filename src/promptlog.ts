@@ -53,13 +53,19 @@ export function buildPromptLogQuery(p: PromptLogParams): PromptLogQuery {
   const where: string[] = [];
   const binds: unknown[] = [];
 
-  if (p.route === "direct" || p.route === "gateway") {
+  if (p.route === "direct" || p.route === "gateway" || p.route === "fortiaigate") {
     where.push("route = ?");
     binds.push(p.route);
   }
   const outcomes = (p.outcomes ?? []).filter(
-    (o): o is "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "error" =>
-      o === "reply" || o === "guardrails" || o === "external" || o === "external_reply" || o === "skipped" || o === "error",
+    (o): o is "reply" | "guardrails" | "external" | "external_reply" | "skipped" | "fortiaigate" | "error" =>
+      o === "reply" ||
+      o === "guardrails" ||
+      o === "external" ||
+      o === "external_reply" ||
+      o === "skipped" ||
+      o === "fortiaigate" ||
+      o === "error",
   );
   if (outcomes.length) {
     where.push(`outcome IN (${outcomes.map(() => "?").join(",")})`);
