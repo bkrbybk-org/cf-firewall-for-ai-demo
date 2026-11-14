@@ -446,7 +446,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `976225d0-c96e-43c6-841e-2429c4ad52ff` (2026-11-14, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `eddecdc8-90b6-4582-9d34-f3a850c4d398` (2026-11-14, FortiAIGate row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -649,7 +649,7 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
-### 2026-11-14 — FortiAIGate connection settings (Settings → System → Inline AI gateways)
+### 2026-11-14 — FortiAIGate connection settings (Settings → System → Providers, a row under the vendors)
 
 **Asked:** FortiAIGate configuration on the dashboard "like the others". The user runs FortiAIGate 8.0.2 in AWS
 us-east-1 (no public access), already fronting AWS Bedrock in ap-southeast-1. A Cloudflare Tunnel and Access policy will
@@ -692,6 +692,12 @@ follow; the details come then.
 - **Next, needs the user:** the tunnel hostname, the public model names, a FortiAIGate detector on Block, and the
   credentials, saved in Settings (admin gate). Then run both tests on prod and hand back the outcome and the shape; the
   chat route is built from that.
+- **Placement fix, same day:** the user could not find the card. It was its own "Inline AI gateways" group below the
+  28-row Test all vendors table. It is now a collapsible row directly under the six vendors, closed by default like them,
+  with a one-line summary: host, model count, virtual key last 4, Access token saved or not. Expand/Collapse all and
+  `#fortiaigate` open it. Checked locally in the browser pane: the row comes after Datadog, the toggle opens and closes
+  it, light and dark, no console errors. Deploy `eddecdc8-90b6-4582-9d34-f3a850c4d398`; the bundle `index-PIIthjla.js`
+  carries the new summary text. Smoke unchanged ([4] fails, vendors disabled).
 
 ### 2026-11-05 — Who is prompting, in the AI Gateway log (`user` metadata)
 

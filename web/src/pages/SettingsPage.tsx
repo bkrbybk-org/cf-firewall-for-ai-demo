@@ -955,9 +955,14 @@ export function SettingsPage() {
     });
   // Jump to a section; a provider target opens its row first and scrolls once it has
   // rendered open, so the jump lands on the form rather than on a row about to grow.
+  // FortiAIGate's row: not an ExternalGuardrailProvider (it is a proxy), so its own flag.
+  const [fortiOpen, setFortiOpen] = useState(false);
   const go = (id: string) => {
     const provider = id.startsWith("provider-") ? (id.slice("provider-".length) as ExternalGuardrailProvider) : null;
-    if (provider) {
+    if (id === "fortiaigate") {
+      setFortiOpen(true);
+      requestAnimationFrame(() => scrollToId(mainRef.current, id));
+    } else if (provider) {
       setRowOpen(provider, true);
       requestAnimationFrame(() => scrollToId(mainRef.current, id));
     } else scrollToId(mainRef.current, id);
@@ -1129,11 +1134,12 @@ export function SettingsPage() {
                           <button
                             key={label}
                             type="button"
-                            onClick={() =>
+                            onClick={() => {
                               setOpenRows(
                                 label === "Expand all" ? new Set(providers.map((c) => c.provider)) : new Set(),
-                              )
-                            }
+                              );
+                              setFortiOpen(label === "Expand all");
+                            }}
                             className="text-[11.5px] font-semibold text-accent-ink hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
                           >
                             {label}
@@ -1163,19 +1169,15 @@ export function SettingsPage() {
                       </li>
                     ))}
                   </ul>
+                  {/* Directly under the vendors, where it is looked for, but its own row and badge: FortiAIGate is a
+                      proxy, not a pre-check, and never joins the pipeline above (src/fortiAiGate.ts). */}
+                  <div id="fortiaigate" className="mt-2 min-w-0 scroll-mt-4">
+                    <FortiAiGatePanel open={fortiOpen} onOpenChange={setFortiOpen} />
+                  </div>
                   {/* #8: every fixed test on every saved vendor in one table — the evidence for verifying the parsers. */}
                   <TestAllVendors providers={state.providers} canEdit={state.access?.canEdit !== false} />
                 </Group>
               )}
-
-              {/* Apart from Providers on purpose: FortiAIGate is a proxy, not a pre-check (src/fortiAiGate.ts). */}
-              <Group
-                id="fortiaigate"
-                title="Inline AI gateways"
-                hint="Gateways that sit in the model call itself, rather than checking a prompt before it. Same admin gate and encryption as the providers."
-              >
-                <FortiAiGatePanel />
-              </Group>
 
               <Group
                 id="deployment"

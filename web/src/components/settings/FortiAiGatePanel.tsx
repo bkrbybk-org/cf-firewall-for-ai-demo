@@ -3,7 +3,7 @@
 // never joins the pipeline. No chat route uses it yet: Test connection collects the evidence (status, response
 // shape, block message seen) that the route will be built from, and the card says so.
 import { useEffect, useId, useState } from "react";
-import { AlertTriangle, CheckCircle2, Info, Loader2, ShieldAlert } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronRight, Info, Loader2, ShieldAlert } from "lucide-react";
 import { getFortiAiGate, saveFortiAiGate, testFortiAiGate } from "../../lib/api";
 import type { FortiAiGateState, FortiAiGateTestResponse, FortiAiGateTestSample, FortiAiGateUpdate } from "../../lib/types";
 
@@ -43,7 +43,7 @@ function Saved({ set, last4, at }: { set: boolean; last4: string | null; at?: nu
   );
 }
 
-export function FortiAiGatePanel() {
+export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpenChange: (on: boolean) => void }) {
   const ids = useId();
   const [state, setState] = useState<FortiAiGateState | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -140,28 +140,64 @@ export function FortiAiGatePanel() {
   const canTest = !!c?.baseUrl && c.virtualKeySet && c.models.length > 0 && !dirty;
   const r = test?.result;
 
+  // The closed row's one-line summary, like a vendor row's: what is saved, never a secret.
+  const summary = c
+    ? [
+        c.baseUrl ? c.baseUrl.replace(/^https:\/\//, "") : "no URL",
+        c.models.length ? `${c.models.length} model${c.models.length === 1 ? "" : "s"}` : "no model",
+        c.virtualKeySet ? `virtual key ••••${c.virtualKeyLast4}` : "no virtual key",
+        c.accessSet ? "Access token saved" : "no Access token",
+      ]
+    : [];
+
   return (
-    <section className="rounded-xl border border-line bg-surface shadow-sm" aria-labelledby={`${ids}title`}>
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-line px-3 py-2.5 sm:px-4">
-        <h4 id={`${ids}title`} className="m-0 flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
-          FortiAIGate
-          <span className="rounded-full border border-line bg-surface-2 px-2 py-px text-[10.5px] font-semibold text-muted">
-            inline proxy
+    <section className="rounded-xl border border-line bg-surface shadow-sm">
+      <h4 className="m-0 px-3 py-2.5 sm:px-4">
+        {/* Accordion pattern, as the vendor rows: a heading holding the toggle, outside the locked fieldset so a
+            read-only viewer can still open it and read it. */}
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={`${ids}body`}
+          onClick={() => onOpenChange(!open)}
+          className="flex w-full min-w-0 items-start gap-2 rounded-lg py-0.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <ChevronRight
+            size={16}
+            aria-hidden
+            className={`mt-0.5 shrink-0 text-muted transition-transform ${open ? "rotate-90" : ""}`}
+          />
+          <span className="min-w-0">
+            <span className="flex flex-wrap items-center gap-2 text-[13px] font-bold text-text">
+              FortiAIGate
+              <span
+                title="Requests go through it to the model; it does not check a prompt on its own, so it is not part of the pipeline."
+                className="rounded-full border border-line bg-surface-2 px-2 py-px text-[10.5px] font-semibold text-muted"
+              >
+                inline proxy
+              </span>
+              <span
+                title="Fortinet documents neither the status nor the body of a block. The chat route is built once Test connection has shown a real allow and a real block."
+                className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber-ink"
+              >
+                not used by chat yet
+              </span>
+            </span>
+            <span className="mt-0.5 block text-[11.5px] font-normal leading-relaxed text-muted">
+              {summary.length ? summary.join(" · ") : loadErr ? "Could not load" : "Loading…"}
+              {c?.updatedAt != null && <span className="text-subtle"> · saved {new Date(c.updatedAt).toLocaleString()}</span>}
+            </span>
           </span>
-          <span
-            title="Fortinet documents neither the status nor the body of a block. The chat route is built once Test connection has shown a real allow and a real block."
-            className="rounded-full border border-cf-amber/60 bg-cf-amber/10 px-2 py-px text-[10.5px] font-semibold text-cf-amber-ink"
-          >
-            not used by chat yet
-          </span>
-        </h4>
-        <p className="m-0 w-full text-[11.5px] leading-relaxed text-muted">
-          Fortinet's self-hosted AI gateway. Unlike the providers above it does not return a verdict on its own: the
-          request goes <b className="text-text">through</b> it to the model it fronts (here AWS Bedrock), and its policy
-          acts on the way. So it is never part of the guardrail pipeline, the scheduled re-runs or the vendor analytics.
-          Reached through a Cloudflare Tunnel; prompts leave Cloudflare for your AWS account.
-        </p>
-      </div>
+        </button>
+      </h4>
+
+      <div id={`${ids}body`} hidden={!open} className="border-t border-line">
+      <p className="m-0 px-3 pt-3 text-[11.5px] leading-relaxed text-muted sm:px-4">
+        Fortinet's self-hosted AI gateway. Unlike the vendors above it does not return a verdict on its own: the request
+        goes <b className="text-text">through</b> it to the model it fronts (here AWS Bedrock), and its policy acts on the
+        way. So it is never part of the guardrail pipeline, the scheduled re-runs or the vendor analytics. Reached through a
+        Cloudflare Tunnel; prompts leave Cloudflare for your AWS account.
+      </p>
 
       {loadErr && (
         <div role="alert" className="flex items-center gap-2 px-4 py-3 text-[12.5px] text-cf-red">
@@ -402,6 +438,7 @@ export function FortiAiGatePanel() {
           </div>
         </fieldset>
       )}
+      </div>
     </section>
   );
 }
