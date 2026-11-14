@@ -60,6 +60,18 @@ import {
   queryZoneRules,
 } from "./cloudflare";
 import { guardrailWriteAccess, requesterLabel, withRequester } from "./accessAuth";
+import {
+  applyCredentials,
+  checkBaseUrl,
+  decryptForti,
+  defaultFortiConfig,
+  loadForti,
+  saveForti,
+  testForti,
+  toPublicForti,
+  validateFortiUpdate,
+  type FortiTestSample,
+} from "./fortiAiGate";
 import { extractReply, sanitizeHistory } from "./chatText";
 import { explainGatewayError } from "./gatewayErrors";
 import { expectOf, logVerdicts, promptIdOf, sourceOf } from "./guardrailLog";
@@ -1845,5 +1857,94 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
     });
   } catch (err) {
     return Response.json({ error: clientError(err, "Connection test") }, { status: 502 });
+  }
+}
+
+// ── FortiAIGate (src/fortiAiGate.ts) ────────────────────────────────────────
+// GET/PUT /api/fortiaigate and POST /api/fortiaigate/test. Same gate, same encryption secret and same D1 as the
+// guardrail settings: who may change one may change the other, and both need the secret before a credential is
+// stored. FortiAIGate is a proxy, not a guardrail, so none of this reaches the pipeline, the cron or the analytics.
+async function fortiState(env: Env, request: Request, status = 200): Promise<Response> {
+  const access = await guardrailWriteAccess(request, env);
+  const suffix = env.FORTIAIGATE_ALLOWED_HOST_SUFFIX;
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ configured: false, setupHint: hint, config: toPublicForti(defaultFortiConfig(), suffix), access }, { status });
+  try {
+    return Response.json({ configured: true, config: toPublicForti(await loadForti(env.DB!), suffix), access }, { status });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(message)) {
+      return Response.json({
+        configured: false,
+        setupHint: "Apply the D1 migrations: `npx wrangler d1 migrations apply cf-ai-waf-demo-log --remote` (or --local).",
+        config: toPublicForti(defaultFortiConfig(), suffix),
+        access,
+      });
+    }
+    return Response.json({ configured: true, error: clientError(err, "FortiAIGate settings"), access }, { status: 502 });
+  }
+}
+
+export async function handleFortiAiGate(request: Request, env: Env): Promise<Response> {
+  if (request.method === "GET") return fortiState(env, request);
+  if (request.method !== "PUT") return Response.json({ error: "Use GET or PUT" }, { status: 405 });
+  const refused = await refuseUnlessEditor(request, env);
+  if (refused) return refused;
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return Response.json({ configured: true, error: "Invalid JSON body" }, { status: 400 });
+  }
+  try {
+    const v = validateFortiUpdate(body, await loadForti(env.DB!), env.FORTIAIGATE_ALLOWED_HOST_SUFFIX);
+    if (!v.ok) return Response.json({ configured: true, error: v.error }, { status: 400 });
+    // The plaintext credentials exist only inside applyCredentials; never logged, stored or returned.
+    await saveForti(env.DB!, await applyCredentials(v, env.GUARDRAIL_SECRET_KEY!, Date.now()));
+    return fortiState(env, request);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/no such table/i.test(message)) return fortiState(env, request);
+    return Response.json({ configured: true, error: clientError(err, "FortiAIGate update") }, { status: 502 });
+  }
+}
+
+export async function handleFortiAiGateTest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return Response.json({ error: "Use POST" }, { status: 405 });
+  // A test sends the STORED credentials to FortiAIGate, so it is a write-level action, like the vendor test.
+  const refused = await refuseUnlessEditor(request, env);
+  if (refused) return refused;
+  const hint = guardrailSetupHint(env);
+  if (hint) return Response.json({ error: hint }, { status: 400 });
+  let b: { model?: unknown; sample?: unknown } | null;
+  try {
+    b = (await request.json()) as typeof b;
+  } catch {
+    return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+  // Only a sample NAME, never text; anything else is the benign default.
+  const sample: FortiTestSample = b?.sample === "attack" ? "attack" : "benign";
+  try {
+    const c = await loadForti(env.DB!);
+    if (!c.baseUrl) return Response.json({ error: "No base URL saved" }, { status: 400 });
+    // Re-checked at use, not only at save: the allowed suffix is a Worker var and may have changed since.
+    const u = checkBaseUrl(c.baseUrl, env.FORTIAIGATE_ALLOWED_HOST_SUFFIX);
+    if (!u.ok) return Response.json({ error: `Saved base URL is no longer allowed: ${u.error}` }, { status: 400 });
+    if (!c.virtualKeyEnc) return Response.json({ error: "No virtual key saved" }, { status: 400 });
+    if (c.models.length === 0) return Response.json({ error: "No model saved" }, { status: 400 });
+    // Only a model from the saved list, so the test cannot be used to probe arbitrary model names with the key.
+    const model = typeof b?.model === "string" && c.models.includes(b.model) ? b.model : c.models[0];
+    let creds;
+    try {
+      creds = await decryptForti(c, env.GUARDRAIL_SECRET_KEY!);
+    } catch {
+      return Response.json({ error: "Saved credentials could not be decrypted — re-enter them." }, { status: 400 });
+    }
+    const result = await testForti({ ...c, baseUrl: u.origin }, creds, model, sample);
+    return Response.json({ ok: result.outcome === "replied" || result.outcome === "block_message_seen", result });
+  } catch (err) {
+    return Response.json({ error: clientError(err, "FortiAIGate connection test") }, { status: 502 });
   }
 }

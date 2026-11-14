@@ -60,6 +60,10 @@ export interface Env {
   // 2026-10-19: the body shape the webhook gets — "slack" | "teams" | "discord" | "json". Unset: picked from the URL's
   // host (src/alertDelivery.ts webhookFormat). A var or secret; an unknown value falls back to the host's guess.
   ALERT_WEBHOOK_FORMAT?: string;
+  // 2026-11-14: FortiAIGate's base URL (src/fortiAiGate.ts) must be an https origin whose host is this domain or a
+  // subdomain of it. The stored virtual key and Access token travel to that host, so a typed URL elsewhere would hand
+  // them to whoever owns it. A plain var; unset = no URL can be saved (fail closed).
+  FORTIAIGATE_ALLOWED_HOST_SUFFIX?: string;
 }
 
 // One prior conversation turn, as sent by the client and re-validated here.

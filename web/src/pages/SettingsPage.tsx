@@ -18,6 +18,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, ChevronRight, Info, Loader2, Lock, LockOpen, Server, ShieldAlert } from "lucide-react";
 import { DeploymentPanel } from "../components/settings/DeploymentPanel";
+import { FortiAiGatePanel } from "../components/settings/FortiAiGatePanel";
 import { PreferencesSection } from "../components/settings/PreferencesSection";
 import { Group, SectionHeader } from "../components/settings/primitives";
 import { Header } from "../components/Header";
@@ -1014,6 +1015,7 @@ export function SettingsPage() {
     { id: "system", label: "System settings" },
     ...(state?.configured && state.pipeline ? [{ id: "traffic-flow", label: "Traffic flow", indent: true }] : []),
     ...providers.map((c) => ({ id: `provider-${c.provider}`, label: c.label, indent: true })),
+    { id: "fortiaigate", label: "FortiAIGate", indent: true },
     { id: "deployment", label: "Deployment", indent: true },
   ];
 
@@ -1165,6 +1167,15 @@ export function SettingsPage() {
                   <TestAllVendors providers={state.providers} canEdit={state.access?.canEdit !== false} />
                 </Group>
               )}
+
+              {/* Apart from Providers on purpose: FortiAIGate is a proxy, not a pre-check (src/fortiAiGate.ts). */}
+              <Group
+                id="fortiaigate"
+                title="Inline AI gateways"
+                hint="Gateways that sit in the model call itself, rather than checking a prompt before it. Same admin gate and encryption as the providers."
+              >
+                <FortiAiGatePanel />
+              </Group>
 
               <Group
                 id="deployment"

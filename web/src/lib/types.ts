@@ -349,6 +349,57 @@ export type GuardrailAccess =
   | { canEdit: true; mode: "open" | "admin"; who: string | null }
   | { canEdit: false; mode: "admin"; who: string | null; reason: string };
 
+// GET/PUT /api/fortiaigate (src/fortiAiGate.ts). FortiAIGate is an inline proxy, not an external guardrail.
+export interface FortiAiGateConfig {
+  baseUrl: string | null;
+  models: string[];
+  blockMessage: string;
+  blockMessageIsDefault: boolean;
+  virtualKeySet: boolean;
+  virtualKeyLast4: string | null;
+  virtualKeySavedAt: number | null;
+  accessSet: boolean;
+  accessClientIdLast4: string | null;
+  accessClientSecretLast4: string | null;
+  accessSavedAt: number | null;
+  updatedAt: number | null;
+  allowedHostSuffix: string | null;
+  chatRoute: false;
+}
+export interface FortiAiGateState {
+  configured: boolean;
+  setupHint?: string;
+  error?: string;
+  config?: FortiAiGateConfig;
+  access?: GuardrailAccess;
+}
+export interface FortiAiGateUpdate {
+  baseUrl?: string | null;
+  models?: string[];
+  blockMessage?: string | null;
+  virtualKey?: string;
+  accessClientId?: string;
+  accessClientSecret?: string;
+  clearAccess?: boolean;
+}
+export type FortiAiGateTestSample = "benign" | "attack";
+export interface FortiAiGateTestResponse {
+  ok?: boolean;
+  error?: string;
+  result?: {
+    outcome: "replied" | "block_message_seen" | "access_redirect" | "unauthorized" | "http_error" | "unreachable";
+    status: number | null;
+    latencyMs: number;
+    model: string;
+    sample: FortiAiGateTestSample;
+    replyChars: number | null;
+    responseShape: unknown;
+    headerNames: string[];
+    accessUsed: boolean;
+    error: string | null;
+  };
+}
+
 // PUT body. Omitted fields are left unchanged. `apiKey` replaces the stored key
 // (never echoed back); `clearApiKey: true` deletes it (and disables the provider).
 export interface ExternalGuardrailUpdate {

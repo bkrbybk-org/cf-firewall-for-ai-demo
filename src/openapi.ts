@@ -80,6 +80,7 @@ export const openapi = {
     { name: "Prompt log", description: "PII-redacted prompts in D1. Off by default (`PROMPT_LOG_ENABLED`)." },
     { name: "Red team", description: "Persisted red-team runs. No UI calls these yet." },
     { name: "External guardrails", description: "Forward each prompt to third-party guardrails (Palo Alto Networks Prisma AIRS, CrowdStrike Falcon AIDR) before the model runs, as a sequential or parallel pipeline." },
+    { name: "FortiAIGate", description: "Connection settings for Fortinet's self-hosted inline AI gateway (a proxy, not an external guardrail)." },
     { name: "Meta", description: "Configuration the client reads to build its controls." },
   ],
   security: [{ AccessClientId: [], AccessClientSecret: [] }, {}],
@@ -415,6 +416,102 @@ export const openapi = {
           "403": json("Not a guardrail admin — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "405": error("Not a PUT."),
           "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
+        },
+      },
+    },
+    "/api/fortiaigate": {
+      get: {
+        tags: ["FortiAIGate"],
+        operationId: "getFortiAiGate",
+        summary: "FortiAIGate connection settings (credentials redacted)",
+        description: [
+          "FortiAIGate is Fortinet's **self-hosted inline AI gateway**: it forwards a model request to the provider it fronts and applies its policy on the way. It has no verdict-only API, so it is **not** an external guardrail: nothing here reaches the guardrail pipeline, the scheduled re-runs or the vendor analytics. `chatRoute: false` — no chat route uses it yet; that comes once a real allow and a real block have been seen.",
+          "",
+          "Credentials are write-only: only `virtualKeySet`/`accessSet` and their last 4 characters are returned.",
+        ].join("\n"),
+        responses: {
+          "200": json("Settings.", ref("FortiAiGateState")),
+          "502": json("D1 read failed.", ref("FortiAiGateState")),
+        },
+      },
+      put: {
+        tags: ["FortiAIGate"],
+        operationId: "updateFortiAiGate",
+        summary: "Update FortiAIGate connection settings",
+        description: [
+          "Omitted fields are unchanged; an empty credential keeps the saved one. Same admin gate and encryption secret as `PUT /api/external-guardrails`.",
+          "",
+          "`baseUrl` is an **https origin whose host is `FORTIAIGATE_ALLOWED_HOST_SUFFIX` or a subdomain of it** (no path, port, query or user info). The virtual key and the Access service token are sent to that host, so a URL anywhere else is refused rather than stored. `accessClientId` and `accessClientSecret` must arrive together (one service token); `clearAccess: true` removes them.",
+        ].join("\n"),
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: obj({
+                baseUrl: nullable("string", "https origin, e.g. https://fortiaigate.example.com. Empty or null clears it."),
+                models: arr({ type: "string", maxLength: 128 }),
+                blockMessage: nullable("string", "FortiAIGate's organisation block message (≤ 500 characters). Null or empty = Fortinet's default."),
+                virtualKey: str("FortiAIGate virtual key. Encrypted before storage; empty keeps the saved one."),
+                accessClientId: str("Cloudflare Access service-token client ID for the tunnel hostname."),
+                accessClientSecret: str("Cloudflare Access service-token client secret."),
+                clearAccess: bool("Remove the saved Access service token."),
+              }),
+            },
+          },
+        },
+        responses: {
+          "200": json("The new state.", ref("FortiAiGateState")),
+          "400": json("Rejected — invalid field or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
+          "403": json("Not a guardrail admin — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
+          "405": error("Not GET or PUT."),
+          "502": json("D1 write failed.", obj({ configured: bool(), error: str() }, ["error"])),
+        },
+      },
+    },
+    "/api/fortiaigate/test": {
+      post: {
+        tags: ["FortiAIGate"],
+        operationId: "testFortiAiGate",
+        summary: "Send a fixed prompt through FortiAIGate with the saved settings",
+        description:
+          "Uses the **saved** URL, virtual key and Access token, and a model from the **saved** list (anything else is the first saved model). Redirects are never followed. Returns the HTTP status, latency and the response's **shape** (field names, types, booleans — never text), the names of `x-*` response headers, the reply's length, and whether the configured block message appeared. `outcome` is an observation, not a verdict: Fortinet does not document how a block is returned.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: obj({
+                model: str("One of the saved models."),
+                sample: { type: "string", enum: ["benign", "attack"], description: "Which FIXED prompt: `benign` (\"Reply with OK.\") or `attack` (a known injection). Anything else is `benign`." },
+              }),
+            },
+          },
+        },
+        responses: {
+          "200": json(
+            "The observation. `ok` is true for `replied` and `block_message_seen`.",
+            obj({
+              ok: bool(),
+              result: obj(
+                {
+                  outcome: { type: "string", enum: ["replied", "block_message_seen", "access_redirect", "unauthorized", "http_error", "unreachable"] },
+                  status: nullable("integer"),
+                  latencyMs: int(),
+                  model: str(),
+                  sample: { type: "string", enum: ["benign", "attack"] },
+                  replyChars: nullable("integer", "Length of the reply — never its text."),
+                  responseShape: { description: "src/responseShape.ts: names, types and booleans only. Null when the body was not JSON." },
+                  headerNames: arr(str()),
+                  accessUsed: bool(),
+                  error: nullable("string"),
+                },
+                ["outcome", "status", "latencyMs", "model", "sample", "accessUsed"],
+              ),
+            }, ["ok", "result"]),
+          ),
+          "400": error("Not set up, or no URL, virtual key or model saved."),
+          "403": json("Not a guardrail admin.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
+          "405": error("Not a POST."),
+          "502": error("The test itself failed (D1)."),
         },
       },
     },
@@ -922,6 +1019,34 @@ export const openapi = {
           ),
         },
         ["configured", "providers", "pipeline"],
+      ),
+      FortiAiGateState: obj(
+        {
+          configured: bool("False when the encryption secret, D1 or the migration is missing — `setupHint` says which."),
+          setupHint: str(),
+          error: str(),
+          access: ref("GuardrailAccess"),
+          config: obj(
+            {
+              baseUrl: nullable("string"),
+              models: arr(str()),
+              blockMessage: str("The block message matched by Test connection (Fortinet's default unless changed)."),
+              blockMessageIsDefault: bool(),
+              virtualKeySet: bool(),
+              virtualKeyLast4: nullable("string"),
+              virtualKeySavedAt: nullable("integer", "Epoch ms."),
+              accessSet: bool(),
+              accessClientIdLast4: nullable("string"),
+              accessClientSecretLast4: nullable("string"),
+              accessSavedAt: nullable("integer", "Epoch ms."),
+              updatedAt: nullable("integer", "Epoch ms."),
+              allowedHostSuffix: nullable("string", "FORTIAIGATE_ALLOWED_HOST_SUFFIX: the base URL's host must be this or a subdomain. Null = no URL can be saved."),
+              chatRoute: { const: false, description: "No chat route uses FortiAIGate yet." },
+            },
+            ["baseUrl", "models", "blockMessage", "virtualKeySet", "accessSet", "allowedHostSuffix", "chatRoute"],
+          ),
+        },
+        ["configured"],
       ),
       GuardrailAccess: obj(
         {

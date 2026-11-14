@@ -5,6 +5,8 @@ import {
   handleChat,
   handleExternalGuardrails,
   handleExternalGuardrailsTest,
+  handleFortiAiGate,
+  handleFortiAiGateTest,
   handleGuardrailPipeline,
   handleExternalGuardrailReport,
   handleGatewayAnalytics,
@@ -64,6 +66,10 @@ export default {
         return handleGuardrailPipeline(request, env);
       case "/api/external-guardrails/report":
         return handleExternalGuardrailReport(request, url, env);
+      case "/api/fortiaigate":
+        return handleFortiAiGate(request, env);
+      case "/api/fortiaigate/test":
+        return handleFortiAiGateTest(request, env);
       case "/api/chat":
         // ctx lets the prompt-log write run without blocking the reply.
         return handleChat(request, env, ctx);

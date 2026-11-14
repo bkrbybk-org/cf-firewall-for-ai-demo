@@ -10,6 +10,10 @@ import type {
   ExternalGuardrailsState,
   ExternalGuardrailTestResult,
   ExternalGuardrailUpdate,
+  FortiAiGateState,
+  FortiAiGateTestResponse,
+  FortiAiGateTestSample,
+  FortiAiGateUpdate,
   GuardrailTestSample,
   GatewayAnalytics,
   GatewayMeta,
@@ -376,6 +380,30 @@ export async function testExternalGuardrail(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ provider, sample }),
+  });
+  return r.json();
+}
+
+// FortiAIGate settings (src/fortiAiGate.ts). A 400/403 body carries `error`, which the card shows.
+export async function getFortiAiGate(): Promise<FortiAiGateState> {
+  const r = await fetch("/api/fortiaigate");
+  return r.json();
+}
+
+export async function saveFortiAiGate(update: FortiAiGateUpdate): Promise<FortiAiGateState> {
+  const r = await fetch("/api/fortiaigate", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(update),
+  });
+  return r.json();
+}
+
+export async function testFortiAiGate(model: string, sample: FortiAiGateTestSample): Promise<FortiAiGateTestResponse> {
+  const r = await fetch("/api/fortiaigate/test", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model, sample }),
   });
   return r.json();
 }

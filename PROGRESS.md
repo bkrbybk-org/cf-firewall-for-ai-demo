@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-06 — default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-14 — FortiAIGate connection settings in Settings (migration 0014; no chat route yet). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
 (user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
@@ -446,7 +446,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `fd061902-66ca-45b1-8260-03e266be9ef7` (2026-11-06,
+entry under Implemented names its own deploy id; the newest is `976225d0-c96e-43c6-841e-2429c4ad52ff` (2026-11-14, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -483,7 +483,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **966 across 67 files** (measured 2026-11-05; README's Tests table has the
+**Tests** — `npm test`, **975 across 68 files** (measured 2026-11-14; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -648,6 +648,50 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-14 — FortiAIGate connection settings (Settings → System → Inline AI gateways)
+
+**Asked:** FortiAIGate configuration on the dashboard "like the others". The user runs FortiAIGate 8.0.2 in AWS
+us-east-1 (no public access), already fronting AWS Bedrock in ap-southeast-1. A Cloudflare Tunnel and Access policy will
+follow; the details come then.
+
+- **Why it is not a seventh vendor row:** Fortinet's Admin Guide 8.0.2 (Appendix A, read 2026-11-14) documents only
+  proxy endpoints. These are OpenAI Chat Completions/Responses, Anthropic Messages, Gemini generateContent and Cohere Chat,
+  under `https://<gateway-host>/ai/...` with a virtual key. There is no verdict-only API, so FortiAIGate cannot be a
+  pre-check. Its own table (`fortiaigate_config`, migration 0014) and endpoints keep it out of the pipeline, the cron and
+  the vendor analytics.
+- **The URL rule:** the guardrails allow only official vendor hosts, but a self-hosted URL cannot be on such a list. It is
+  still not free text: it must be an https origin whose host is `FORTIAIGATE_ALLOWED_HOST_SUFFIX` (`nttlab.org`, a plain
+  var) or a subdomain of it. Paths, ports, queries and user info are refused. It is checked on save and again at use. The
+  virtual key and the Access token are sent to that host. Redirects are never followed (`redirect: "manual"`), because
+  Access answers a refused token with a 302.
+- **Credentials:** the virtual key and the Access service-token pair are encrypted with `GUARDRAIL_SECRET_KEY`. Each
+  column has its own AAD, and only the last 4 characters are kept in clear. An empty field keeps the saved value. The two
+  halves of the token must come together. Writes and Test connection use the guardrail admin gate.
+- **Test connection, evidence only:** a fixed prompt (`Reply with OK.`, or the known injection the vendor tests use) goes
+  to a SAVED model with `max_tokens: 16`. It returns the HTTP status, latency, the response shape (`responseShape.ts`),
+  `x-*` header names, the reply's length and whether the configured block message appeared. The outcome is one of
+  `replied`, `block_message_seen`, `access_redirect`, `unauthorized`, `http_error` or `unreachable`. These are
+  observations: Fortinet documents neither the status nor the body of a block. Only its organisation-wide block message
+  is documented: plain text, ≤ 500 characters, default "This request was blocked by FortiAIGate as it triggered our safety
+  systems."
+- **Not built, on purpose:** the chat route through FortiAIGate. It waits for a real allow and a real block from Test
+  connection (CLAUDE.md: never parse a vendor response before seeing one). The card and the API (`chatRoute: false`) say
+  so.
+- **Tests:** 975 (9 new, `src/fortiAiGate.test.ts`). **Mutation-checked:** dropping the suffix check, the manual
+  redirect or the block-message match each turns tests red.
+- **Verified locally** (real D1, test values only): another domain is a 400, and half a token is a 400. A full save stores
+  64-character ciphertext and returns last 4 only. Test connection to a non-existent `nttlab.org` host reports
+  `unreachable`, and an unknown model falls back to the saved one. In the browser pane the card renders in light and dark,
+  the test result renders, and there are no console errors.
+- **Verified on prod** (migration 0014 applied before deploy `976225d0-c96e-43c6-841e-2429c4ad52ff`): `GET
+  /api/fortiaigate` answers `configured: true`, and a PUT with the `.env` service token is a 403 (admin gate). The deployed
+  bundle `index-C2KlijrF.js` carries "Inline AI gateways", "not used by chat yet" and "Send a known injection".
+  `/api/openapi.json` lists both paths (19 in all). **Smoke:** [1], [2], [3] and [5] pass. [4] fails, unchanged: all six
+  vendors read `enabled: false`.
+- **Next, needs the user:** the tunnel hostname, the public model names, a FortiAIGate detector on Block, and the
+  credentials, saved in Settings (admin gate). Then run both tests on prod and hand back the outcome and the shape; the
+  chat route is built from that.
 
 ### 2026-11-05 — Who is prompting, in the AI Gateway log (`user` metadata)
 
