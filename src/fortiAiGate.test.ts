@@ -136,4 +136,29 @@ describe("testForti — observations, never a verdict, never text", () => {
     const r = await testForti(cfg, creds, "m1", "benign", fake(Response.json({ choices: [{ message: { content: "" } }] })));
     expect(r.outcome).toBe("http_error");
   });
+
+  // The two bodies FortiAIGate 8.0.2 really sent on 2026-11-14 (through the tunnel), with ids and timestamps kept.
+  it("real block: HTTP 200, finish_reason content_filter, the block message as the reply", async () => {
+    const real = {
+      choices: [{ finish_reason: "content_filter", index: 0, message: { content: FORTIAIGATE_DEFAULT_BLOCK_MESSAGE, role: "assistant" } }],
+      created: 1794665749,
+      id: "chatcmpl-blocked",
+      model: "bedrock-apse1-amazon.nova-micro-v1-0",
+      object: "chat.completion",
+      usage: { completion_tokens: 0, prompt_tokens: 0, total_tokens: 0 },
+    };
+    const r = await testForti(cfg, creds, "m1", "attack", fake(Response.json(real)));
+    expect(r).toMatchObject({ outcome: "block_message_seen", status: 200 });
+    expect(JSON.stringify(r.responseShape)).toContain('"finish_reason":"string = content_filter"');
+    expect(JSON.stringify(r)).not.toContain("safety systems");
+  });
+
+  it("real unknown model: 404 model_not_found gets a message saying what to fix, and only the code is revealed", async () => {
+    const real = { error: { message: "model amazon.nova-micro-v1:0 is not available to this API key", type: "not_found_error", param: null, code: "model_not_found" } };
+    const r = await testForti(cfg, creds, "amazon.nova-micro-v1:0", "benign", fake(Response.json(real, { status: 404 })));
+    expect(r.outcome).toBe("http_error");
+    expect(r.error).toMatch(/Model Catalog/);
+    expect(r.responseShape).toEqual({ error: { message: "string", type: "string = not_found_error", param: "null", code: "string = model_not_found" } });
+    expect(JSON.stringify(r)).not.toContain("is not available");
+  });
 });

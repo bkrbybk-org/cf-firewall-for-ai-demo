@@ -446,7 +446,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `eddecdc8-90b6-4582-9d34-f3a850c4d398` (2026-11-14, FortiAIGate row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `f2d048ae-669a-4086-9e51-3993f46b54d2` (2026-11-14, FortiAIGate test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -483,7 +483,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **975 across 68 files** (measured 2026-11-14; README's Tests table has the
+**Tests** — `npm test`, **977 across 68 files** (measured 2026-11-14; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -698,6 +698,25 @@ follow; the details come then.
   `#fortiaigate` open it. Checked locally in the browser pane: the row comes after Datadog, the toggle opens and closes
   it, light and dark, no console errors. Deploy `eddecdc8-90b6-4582-9d34-f3a850c4d398`; the bundle `index-PIIthjla.js`
   carries the new summary text. Smoke unchanged ([4] fails, vendors disabled).
+- **First real responses, 2026-11-14 evening.** The user saved `https://faig.nttlab.org`, model `amazon.nova-micro-v1:0`,
+  a virtual key and an Access token. *Test connection* answered HTTP 404 with the shape `error{message,type,param,code}`.
+  Probed from the shell with the user's `FAIG_KEY` (the virtual key, in `.env`, at their request). The Access app on
+  `faig.nttlab.org` also accepts this repo's `.env` service token. Without a token it answers 302 to
+  `nttth.cloudflareaccess.com`. Every value below was SEEN, not read in Fortinet's docs, which document none of them:
+  - **Model names:** `GET /ai/openai/v1/models` lists the public names, e.g. `bedrock-apse1-amazon.nova-micro-v1-0`. These
+    use the provider slug first and replace `:` with `-`; four models were listed. The Bedrock id
+    `amazon.nova-micro-v1:0` is a 404 with `code: "model_not_found"`, `type: "not_found_error"` ("…is not available to
+    this API key"). **That was the error.** The fix is the user's: save the catalog name in Settings (admin gate).
+  - **Allow:** HTTP 200, a standard `chat.completion` (`choices[0].message.content`, `finish_reason: "length"` at
+    `max_tokens: 16`, `usage`).
+  - **Block** (the fixed injection prompt): **HTTP 200**, not an error status. `finish_reason: "content_filter"`, `id:
+    "chatcmpl-blocked"`, the default block message as the assistant's `content`, and all `usage` counts 0. No verdict
+    header was seen (`x-*` were only the usual security headers). So a block is told apart by `finish_reason` and the id,
+    with the block message as a cross-check. The chat route must never show it as a model answer.
+- **Follow-up code (deploy `f2d048ae-669a-4086-9e51-3993f46b54d2`):** *Test connection* now reveals the values of
+  `error.code`, `error.type` and `choices.finish_reason`, only as bare lowercase tokens (`responseShape.ts` reveal). A 404
+  `model_not_found` gets a message naming the fix (the catalog name, with `GET /ai/openai/v1/models` as the list). Two
+  tests use the two real bodies; 977 tests in all. Smoke unchanged.
 
 ### 2026-11-05 — Who is prompting, in the AI Gateway log (`user` metadata)
 
