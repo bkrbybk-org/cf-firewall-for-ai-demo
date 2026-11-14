@@ -72,7 +72,8 @@ export interface BenchmarkReport {
     id: number;
     label: string | null;
     savedAt: string;
-    route: "direct" | "gateway";
+    route: "direct" | "gateway" | "fortiaigate";
+    model: string | null; // FortiAIGate route: the model it was run with; null otherwise
     gatewayId: string | null;
     guarded: boolean;
     corpusName: string;
@@ -158,6 +159,7 @@ export function buildBenchmarkReport(
       label: run.label?.trim() || null,
       savedAt: new Date(run.ts).toISOString(),
       route: run.route,
+      model: run.route === "fortiaigate" ? (run.model ?? null) : null,
       gatewayId: run.gatewayId ?? null,
       guarded: !!run.guarded,
       corpusName: run.corpusName,
@@ -309,10 +311,10 @@ export function reportToMarkdown(r: BenchmarkReport): string {
     e.scored === 0
       ? "No attack has an edge verdict in this run (all pending, refused by something other than the WAF, or failed)."
       : `${e.reached} of ${e.scored} attacks with an edge verdict reached the model (${e.reachedPct}%); ${plural(e.stopped, "was", "were")} stopped by the edge.`,
-    `Not in that denominator: ${e.external} stopped by an external guardrail, ${e.guardrails} by AI Gateway Guardrails, ${e.denied} refused by something other than the WAF, ${e.pending} with no verdict yet, ${e.error} failed.`,
+    `Not in that denominator: ${e.external} stopped by an external guardrail, ${e.guardrails} by AI Gateway Guardrails, ${e.fortiaigate} by FortiAIGate, ${e.denied} refused by something other than the WAF, ${e.pending} with no verdict yet, ${e.error} failed.`,
     "",
   );
-  if (e.external + e.guardrails > 0) {
+  if (e.external + e.guardrails + e.fortiaigate > 0) {
     // The two edge numbers answer different questions, and a reader comparing them
     // would otherwise think one is wrong.
     L.push(

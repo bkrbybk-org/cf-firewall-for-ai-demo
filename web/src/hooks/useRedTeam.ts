@@ -34,7 +34,9 @@ const RESOLVE_CONCURRENCY = 6;
 // scan targeted). `gateway` sends through an AI Gateway, which adds Guardrails —
 // so the guarded gateway can produce 2016/2017 blocks the edge WAF alone won't.
 export interface RtRouteConfig {
-  route: "direct" | "gateway";
+  // "fortiaigate": the third route — through FortiAIGate to one of its saved models (offered only while enabled).
+  route: "direct" | "gateway" | "fortiaigate";
+  model?: string; // FortiAIGate route only: which of its models (the server refuses any other)
   gatewayId?: string; // gateway route only
   // AI Gateway Dynamic Routing: a route configured in the gateway dashboard.
   // Gateway route only, and empty means normal routing. The ROUTE picks the
@@ -54,7 +56,7 @@ export interface RtRouteConfig {
 // the model was deliberately not called. Edge-wise that is the same fact as a
 // reply (the request got through), so it resolves like one — but the result is
 // flagged `modelSkipped`, because no model ever answered it.
-type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "error";
+type SendKind = "reply" | "skipped" | "blocked" | "guardrails" | "external" | "fortiaigate" | "error";
 
 // One send through /api/chat, classified the same way useChat classifies a
 // non-stream response — but with no side effects on the message store.
@@ -68,11 +70,14 @@ async function sendOne(
     // Minimal body: the server fills in the default model + system prompt.
     // stream:false so we get a JSON result with the ray.
     const gateway = cfg.route === "gateway";
+    const forti = cfg.route === "fortiaigate";
     const res = await postChat(
       {
         prompt,
         stream: false,
         gateway: gateway || undefined,
+        fortiaigate: forti || undefined,
+        model: forti ? cfg.model : undefined,
         gatewayId: gateway ? cfg.gatewayId || undefined : undefined,
         // Dropped entirely on the direct route — Workers AI has no concept of it,
         // and sending it would imply the run went somewhere it did not.
@@ -95,6 +100,9 @@ async function sendOne(
     const pipeline = data?.externalGuardrails ?? undefined;
     if (status === 403) return { ray, pipeline, kind: "blocked" };
     if (data?.guardrailsBlocked) return { ray, pipeline, kind: "guardrails" };
+    // FortiAIGate's block is a 200 too (its block message, never a reply): its own state, so it is credited to
+    // FortiAIGate and kept out of the edge headline, like an external-guardrail block.
+    if (status >= 200 && status < 300 && data?.fortiaigateBlocked) return { ray, pipeline, kind: "fortiaigate" };
     // Checked before the generic "no reply → error" fall-through: a 200 with no
     // reply is what an external-guardrail block looks like, and scoring it as a
     // failed request would hide every prompt Prisma AIRS stopped. A fail-closed
@@ -133,6 +141,7 @@ async function resolveState(
 ): Promise<RtResultState> {
   if (sendKind === "guardrails") return "guardrails";
   if (sendKind === "external") return "external";
+  if (sendKind === "fortiaigate") return "fortiaigate";
   if (sendKind === "error") return "error";
   // Got past the edge and the guardrails — the same edge fact as a reply.
   const kind = sendKind === "skipped" ? "reply" : sendKind;

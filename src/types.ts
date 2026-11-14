@@ -297,7 +297,7 @@ export interface RedTeamRunRow {
   id: number;
   ts: number;
   label: string | null;
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
   gatewayId: string | null;
   guarded: number;
   model: string | null;
@@ -314,6 +314,7 @@ export interface RedTeamRunRow {
   denied: number;
   guardrails: number;
   external: number; // blocked by an external guardrail (Prisma AIRS)
+  fortiaigate: number; // blocked by FortiAIGate on the third route (migration 0016; 0 for older runs)
   skipped: number; // reached past every check but guardrail-only: no model was called
   pending: number;
   error: number;

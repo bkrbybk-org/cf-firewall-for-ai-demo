@@ -67,6 +67,7 @@ function edgeVerdict(r: RtRunResult): Verdict {
     case "log":
     case "external":
     case "guardrails":
+    case "fortiaigate": // the edge let it through; FortiAIGate stopped it later
       return "missed";
     default:
       return "error"; // denied / pending / error: no edge score, as in scoreRun

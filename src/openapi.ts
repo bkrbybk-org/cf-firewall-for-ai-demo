@@ -1490,16 +1490,16 @@ export const openapi = {
       // ── red team ────────────────────────────────────────────────────────
       RtResultState: {
         type: "string",
-        enum: ["block", "challenge", "log", "allow", "denied", "guardrails", "external", "pending", "error"],
+        enum: ["block", "challenge", "log", "allow", "denied", "guardrails", "external", "fortiaigate", "pending", "error"],
         description:
-          "`allow` and `log` mean the request **reached the model**; `block` and `challenge` mean the edge stopped it. `denied`, `guardrails` (AI Gateway Guardrails), `external` (an external guardrail such as Prisma AIRS), `pending` and `error` are not edge verdicts and are excluded from the scored denominator.",
+          "`allow` and `log` mean the request **reached the model**; `block` and `challenge` mean the edge stopped it. `denied`, `guardrails` (AI Gateway Guardrails), `external` (an external guardrail such as Prisma AIRS), `fortiaigate` (FortiAIGate blocked it, on the FortiAIGate route), `pending` and `error` are not edge verdicts and are excluded from the scored denominator.",
       },
       RedTeamRunRow: obj(
         {
           id: int(),
           ts: int("Epoch ms — client-supplied."),
           label: nullable("string"),
-          route: { type: "string", enum: ["direct", "gateway"] },
+          route: { type: "string", enum: ["direct", "gateway", "fortiaigate"] },
           gatewayId: nullable("string"),
           guarded: flag("Gateway has Guardrails."),
           model: nullable("string"),
@@ -1515,12 +1515,13 @@ export const openapi = {
           denied: int(),
           guardrails: int(),
           external: int("Blocked by an external guardrail (Prisma AIRS)."),
+          fortiaigate: int("Blocked by FortiAIGate (FortiAIGate route only; 0 for older runs). Out of the edge headline, like `external`."),
           skipped: int("Of `reached`: got past every check in guardrail-only mode, so no model answered."),
           pending: int(),
           error: int(),
           reachedPct: int("reached / scored, 0 when nothing was scored — which means *nothing was measured*, not a perfect block rate."),
         },
-        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "dynamicRoute", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "external", "skipped", "pending", "error", "reachedPct"],
+        ["id", "ts", "label", "route", "gatewayId", "guarded", "model", "dynamicRoute", "corpusName", "corpusSize", "corpusFingerprint", "delayMs", "total", "scored", "reached", "stopped", "denied", "guardrails", "external", "fortiaigate", "skipped", "pending", "error", "reachedPct"],
       ),
       RedTeamResultRow: obj(
         {
@@ -1575,7 +1576,7 @@ export const openapi = {
         {
           ts: int("Epoch ms. Defaults to now. **Known limitation:** it also orders the retention prune, so a far-future value is never pruned."),
           label: { type: "string", maxLength: 200 },
-          route: { type: "string", enum: ["direct", "gateway"] },
+          route: { type: "string", enum: ["direct", "gateway", "fortiaigate"] },
           gatewayId: { type: "string", maxLength: 300 },
           guarded: bool(),
           model: { type: "string", maxLength: 300 },
@@ -1591,6 +1592,7 @@ export const openapi = {
           denied: int(),
           guardrails: int(),
           external: int(),
+          fortiaigate: int("FortiAIGate blocks. Stored as 0 unless `route` is `fortiaigate`."),
           skipped: int("Of `reached`, how many were not sent to the model (guardrail-only). Clamped to `reached`."),
           pending: int(),
           error: int(),

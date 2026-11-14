@@ -34,12 +34,14 @@ function when(ts: number): string {
 }
 
 function routeLabel(r: {
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
+  model?: string | null;
   gatewayId?: string | null;
   guarded: number;
   dynamicRoute?: string | null;
 }): string {
   if (r.route === "direct") return "Workers AI";
+  if (r.route === "fortiaigate") return `FortiAIGate${r.model ? ` · ${r.model}` : ""}`;
   return `AI Gateway${r.gatewayId ? ` · ${r.gatewayId}` : ""}${r.guarded ? " · Guardrails" : ""}${
     r.dynamicRoute ? ` · route ${r.dynamicRoute}` : ""
   }`;
@@ -573,6 +575,7 @@ function DiffView({ before, after, diff }: { before: RtSavedRun; after: RtSavedR
                     ["edge", "at the edge"],
                     ["external", "by an external guardrail"],
                     ["guardrails", "by AI Gateway Guardrails"],
+                    ["fortiaigate", "by FortiAIGate"],
                   ] as const
                 )
                   .filter(([k]) => s.closed[k] > 0)

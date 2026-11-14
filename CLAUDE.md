@@ -184,8 +184,7 @@ alters what a customer sees in a demo. State it and let them choose.
   deployment: AWS us-east-1 → Bedrock ap-southeast-1, behind a Cloudflare Tunnel at `faig.nttlab.org` with an Access
   Service Auth policy (it also accepts the `.env` service token). `FAIG_KEY` in `.env` is its virtual key: use it only
   in curl headers when the user asks; never save it into any D1 (local tests use fake values). Local workerd cannot
-  reach `faig.nttlab.org` ("could not be reached") — test the route on prod, where switching it on needs the user (admin
-  gate). Its docs document neither the block nor the model names: public names come from `GET /ai/openai/v1/models`
+  reach `faig.nttlab.org` ("could not be reached") — test the route on prod, where switching it on needs the user (admin  gate). Its docs document neither the block nor the model names: public names come from `GET /ai/openai/v1/models`
   (`bedrock-apse1-…-v1-0`, not the Bedrock id), and a block is HTTP 200 with `finish_reason: content_filter`, `id:
   chatcmpl-blocked` and the block message as the content (seen 2026-11-14).
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every

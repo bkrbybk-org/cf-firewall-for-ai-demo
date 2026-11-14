@@ -43,6 +43,7 @@ const run = (results: RtStoredResult[], over: Partial<RtSavedRun> = {}): RtSaved
   denied: 0,
   guardrails: 0,
   external: 0,
+  fortiaigate: 0,
   skipped: 0,
   pending: 0,
   error: 0,

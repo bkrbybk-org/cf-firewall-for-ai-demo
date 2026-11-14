@@ -201,11 +201,11 @@ describe("toSavedRun → diffRuns", () => {
   });
 
   it("summarizeDiff credits each closed gap to the control that closed it", () => {
-    const before = toSavedRun(row(1, "f"), [res("a", "allow"), res("b", "log"), res("c", "allow"), res("d", "block")]);
-    const after = toSavedRun(row(2, "f"), [res("a", "block"), res("b", "external"), res("c", "guardrails"), res("d", "allow")]);
+    const before = toSavedRun(row(1, "f"), [res("a", "allow"), res("b", "log"), res("c", "allow"), res("d", "block"), res("e", "allow")]);
+    const after = toSavedRun(row(2, "f"), [res("a", "block"), res("b", "external"), res("c", "guardrails"), res("d", "allow"), res("e", "fortiaigate")]);
     expect(summarizeDiff(diffRuns(before, after))).toEqual({
-      closed: { edge: 1, external: 1, guardrails: 1 },
-      closedTotal: 3,
+      closed: { edge: 1, external: 1, guardrails: 1, fortiaigate: 1 },
+      closedTotal: 4,
       opened: 1,
       lostVerdict: 0,
       otherChanges: 0,

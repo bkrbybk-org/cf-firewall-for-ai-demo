@@ -38,7 +38,8 @@ export interface RunContext {
   corpusName: string; // "AI Red Team Sample" or the CSV's file name
   corpus: RedTeamAttack[]; // the corpus on screen when the run was started
   fired: number; // how many ATTACK rows the run was started with (a ticked subset may be fewer; harmless rows excluded)
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
+  model?: string | null; // FortiAIGate route: the FortiAIGate model the run used
   gatewayId?: string | null;
   guarded?: boolean;
   dynamicRoute?: string | null;
@@ -71,7 +72,8 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
     route: ctx.route,
     gatewayId: ctx.route === "gateway" ? (ctx.gatewayId ?? null) : null,
     guarded: ctx.route === "gateway" && !!ctx.guarded,
-    model: null, // the runner sends the Worker's default model; it does not pick one
+    // Direct and AI Gateway: the runner sends the Worker's default model. FortiAIGate: the model it was run with.
+    model: ctx.route === "fortiaigate" ? (ctx.model ?? null) : null,
     dynamicRoute: ctx.route === "gateway" ? ctx.dynamicRoute?.trim() || null : null,
     // Said in the name, since the list shows it: a partial run is not the whole corpus.
     corpusName: partial ? `${ctx.corpusName} (${attacks.length} of ${attackCorpus.length})` : ctx.corpusName,
@@ -121,13 +123,14 @@ export function buildRunSaveRequest(ctx: RunContext, results: Map<string, RtRunR
 // `reached` too, so a run whose verdicts never resolved would read as a win. And an
 // attack now stopped by an external guardrail or AI Gateway Guardrails was not
 // stopped by the edge. So the summary keeps those apart.
-export type StopControl = "edge" | "external" | "guardrails";
+export type StopControl = "edge" | "external" | "guardrails" | "fortiaigate";
 const REACHED = new Set<RtResultState>(["allow", "log"]);
 const STOPPED_BY: Partial<Record<RtResultState, StopControl>> = {
   block: "edge",
   challenge: "edge",
   external: "external",
   guardrails: "guardrails",
+  fortiaigate: "fortiaigate",
 };
 
 export interface DiffSummary {
@@ -139,7 +142,7 @@ export interface DiffSummary {
 }
 
 export function summarizeDiff(diff: RtRunDiff): DiffSummary {
-  const closed: Record<StopControl, number> = { edge: 0, external: 0, guardrails: 0 };
+  const closed: Record<StopControl, number> = { edge: 0, external: 0, guardrails: 0, fortiaigate: 0 };
   let opened = 0;
   let lostVerdict = 0;
   let otherChanges = 0;
@@ -153,7 +156,7 @@ export function summarizeDiff(diff: RtRunDiff): DiffSummary {
     else if (wasReached && !isReached) lostVerdict++;
     else otherChanges++;
   }
-  return { closed, closedTotal: closed.edge + closed.external + closed.guardrails, opened, lostVerdict, otherChanges };
+  return { closed, closedTotal: closed.edge + closed.external + closed.guardrails + closed.fortiaigate, opened, lostVerdict, otherChanges };
 }
 
 const SEVERITIES = new Set<string>(["critical", "high", "medium", "low"]);
@@ -165,6 +168,8 @@ const SEVERITIES = new Set<string>(["critical", "high", "medium", "low"]);
 export function toSavedRun(run: RedTeamRunRow, results: RedTeamResultRow[]): RtSavedRun {
   return {
     ...run,
+    // Absent from a Worker older than migration 0016: no FortiAIGate route existed, so 0 is a fact, not a gap.
+    fortiaigate: run.fortiaigate ?? 0,
     results: results.map((r) => ({
       attackKey: r.attackKey,
       attackId: r.attackId,

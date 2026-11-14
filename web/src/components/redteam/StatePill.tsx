@@ -10,6 +10,9 @@ export const STATE_PILL: Record<string, { label: string; cls: string }> = {
   // Amber, matching the chat's external-guardrail card — never the WAF's red or
   // AI Gateway Guardrails' purple, so the three controls cannot be confused.
   external: { label: "external guardrail", cls: "border-cf-amber/50 text-cf-amber-ink" },
+  // Purple like the chat's FortiAIGate card (both act inside the model call), dashed and named so it is never read
+  // as AI Gateway Guardrails.
+  fortiaigate: { label: "FortiAIGate", cls: "border-dashed border-cf-purple/60 text-cf-purple" },
   pending: { label: "no verdict", cls: "border-line text-subtle" },
   error: { label: "failed", cls: "border-line text-subtle" },
 };

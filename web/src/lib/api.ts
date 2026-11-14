@@ -189,7 +189,7 @@ export interface RedTeamResultInput {
 export interface RedTeamRunSaveRequest {
   ts?: number; // epoch ms; server defaults to Date.now() if omitted
   label?: string | null;
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
   gatewayId?: string | null;
   guarded?: boolean;
   model?: string | null;
@@ -213,6 +213,7 @@ export interface RedTeamRunSaveRequest {
   // Without these the server stores 0 — it defaults a missing count rather than
   // rejecting the body — and a saved run would lose its external-guardrail blocks.
   external: number;
+  fortiaigate: number; // FortiAIGate blocks — the server stores 0 unless route is "fortiaigate"
   skipped: number;
   pending: number;
   error: number;

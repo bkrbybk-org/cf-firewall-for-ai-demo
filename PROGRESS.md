@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-14 — FortiAIGate as a third chat route (migration 0015; off until the user enables it), after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-14 — Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
 (user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
@@ -446,7 +446,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `e67e7146-fc94-46eb-b6c2-e50804468cca` (2026-11-14, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `110515db-9282-48e4-9090-569edce9f001` (2026-11-14, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -483,7 +483,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **985 across 68 files** (measured 2026-11-14; README's Tests table has the
+**Tests** — `npm test`, **989 across 68 files** (measured 2026-11-14; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -649,6 +649,44 @@ deploy → test on prod → update docs → commit and push. It was reordered on
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
 
+### 2026-11-14 — Red Team through FortiAIGate; the route proven on prod
+
+**Asked:** Red Team support for FortiAIGate.
+
+- **The scoring decision:** an attack FortiAIGate blocked gets its own result state, **`fortiaigate`**. It is never
+  folded into `guardrails` (AI Gateway Guardrails) or `external` (the external guardrails). Like those two it is kept
+  out of the edge headline (reached / scored), because the edge let it through. The edge-vs-vendor scorecard counts it
+  as an edge miss, like `external`.
+  - It has its own count in `scoreRun`.
+  - The "excluded" tile adds it.
+  - Run comparison credits a gap FortiAIGate closed to `fortiaigate`.
+  - The benchmark report names it in the "not in that denominator" line, and the report's run block carries the model.
+- **Runner and page:** the Red Team route toggle gains **FortiAIGate** while it is enabled, with a model select. A
+  purple note says the run is not comparable with a Workers AI run on the model either. A `fortiaigateBlocked` answer
+  becomes `fortiaigate`, checked before the reply fall-through, as in chat. The state pill is a dashed purple
+  "FortiAIGate".
+- **Saved runs:** migration `0016_redteam_fortiaigate.sql` adds `redteam_runs.fortiaigate` (default 0, additive). Route
+  `fortiaigate` and state `fortiaigate` join the server whitelists. The saved model is the FortiAIGate model (null on
+  the other routes, as before). A FortiAIGate count on another route is stored as 0: that run cannot support the claim.
+  The list labels the run "FortiAIGate · <model>".
+- **Tests:** 989 (4 new: the scoring split, the diff credit, and three save-validation cases). **Mutation-checked:**
+  dropping the `fortiaigate++`, or the "0 off its route" rule, each turns a test red.
+- **Verified locally, real D1:** a FortiAIGate run saved through `POST /api/redteam-runs` reads back from both GET forms
+  with route, model, the count of 1 and per-attack states `fortiaigate,allow,block`. It was deleted afterwards. In the
+  browser pane the Red Team page shows the third route, the model select, the note and the saved run's label, in light
+  and dark.
+- **Prod** (migration 0016 applied before deploy `110515db-9282-48e4-9090-569edce9f001`): the bundle `index-DEjwrqBS.js`
+  carries the route note, "FortiAIGate model" and "by FortiAIGate", and the runs list still reads. The user had enabled
+  FortiAIGate by then (`/api/models` lists its 4 models), so **the route was proven end to end** through `/api/chat` with
+  the `.env` service token, `fortiaigate: true`, model `bedrock-apse1-amazon.nova-micro-v1-0`, `stream: true` and
+  `excludeFromLog`:
+  - "Name three primary colours." → HTTP 200, a Bedrock reply, `cost: null`, FortiAIGate's usage (34 in / 11 out),
+    `notStreamed: "fortiaigate"`, 2651 ms.
+  - The fixed injection → HTTP 200 `fortiaigateBlocked: true, by: "fortiaigate"`, no text, 1552 ms.
+  
+  A Red Team run through FortiAIGate on prod was not started here: it is the user's to run. Smoke unchanged ([4] fails,
+  vendors disabled).
+
 ### 2026-11-14 — FortiAIGate as a third chat route
 
 **Asked:** an enable switch for FortiAIGate. Asked back, the user chose a **third route** (next to Workers AI and AI
@@ -701,8 +739,8 @@ Gateway, picked per chat) over replacing all chat.
   - A FortiAIGate turn while off is the 400 "not enabled".
   - The bundle `index-Bsff7afj.js` carries "Blocked by FortiAIGate", "Model behind FortiAIGate" and the switch title.
   - Smoke: [1], [2], [3] and [5] pass; [4] fails, unchanged (all vendors disabled).
-  - **Not yet proven on prod:** a real reply and a real block through the route. That needs the user to switch it on
-    (admin gate) and send one harmless prompt and one injection on the FortiAIGate route.
+  - ~~Not yet proven on prod~~ **Proven on prod the same day** (the user enabled it; next entry). A harmless prompt
+    replied and the fixed injection was blocked, through `/api/chat` with `fortiaigate: true`.
 
 ### 2026-11-14 — FortiAIGate connection settings (Settings → System → Providers, a row under the vendors)
 

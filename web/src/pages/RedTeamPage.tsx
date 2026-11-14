@@ -284,7 +284,10 @@ export function RedTeamPage() {
   // Route the batch runs through — mirrors the chat page's Route control. The
   // edge WAF verdict is the same on both, but the gateway route adds Guardrails,
   // so the guarded gateway can surface 2016/2017 blocks the WAF alone misses.
-  const [route, setRoute] = useState<"direct" | "gateway">("direct");
+  const [route, setRoute] = useState<"direct" | "gateway" | "fortiaigate">("direct");
+  // The FortiAIGate route (/api/models → fortiaigate): offered only while it is enabled, with its own models.
+  const [forti, setForti] = useState<{ enabled: boolean; models: string[] }>({ enabled: false, models: [] });
+  const [fortiModel, setFortiModel] = useState("");
   const [delayMs, setDelayMs] = useState(0);
   const [gateways, setGateways] = useState<GatewayOption[]>([]);
   const [gatewayId, setGatewayId] = useState("");
@@ -293,6 +296,9 @@ export function RedTeamPage() {
       .then((data) => {
         setGateways(data.gateways ?? []);
         setGatewayId(data.defaultGateway ?? data.gateways?.[0]?.id ?? "");
+        const f = data.fortiaigate ?? { enabled: false, models: [] };
+        setForti(f);
+        setFortiModel(f.models[0] ?? "");
       })
       .catch(() => {});
   }, []);
@@ -322,6 +328,7 @@ export function RedTeamPage() {
       route,
       gatewayId: route === "gateway" ? gatewayId : undefined,
       dynamicRoute: route === "gateway" ? dynamicRoute.trim() || undefined : undefined,
+      model: route === "fortiaigate" ? fortiModel : undefined,
       delayMs,
     };
     setRunCtx((prev) => ({
@@ -332,6 +339,7 @@ export function RedTeamPage() {
       gatewayId: cfg.gatewayId ?? null,
       guarded: route === "gateway" && !!gateways.find((g) => g.id === gatewayId)?.guarded,
       dynamicRoute: cfg.dynamicRoute ?? null,
+      model: cfg.model ?? null,
       delayMs,
     }));
     void run(cfg, toRun);
@@ -514,7 +522,13 @@ export function RedTeamPage() {
 
             {/* Route selector — disabled mid-run so a batch never mixes routes. */}
             <div className="inline-flex overflow-hidden rounded-full border border-line text-[12px]">
-              {(["direct", "gateway"] as const).map((r) => (
+              {(
+                (forti.enabled && forti.models.length > 0 ? ["direct", "gateway", "fortiaigate"] : ["direct", "gateway"]) as (
+                  | "direct"
+                  | "gateway"
+                  | "fortiaigate"
+                )[]
+              ).map((r) => (
                 <button
                   key={r}
                   type="button"
@@ -524,10 +538,25 @@ export function RedTeamPage() {
                     route === r ? "bg-accent/15 font-semibold text-accent-ink" : "bg-surface text-muted hover:bg-surface-hover"
                   }`}
                 >
-                  {r === "direct" ? "Workers AI" : "AI Gateway"}
+                  {r === "direct" ? "Workers AI" : r === "gateway" ? "AI Gateway" : "FortiAIGate"}
                 </button>
               ))}
             </div>
+            {route === "fortiaigate" && (
+              <select
+                value={fortiModel}
+                disabled={running}
+                onChange={(e) => setFortiModel(e.target.value)}
+                aria-label="FortiAIGate model"
+                className="max-w-64 rounded-lg border border-line bg-surface-2 px-2 py-1.5 font-mono text-[12px] text-text outline-none focus:border-accent disabled:opacity-50"
+              >
+                {forti.models.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            )}
             {route === "gateway" && (
               <select
                 value={gatewayId}
@@ -755,6 +784,15 @@ export function RedTeamPage() {
               Gateway route: the edge WAF verdict is unchanged, but a guarded gateway adds Guardrails — watch for{" "}
               <span className="font-semibold text-cf-purple">guardrails</span> results. Requires{" "}
               <code className="font-mono">CF_AIG_TOKEN</code> scoped correctly, or every gateway send errors.
+            </div>
+          )}
+          {route === "fortiaigate" && (
+            <div className="rounded-xl border border-cf-purple/30 bg-cf-purple/[0.06] px-3.5 py-2 text-[11.5px] text-muted">
+              FortiAIGate route: the edge WAF verdict is unchanged, and the model is FortiAIGate&apos;s (
+              <span className="font-mono">{fortiModel}</span>), not Workers AI — so a run here is not comparable with a
+              Workers AI run on the model either. Attacks FortiAIGate stopped show as{" "}
+              <span className="font-semibold text-cf-purple">FortiAIGate</span> and, like external-guardrail blocks, are kept
+              out of the edge headline.
             </div>
           )}
 

@@ -316,3 +316,22 @@ describe("reply verdicts", () => {
     expect(none.ok && none.run.results[0].replyVendors).toBeNull();
   });
 });
+
+describe("validateRedTeamRunPayload — the FortiAIGate route (2026-11-14)", () => {
+  it("accepts route fortiaigate, a fortiaigate result and its count", () => {
+    const v = validateRedTeamRunPayload(
+      validBody({ route: "fortiaigate", model: "bedrock-apse1-amazon.nova-micro-v1-0", scored: 0, stopped: 0, fortiaigate: 1, results: [validResult({ state: "fortiaigate" })] }),
+    );
+    expect(v.ok && v.run).toMatchObject({ route: "fortiaigate", fortiaigate: 1, dynamicRoute: null });
+    expect(v.ok && v.run.results[0].state).toBe("fortiaigate");
+  });
+
+  it("a FortiAIGate count on another route is stored as 0 — a claim that run cannot support", () => {
+    const v = validateRedTeamRunPayload(validBody({ route: "gateway", fortiaigate: 5 }));
+    expect(v.ok && v.run.fortiaigate).toBe(0);
+  });
+
+  it("an unknown route is still refused", () => {
+    expect(validateRedTeamRunPayload(validBody({ route: "fortinet" })).ok).toBe(false);
+  });
+});

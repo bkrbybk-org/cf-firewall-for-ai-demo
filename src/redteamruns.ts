@@ -55,6 +55,7 @@ export const RT_RESULT_STATES = [
   "denied",
   "guardrails",
   "external",
+  "fortiaigate",
   "pending",
   "error",
 ] as const;
@@ -96,7 +97,7 @@ export interface ValidatedResult {
 export interface ValidatedRun {
   ts: number;
   label: string | null;
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
   gatewayId: string | null;
   guarded: boolean;
   model: string | null;
@@ -113,6 +114,7 @@ export interface ValidatedRun {
   denied: number;
   guardrails: number;
   external: number;
+  fortiaigate: number; // attacks FortiAIGate blocked (the third route) — out of the edge headline, like `external`
   skipped: number;
   pending: number;
   error: number;
@@ -275,8 +277,9 @@ function validateResult(v: unknown): ValidatedResult | null {
 export function validateRedTeamRunPayload(body: unknown): ValidationResult {
   if (!isPlainObject(body)) return { ok: false, error: "Request body must be a JSON object" };
 
-  const route = body.route === "gateway" ? "gateway" : body.route === "direct" ? "direct" : null;
-  if (!route) return { ok: false, error: "route must be 'direct' or 'gateway'" };
+  const route =
+    body.route === "gateway" ? "gateway" : body.route === "direct" ? "direct" : body.route === "fortiaigate" ? "fortiaigate" : null;
+  if (!route) return { ok: false, error: "route must be 'direct', 'gateway' or 'fortiaigate'" };
 
   const corpusName = str(body.corpusName, REDTEAM_MAX_FIELD_LEN);
   if (!corpusName) return { ok: false, error: "corpusName is required" };
@@ -318,6 +321,8 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
   const denied = int(body.denied, 0, total, 0);
   const guardrails = int(body.guardrails, 0, total, 0);
   const external = int(body.external, 0, total, 0);
+  // Only a FortiAIGate run can have FortiAIGate blocks; on another route the count is a claim the run cannot support.
+  const fortiaigate = route === "fortiaigate" ? int(body.fortiaigate, 0, total, 0) : 0;
   // A subset of `reached` (guardrail-only runs): bounded by it, not by total.
   const skipped = int(body.skipped, 0, reached, 0);
   const pending = int(body.pending, 0, total, 0);
@@ -347,6 +352,7 @@ export function validateRedTeamRunPayload(body: unknown): ValidationResult {
       denied,
       guardrails,
       external,
+      fortiaigate,
       skipped,
       pending,
       error,

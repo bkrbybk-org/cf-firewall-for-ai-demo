@@ -1542,8 +1542,8 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
         `INSERT INTO redteam_runs
            (ts, label, route, gateway_id, guarded, model, dynamic_route, corpus_name,
             corpus_size, corpus_fingerprint, delay_ms, total, scored, reached, stopped,
-            denied, guardrails, external, skipped, pending, error, reached_pct)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+            denied, guardrails, external, fortiaigate, skipped, pending, error, reached_pct)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
         .bind(
           run.ts,
@@ -1564,6 +1564,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
           run.denied,
           run.guardrails,
           run.external,
+          run.fortiaigate,
           run.skipped,
           run.pending,
           run.error,
@@ -1648,7 +1649,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
                 dynamic_route AS dynamicRoute,
                 corpus_name AS corpusName, corpus_size AS corpusSize,
                 corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
-                total, scored, reached, stopped, denied, guardrails, external, skipped, pending, error,
+                total, scored, reached, stopped, denied, guardrails, external, fortiaigate, skipped, pending, error,
                 reached_pct AS reachedPct
          FROM redteam_runs WHERE id = ?`,
       )
@@ -1683,7 +1684,7 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
               dynamic_route AS dynamicRoute,
               corpus_name AS corpusName, corpus_size AS corpusSize,
               corpus_fingerprint AS corpusFingerprint, delay_ms AS delayMs,
-              total, scored, reached, stopped, denied, guardrails, external, skipped, pending, error,
+              total, scored, reached, stopped, denied, guardrails, external, fortiaigate, skipped, pending, error,
               reached_pct AS reachedPct
        FROM redteam_runs ORDER BY id DESC LIMIT ?`,
     )

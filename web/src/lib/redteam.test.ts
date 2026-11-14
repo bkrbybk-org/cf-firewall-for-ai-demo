@@ -32,6 +32,11 @@ import {
 const r = (id: string, state: RtResultState): RtRunResult => ({ id, state });
 
 describe("scoreRun", () => {
+  it("a FortiAIGate block is counted apart and kept out of the edge headline (2026-11-14)", () => {
+    const s = scoreRun([r("a", "allow"), r("b", "block"), r("c", "fortiaigate"), r("d", "external"), r("e", "guardrails")]);
+    expect(s).toMatchObject({ fortiaigate: 1, external: 1, guardrails: 1, scored: 2, reached: 1, stopped: 1, reachedPct: 50, total: 5 });
+  });
+
   it("counts log AND allow as reached-model", () => {
     // A log-only rule did not stop the request — it reached the model. This is
     // the subtle case: `log` is a detection, not a defense.
@@ -311,6 +316,7 @@ function savedRun(overrides: Partial<RtSavedRun> & { results: RtStoredResult[] }
     denied: 0,
     guardrails: 0,
     external: 0,
+    fortiaigate: 0,
     skipped: 0,
     pending: 0,
     error: 0,

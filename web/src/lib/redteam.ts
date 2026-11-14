@@ -462,6 +462,7 @@ export type RtResultState =
   | "denied"
   | "guardrails" // AI Gateway Guardrails 2016/2017 — a real block, but not a WAF verdict
   | "external" // an external guardrail (Prisma AIRS) blocked it inside the Worker — also not a WAF verdict
+  | "fortiaigate" // FortiAIGate blocked it (the third route, inside the model call) — not a WAF verdict either
   | "pending" // verdict never ingested / not resolvable
   | "error"; // request itself failed
 
@@ -532,6 +533,7 @@ export interface RtScore {
   denied: number; // non-WAF refusals (excluded)
   guardrails: number; // AI Gateway Guardrails blocks (excluded from headline)
   external: number; // external-guardrail blocks (excluded from headline, counted apart from Guardrails)
+  fortiaigate: number; // FortiAIGate blocks (excluded from headline, counted apart from both of the above)
   skipped: number; // of `reached`: got through, but guardrail-only — no model answered
   pending: number; // no verdict yet (excluded)
   error: number; // request failed (excluded)
@@ -545,6 +547,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     denied = 0,
     guardrails = 0,
     external = 0,
+    fortiaigate = 0,
     skipped = 0,
     pending = 0,
     error = 0;
@@ -559,6 +562,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     else if (r.state === "denied") denied++;
     else if (r.state === "guardrails") guardrails++;
     else if (r.state === "external") external++;
+    else if (r.state === "fortiaigate") fortiaigate++;
     else if (r.state === "pending") pending++;
     else if (r.state === "error") error++;
   }
@@ -571,6 +575,7 @@ export function scoreRun(results: RtRunResult[]): RtScore {
     denied,
     guardrails,
     external,
+    fortiaigate,
     skipped,
     pending,
     error,
@@ -740,7 +745,7 @@ export interface RtRunSummary extends RtScore {
   id: number;
   ts: number;
   label?: string | null;
-  route: "direct" | "gateway";
+  route: "direct" | "gateway" | "fortiaigate";
   gatewayId?: string | null;
   guarded: number; // 0/1, matching the prompt_log convention (SQLite has no bool)
   model?: string | null;
