@@ -445,6 +445,15 @@ export function Chat({
                           ROUTE {m.meta.dynamicRoute}
                         </span>
                       )}
+                      {m.meta.externalGuardrails?.observeOnly && (
+                        <span
+                          className="rounded-full border border-dashed border-line px-2 py-0.5 text-[10.5px] font-semibold text-muted"
+                          title="FortiAIGate route: the external guardrails checked this turn but could not stop it (Settings → FortiAIGate → observe only)."
+                        >
+                          VENDORS OBSERVE ONLY
+                          {m.meta.externalGuardrails.wouldHaveStopped ? " · would have stopped" : ""}
+                        </span>
+                      )}
                       {m.meta.externalGuardrails && <ExternalGuardrailBadges pipeline={m.meta.externalGuardrails} />}
                       {m.meta.replyGuardrails && <ExternalGuardrailBadges pipeline={m.meta.replyGuardrails} />}
                       {m.meta.model && <span>via {modelLabels[m.meta.model] || m.meta.model}</span>}

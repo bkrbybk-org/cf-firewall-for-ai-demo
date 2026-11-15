@@ -24,6 +24,7 @@ import {
   type GatewayBackoff,
 } from "./config";
 import {
+  asObserveOnly,
   chooseRedaction,
   decryptSecret,
   defaultConfig,
@@ -829,11 +830,15 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   // edge scan (which happened before this Worker was invoked) and BEFORE the
   // model, on both routes. null when no provider is enabled and guardrail-only
   // is off, in which case nothing below changes.
-  const scanned = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw, setup: guardrailSetup });
+  // FortiAIGate route with "observe only": the vendors still check, and their verdicts are kept, logged and scored —
+  // but they cannot stop the turn, withhold the reply or redact (asObserveOnly). Every other route is unchanged.
+  const observeOnly = forti?.cfg.vendorsObserve === true;
+  const checked = await runPipeline(env, { prompt, model, ray }, fetch, { captureRaw: includeRaw, setup: guardrailSetup });
+  const scanned = observeOnly && checked ? asObserveOnly(checked) : checked;
   // #11: when the turn goes on and an opted-in vendor redacted the prompt, the MODEL receives that redacted prompt
   // (chooseRedaction says whose). Only the model's copy changes: the reply check, the prompt log and every verdict
   // still describe the prompt the user sent — the reply check is about the reply, and the prompt log redacts on its own.
-  const redaction = scanned ? chooseRedaction(scanned) : null;
+  const redaction = scanned && !observeOnly ? chooseRedaction(scanned) : null;
   const external = redaction ? redaction.pipeline : scanned;
   if (redaction?.prompt != null) messages[messages.length - 1] = { role: "user", content: redaction.prompt };
   // One Workers Logs line per vendor verdict, for the Analytics page's External guardrails tab (names
@@ -885,9 +890,10 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   ): Promise<{ rc: GuardrailPipelineResult | null; modelMs: number }> => {
     const modelMs = Date.now() - started;
     if (!checkReply || reply.trim() === "") return { rc: null, modelMs };
-    const rc = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
+    const replyChecked = await runReplyCheck(env, guardrailSetup, { prompt, response: reply, model: ranModel, ray }, fetch, {
       captureRaw: includeRaw,
     });
+    const rc = observeOnly && replyChecked ? asObserveOnly(replyChecked) : replyChecked;
     if (!excludeFromLog) logVerdicts(rc, verdictSource, ray, verdictOpts);
     return { rc, modelMs };
   };

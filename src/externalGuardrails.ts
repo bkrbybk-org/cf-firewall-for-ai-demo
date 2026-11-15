@@ -645,6 +645,15 @@ export function stopsTurn(r: ExternalGuardrailResult): boolean {
   return r.outcome === "block" || (r.outcome === "error" && !r.failedOpen);
 }
 
+// FortiAIGate route, "observe only" (fortiaigate_config.vendors_observe, migration 0017): the same verdicts, with no
+// power. `stoppedBy` becomes null — so the turn goes on to FortiAIGate and a reply is never withheld — and who WOULD
+// have stopped it is kept in `wouldHaveStopped`, so nothing is hidden. No redaction is applied either: an observer
+// changes nothing the model receives. The results themselves are untouched; they are what each vendor really said.
+export function asObserveOnly(p: GuardrailPipelineResult): GuardrailPipelineResult {
+  const { redactionAppliedBy: _dropped, ...rest } = p;
+  return { ...rest, observeOnly: true, wouldHaveStopped: p.stoppedBy, stoppedBy: null };
+}
+
 // One provider's scan, with `failedOpen` already resolved. Never throws.
 export type Scan = (c: StoredConfig) => Promise<ExternalGuardrailResult>;
 

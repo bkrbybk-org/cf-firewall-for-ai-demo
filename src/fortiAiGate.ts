@@ -43,6 +43,8 @@ export const FORTI_AAD = {
 
 export interface FortiConfig {
   enabled: boolean; // the chat page offers the FortiAIGate route (migration 0015)
+  // On the FortiAIGate route the external guardrails observe only: verdicts kept, never a stop (migration 0017).
+  vendorsObserve: boolean;
   baseUrl: string | null; // an https origin, no path
   models: string[];
   blockMessage: string | null; // null = Fortinet's default
@@ -60,6 +62,7 @@ export interface FortiConfig {
 export function defaultFortiConfig(): FortiConfig {
   return {
     enabled: false,
+    vendorsObserve: false,
     baseUrl: null,
     models: [],
     blockMessage: null,
@@ -79,6 +82,7 @@ export function defaultFortiConfig(): FortiConfig {
 export function toPublicForti(c: FortiConfig, suffix: string | undefined) {
   return {
     enabled: c.enabled,
+    vendorsObserve: c.vendorsObserve,
     baseUrl: c.baseUrl,
     models: c.models,
     blockMessage: c.blockMessage ?? FORTIAIGATE_DEFAULT_BLOCK_MESSAGE,
@@ -213,6 +217,10 @@ export function validateFortiUpdate(body: unknown, current: FortiConfig, suffix:
     if (typeof b.enabled !== "boolean") return { ok: false, error: "enabled must be a boolean" };
     next.enabled = b.enabled;
   }
+  if (b.vendorsObserve !== undefined) {
+    if (typeof b.vendorsObserve !== "boolean") return { ok: false, error: "vendorsObserve must be a boolean" };
+    next.vendorsObserve = b.vendorsObserve;
+  }
   // An enabled route must be able to run: checked on the RESULT, so clearing the URL or the last model while it is on
   // is refused too, rather than leaving a route the chat page offers but every turn fails.
   if (next.enabled) {
@@ -230,6 +238,7 @@ export function validateFortiUpdate(body: unknown, current: FortiConfig, suffix:
 // ── D1 ───────────────────────────────────────────────────────────────────────
 interface Row {
   enabled?: number;
+  vendors_observe?: number;
   base_url: string | null;
   models: string | null;
   block_message: string | null;
@@ -259,6 +268,7 @@ export async function loadForti(db: D1Database): Promise<FortiConfig> {
   return {
     // A row read before migration 0015 has no column: off, as the migration default.
     enabled: r.enabled === 1,
+    vendorsObserve: r.vendors_observe === 1, // absent before migration 0017: off
     baseUrl: r.base_url,
     models: parseModels(r.models),
     blockMessage: r.block_message,
@@ -277,11 +287,11 @@ export async function loadForti(db: D1Database): Promise<FortiConfig> {
 export async function saveForti(db: D1Database, c: FortiConfig): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO fortiaigate_config (id, enabled, base_url, models, block_message, virtual_key_enc, virtual_key_last4,
+      `INSERT INTO fortiaigate_config (id, enabled, vendors_observe, base_url, models, block_message, virtual_key_enc, virtual_key_last4,
          virtual_key_set_at, access_client_id_enc, access_client_id_last4, access_client_secret_enc,
          access_client_secret_last4, access_set_at, updated_at)
-       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled, base_url = excluded.base_url, models = excluded.models,
+       VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled, vendors_observe = excluded.vendors_observe, base_url = excluded.base_url, models = excluded.models,
          block_message = excluded.block_message, virtual_key_enc = excluded.virtual_key_enc,
          virtual_key_last4 = excluded.virtual_key_last4, virtual_key_set_at = excluded.virtual_key_set_at,
          access_client_id_enc = excluded.access_client_id_enc, access_client_id_last4 = excluded.access_client_id_last4,
@@ -291,6 +301,7 @@ export async function saveForti(db: D1Database, c: FortiConfig): Promise<void> {
     )
     .bind(
       c.enabled ? 1 : 0,
+      c.vendorsObserve ? 1 : 0,
       c.baseUrl,
       JSON.stringify(c.models),
       c.blockMessage,

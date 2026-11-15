@@ -1,10 +1,9 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-14 — Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-15 — "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
-scheduled re-runs (migration 0013). **Prod state measured 2026-11-05 ~08:55 UTC: all six external guardrails are DISABLED**
-(user's change), so chat runs again but smoke [4] fails (PII reaches the model: the zone rules are on Log, #28). Lakera's
-block (#33) and Cato's 401 (#31) still need the user before those vendors go back on._
+scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
+(#31) still need the user before those two go back on._
 
 Customer-facing demo of **Cloudflare AI Security for Apps** (formerly *Firewall for AI*) plus
 **AI Gateway** (routing, caching, Guardrails, Dynamic Routing), a **security analytics dashboard**,
@@ -446,7 +445,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `110515db-9282-48e4-9090-569edce9f001` (2026-11-14, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `f5017cfa-c6d7-46b9-83d9-978d4493633f` (2026-11-15, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -483,7 +482,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **989 across 68 files** (measured 2026-11-14; README's Tests table has the
+**Tests** — `npm test`, **993 across 68 files** (measured 2026-11-15; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -648,6 +647,52 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-15 — "Observe only": external guardrails alongside FortiAIGate without hiding it
+
+**Context:** the user asked what changes if Prisma AIRS, CrowdStrike AIDR and Cisco are enabled alongside FortiAIGate.
+Measured on prod first: all three were already enabled (quorum 3 of 3, fail open, `scanReplies` on).
+- **Harmless prompt on the FortiAIGate route:** prompt stage 474 ms (all allow), then FortiAIGate 2153 ms, then reply
+  stage 469 ms (all allow).
+- **The fixed injection:** all three blocked it at the prompt stage (992 ms), so FortiAIGate never saw it. In Red Team
+  that attack scores `external`, so FortiAIGate looks idle on exactly the prompts it should catch.
+- **Quorum was checked against the code, not assumed:** a fail-open error abstains and drops out of `of`, so `needed`
+  is lowered (`clamped`) rather than left unreachable. An outage cannot make blocking impossible.
+
+The user then asked for a toggle.
+
+- **What it does:** Settings → FortiAIGate → **External guardrails observe only on this route**. Migration
+  `0017_fortiaigate_vendors_observe.sql` adds `fortiaigate_config.vendors_observe` (default 0, additive). It is saved at
+  once, like Enabled. On the FortiAIGate route the enabled vendors still check the prompt and the reply, and their
+  verdicts are shown, logged and scored. But they never stop the turn, never withhold the reply and never redact.
+  Workers AI and AI Gateway turns are unaffected.
+- **How, without hiding anything:** `asObserveOnly()` (`src/externalGuardrails.ts`) keeps every result untouched, sets
+  `stoppedBy: null`, records who would have stopped it in `wouldHaveStopped`, drops `redactionAppliedBy` and marks
+  `observeOnly`. `handleChat` applies it to the prompt pipeline and the reply check, only on the FortiAIGate route with
+  the switch on, and skips `chooseRedaction` there.
+  - Verdict logs record `decided: false`, since nothing could decide.
+  - The UI shows a vendor block as a dashed amber chip "would have blocked · observe only", never as a stop or as
+    "outvoted". Assistant replies carry "VENDORS OBSERVE ONLY".
+  - The control strip shows a vendor block as `flagged` "would have blocked" (not decisive), and a fail-closed error
+    as "no verdict · observe only". `multipleStops` is false.
+  - The session export carries `observeOnly` and `wouldHaveStopped`. The openapi schemas were updated.
+  - Guardrail-only mode still skips the model on purpose: it is a separate, explicit operator choice.
+- **Tests:** 993 (4 new): the switch; `asObserveOnly` (verdicts kept, stop and redaction gone, who would have stopped);
+  the control strip for a block and for a fail-closed error. **Mutation-checked:** keeping `stoppedBy` in
+  `asObserveOnly`, or dropping the control-strip observe branch, each turns a test red. The full handler path has no
+  unit test. It was proven on local D1 instead:
+- **Verified locally:** local Lakera was set to fail closed. Every vendor errors at the network locally, so it is a
+  fail-closed error. With observe off, the FortiAIGate-route turn was stopped (`externalGuardrailBlocked`, `stoppedBy:
+  lakera-guard`). With observe on, the same turn went on to FortiAIGate (unreachable locally), and the header carried
+  `stoppedBy: null, observeOnly: true, wouldHaveStopped: "lakera-guard"`. Settings showed the switch and the row summary
+  "vendors observe only", in light and dark, with no console errors. Local state was restored afterwards.
+- **Prod** (migration 0017 applied before deploy `f5017cfa-c6d7-46b9-83d9-978d4493633f`):
+  - The config reads `vendorsObserve: false`, so behaviour is unchanged: the injection on the FortiAIGate route is
+    still stopped (`stoppedBy: crowdstrike-aidr`).
+  - The bundle `index-DHi46mHf.js` carries the switch title, "would have blocked" and "VENDORS OBSERVE ONLY".
+  - **Smoke: all 5 pass.** [4] passes again because the vendors are back on: the PII prompt is stopped by an external
+    guardrail.
+  - **Not yet seen on prod:** observe on (admin gate, the user's switch).
 
 ### 2026-11-14 — Red Team through FortiAIGate; the route proven on prod
 

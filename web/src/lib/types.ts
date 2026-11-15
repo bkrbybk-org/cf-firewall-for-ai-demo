@@ -221,6 +221,10 @@ export interface GuardrailPipelineResult {
   quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean };
   // #11: the vendor whose redacted prompt the model received instead of the original.
   redactionAppliedBy?: ExternalGuardrailProvider;
+  // FortiAIGate route with "observe only" (src/externalGuardrails.ts asObserveOnly): every verdict is real, none could
+  // act. `stoppedBy` is null; `wouldHaveStopped` names who would have stopped it otherwise. Never render a stop.
+  observeOnly?: boolean;
+  wouldHaveStopped?: ExternalGuardrailProvider | null;
 }
 
 // What one forwarded prompt produced. `outcome` is what the Worker DID:
@@ -362,6 +366,7 @@ export type GuardrailAccess =
 
 // GET/PUT /api/fortiaigate (src/fortiAiGate.ts). FortiAIGate is an inline proxy, not an external guardrail.
 export interface FortiAiGateConfig {
+  vendorsObserve?: boolean; // external guardrails observe only on the FortiAIGate route (absent: older Worker, off)
   baseUrl: string | null;
   models: string[];
   blockMessage: string;
@@ -386,6 +391,7 @@ export interface FortiAiGateState {
   access?: GuardrailAccess;
 }
 export interface FortiAiGateUpdate {
+  vendorsObserve?: boolean;
   enabled?: boolean;
   baseUrl?: string | null;
   models?: string[];

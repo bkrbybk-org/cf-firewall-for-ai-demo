@@ -148,6 +148,7 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
         c.models.length ? `${c.models.length} model${c.models.length === 1 ? "" : "s"}` : "no model",
         c.virtualKeySet ? `virtual key ••••${c.virtualKeyLast4}` : "no virtual key",
         c.accessSet ? "Access token saved" : "no Access token",
+        ...(c.enabled && c.vendorsObserve ? ["vendors observe only"] : []),
       ]
     : [];
 
@@ -233,6 +234,26 @@ export function FortiAiGatePanel({ open, onOpenChange }: { open: boolean; onOpen
 
       {c && (
         <fieldset disabled={locked} className="m-0 min-w-0 border-0 p-0">
+          {/* Saved at once, like Enabled: it changes what the vendors may do, not a connection setting. */}
+          <div className="mx-3 mt-3 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-line bg-surface-2 px-3 py-2.5 sm:mx-4">
+            <div className="min-w-0 flex-1">
+              <div className="text-[12px] font-semibold text-text">External guardrails observe only on this route</div>
+              <p className="mt-0.5 text-[11.5px] leading-relaxed text-muted">
+                On: on the FortiAIGate route, the enabled vendors still check the prompt and the reply, and their verdicts
+                are shown, logged and scored — but they <b className="text-text">never stop the turn, withhold the reply or
+                redact</b>, so FortiAIGate sees every prompt and the two can be compared on the same traffic. A vendor block
+                shows as &ldquo;would have blocked&rdquo;. Workers AI and AI Gateway turns are unaffected. Off: the vendors
+                can stop the turn before it reaches FortiAIGate.
+              </p>
+            </div>
+            <Switch
+              checked={c.vendorsObserve === true}
+              onChange={(on) => void send({ vendorsObserve: on }, on ? "Vendors now observe only on the FortiAIGate route." : "Vendors can stop FortiAIGate turns again.")}
+              disabled={locked || saving}
+              label={c.vendorsObserve ? "Observe only" : "Can stop"}
+              title="External guardrails observe only on the FortiAIGate route"
+            />
+          </div>
           <div className="grid gap-4 px-3 py-3 sm:px-4 lg:grid-cols-2">
             <div className="lg:col-span-2">
               <label htmlFor={`${ids}url`} className="mb-1 block text-[12px] font-semibold text-text">

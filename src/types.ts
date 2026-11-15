@@ -470,4 +470,8 @@ export interface GuardrailPipelineResult {
   quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean };
   // #11: whose redacted prompt the model received instead of the original. Absent → the original prompt.
   redactionAppliedBy?: ExternalGuardrailProvider;
+  // 2026-11-15, FortiAIGate route with "observe only" on: every verdict is real, but none could act. `stoppedBy` is
+  // then always null, and `wouldHaveStopped` names who would have stopped the turn (or withheld the reply) otherwise.
+  observeOnly?: boolean;
+  wouldHaveStopped?: ExternalGuardrailProvider | null;
 }

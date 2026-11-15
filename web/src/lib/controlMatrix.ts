@@ -119,6 +119,10 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
   const key = `${reply ? "reply" : "ext"}:${r.provider}`;
   if (r.outcome === "block") {
     const why = r.detected?.length ? ` (${r.detected.join(", ")})` : "";
+    // FortiAIGate route, "observe only": a real block that could not act. Flagged, never painted as a stop.
+    if (p.observeOnly) {
+      return cell(key, layer, name, "flagged", `${name} blocked ${what}${why}, but external guardrails only observe on the FortiAIGate route, so it went on.`, false, "would have blocked");
+    }
     // Quorum (#7): a block that did not reach the quorum is still this vendor's verdict — shown, never hidden —
     // but it did not stop anything, so it is not painted as a stop.
     if (p.quorum && !p.stoppedBy) {
@@ -150,6 +154,10 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
     return cell(key, layer, name, "passed", `${name} allowed ${what}.`);
   }
   // An error is never a verdict.
+  if (p.observeOnly && !r.failedOpen) {
+    const why = noVerdictReason(r);
+    return cell(key, layer, name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail closed, but observe only on this route, so ${what} went on. Not a verdict.`, false, "no verdict · observe only");
+  }
   if (r.failedOpen) {
     const why = noVerdictReason(r);
     return cell(key, layer, name, "unavailable", `${name}: ${why.charAt(0).toLowerCase() + why.slice(1)}; fail open, so ${what} went on without its verdict.`, false, "no verdict · fail open");
@@ -177,6 +185,7 @@ function vendorCell(r: ExternalGuardrailResult, p: GuardrailPipelineResult, mult
 // Parallel with two or more blocks: each would have stopped it alone. Quorum, stopped: every block was one of the
 // votes that stopped it — no single one decided, so all are marked.
 function multipleStops(p: GuardrailPipelineResult): boolean {
+  if (p.observeOnly) return false; // nothing could stop it
   const blocks = p.results.filter((r) => r.outcome === "block").length;
   return (p.mode === "parallel" && blocks >= 2) || (p.mode === "quorum" && p.stoppedBy != null && blocks >= 1);
 }

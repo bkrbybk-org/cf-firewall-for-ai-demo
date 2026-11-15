@@ -196,3 +196,25 @@ describe("controlMatrix — the FortiAIGate route (2026-11-14)", () => {
     expect(byKey(m({ kind: "external", route: "fortiaigate" })).faig).toMatchObject({ state: "notReached" });
   });
 });
+
+describe("controlMatrix — observe only on the FortiAIGate route (2026-11-15)", () => {
+  it("a vendor block is a flag, never a stop; FortiAIGate still gets the turn and the decision", () => {
+    const pipeline = P({
+      mode: "quorum",
+      observeOnly: true,
+      wouldHaveStopped: "prisma-airs",
+      quorum: { configured: 2, needed: 2, votes: 2, of: 2, clamped: false },
+      results: [R({ provider: "prisma-airs", outcome: "block" }), R({ provider: "cisco-ai-defense", outcome: "block" })],
+    });
+    const cells = byKey(m({ kind: "fortiaigate", route: "fortiaigate", fortiaigateBy: "fortiaigate", pipeline }));
+    expect(cells["ext:prisma-airs"]).toMatchObject({ state: "flagged", stateLabel: "would have blocked", decisive: false });
+    expect(cells["ext:cisco-ai-defense"]).toMatchObject({ state: "flagged", decisive: false });
+    expect(cells.faig).toMatchObject({ state: "stopped", decisive: true });
+  });
+
+  it("a fail-closed error under observe only is no verdict and stops nothing", () => {
+    const pipeline = P({ observeOnly: true, results: [R({ provider: "prisma-airs", outcome: "error", error: "HTTP 500" })] });
+    const c = byKey(m({ kind: "assistant", route: "fortiaigate", pipeline }))["ext:prisma-airs"];
+    expect(c).toMatchObject({ state: "unavailable", stateLabel: "no verdict · observe only", decisive: false });
+  });
+});

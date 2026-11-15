@@ -449,6 +449,7 @@ export const openapi = {
             "application/json": {
               schema: obj({
                 enabled: bool("Offer the FortiAIGate chat route. Refused without a saved base URL, virtual key and model."),
+                vendorsObserve: bool("On the FortiAIGate route, the external guardrails observe only: they check the prompt and the reply, but never stop the turn, withhold the reply or redact."),
                 baseUrl: nullable("string", "https origin, e.g. https://fortiaigate.example.com. Empty or null clears it."),
                 models: arr({ type: "string", maxLength: 128 }),
                 blockMessage: nullable("string", "FortiAIGate's organisation block message (≤ 500 characters). Null or empty = Fortinet's default."),
@@ -897,6 +898,8 @@ export const openapi = {
             "Quorum mode only. The turn stopped iff votes ≥ needed.",
           ),
           redactionAppliedBy: { ...ref("ExternalGuardrailProvider"), description: "Whose redacted prompt the model received instead of the original. Absent: the original." },
+          observeOnly: bool("FortiAIGate route with 'observe only' on: every verdict is real, but none could act — `stoppedBy` is null and no redaction was applied."),
+          wouldHaveStopped: { ...ref("ExternalGuardrailProvider"), type: ["string", "null"], description: "With `observeOnly`: who would have stopped the turn (or withheld the reply) otherwise; null if nobody." },
         },
         ["mode", "guardrailOnly", "results", "notRun", "stoppedBy", "latencyMs"],
         "What the pipeline did for one prompt. `results` is in run order (sequential) or configured order (parallel); `notRun` lists enabled guardrails skipped because an earlier one stopped the turn.",
@@ -1058,6 +1061,7 @@ export const openapi = {
               updatedAt: nullable("integer", "Epoch ms."),
               allowedHostSuffix: nullable("string", "FORTIAIGATE_ALLOWED_HOST_SUFFIX: the base URL's host must be this or a subdomain. Null = no URL can be saved."),
               enabled: bool("The chat page offers the FortiAIGate route."),
+              vendorsObserve: bool("External guardrails observe only on the FortiAIGate route."),
               chatRoute: bool("Same as `enabled`: whether a chat route uses FortiAIGate."),
             },
             ["baseUrl", "models", "blockMessage", "virtualKeySet", "accessSet", "allowedHostSuffix", "enabled", "chatRoute"],

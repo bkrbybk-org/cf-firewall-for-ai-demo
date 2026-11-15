@@ -15,6 +15,7 @@ import {
   validateFortiUpdate,
   type FortiConfig,
 } from "./fortiAiGate";
+import { asObserveOnly } from "./externalGuardrails";
 
 const SUFFIX = "example.com";
 const SECRET = btoa(String.fromCharCode(...new Uint8Array(32).map((_, i) => i + 1)));
@@ -232,5 +233,36 @@ describe("runFortiChat — a block is never a reply", () => {
     expect(down).toMatchObject({ kind: "error", status: 504 });
     const empty = await runFortiChat(cfg, creds, input, fake(Response.json({ choices: [{ message: { content: " " } }] })));
     expect(empty.kind).toBe("error");
+  });
+});
+
+describe("observe only — external guardrails on the FortiAIGate route (2026-11-15)", () => {
+  it("vendorsObserve is a boolean switch, off by default, shown", async () => {
+    expect(defaultFortiConfig().vendorsObserve).toBe(false);
+    expect(validateFortiUpdate({ vendorsObserve: "on" }, defaultFortiConfig(), SUFFIX).ok).toBe(false);
+    const v = validateFortiUpdate({ vendorsObserve: true }, defaultFortiConfig(), SUFFIX);
+    expect(v.ok && v.next.vendorsObserve).toBe(true);
+    expect(toPublicForti(v.ok ? v.next : defaultFortiConfig(), SUFFIX).vendorsObserve).toBe(true);
+  });
+
+  it("asObserveOnly keeps every verdict, takes away the stop and the redaction, and says who would have stopped it", () => {
+    const p = {
+      mode: "quorum" as const,
+      guardrailOnly: false,
+      results: [
+        { provider: "prisma-airs" as const, outcome: "block" as const, latencyMs: 5 },
+        { provider: "cisco-ai-defense" as const, outcome: "block" as const, latencyMs: 6 },
+      ],
+      notRun: [],
+      stoppedBy: "prisma-airs" as const,
+      latencyMs: 7,
+      quorum: { configured: 2, needed: 2, votes: 2, of: 2, clamped: false },
+      redactionAppliedBy: "cisco-ai-defense" as const,
+    };
+    const o = asObserveOnly(p);
+    expect(o).toMatchObject({ observeOnly: true, wouldHaveStopped: "prisma-airs", stoppedBy: null, quorum: p.quorum });
+    expect(o.results).toEqual(p.results);
+    expect("redactionAppliedBy" in o).toBe(false);
+    expect(asObserveOnly({ ...p, stoppedBy: null }).wouldHaveStopped).toBeNull();
   });
 });

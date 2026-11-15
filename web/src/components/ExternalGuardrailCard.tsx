@@ -605,6 +605,7 @@ export function ExternalGuardrailBadges({ pipeline }: { pipeline: GuardrailPipel
           reply={pipeline.direction === "reply"}
           quorum={pipeline.quorum}
           appliedBy={pipeline.redactionAppliedBy}
+          observe={pipeline.observeOnly === true}
         />
       ))}
     </>
@@ -643,13 +644,28 @@ export function ExternalGuardrailBadge({
   reply = false,
   quorum,
   appliedBy,
+  observe = false,
 }: {
   result: ExternalGuardrailResult;
   reply?: boolean;
   quorum?: GuardrailPipelineResult["quorum"];
   appliedBy?: GuardrailPipelineResult["redactionAppliedBy"];
+  observe?: boolean; // FortiAIGate route, "observe only": a block or a fail-closed error could not act
 }) {
   const name = reply ? `${providerLabel(result.provider)} (reply)` : providerLabel(result.provider);
+  // Checked first: under "observe only" nothing a vendor said could stop the turn, whatever the mode — so a block is
+  // shown as what it would have done, never as a stop and never as "outvoted" (no vote was counted).
+  if (observe && (result.outcome === "block" || (result.outcome === "error" && !result.failedOpen))) {
+    const blocked = result.outcome === "block";
+    return (
+      <span
+        title={`${blocked ? `${name} blocked ${reply ? "this reply" : "this prompt"}` : `${result.error ?? "No verdict"} — set to fail closed`}, but external guardrails only observe on the FortiAIGate route, so it went on. The verdict is still ${name}'s.`}
+        className="rounded-full border border-dashed border-cf-amber/60 bg-cf-amber/10 px-2 py-0.5 text-[10.5px] font-bold text-cf-amber-ink"
+      >
+        {name} · {blocked ? "would have blocked" : "unavailable · fail closed"} · observe only{blocked ? ` · ${result.latencyMs} ms` : ""}
+      </span>
+    );
+  }
   const tally = quorum ? `${quorum.votes} of ${quorum.needed} votes needed` : "";
   if (quorum && result.outcome === "block") {
     return (

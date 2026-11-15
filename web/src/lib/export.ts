@@ -31,12 +31,16 @@ interface ExportGuardrails {
   quorum?: { configured: number; needed: number; votes: number; of: number; clamped: boolean }; // quorum mode (#7)
   // #11: whose redacted prompt the model received. The redacted TEXT is never exported — only who.
   redactionAppliedBy?: string;
+  // FortiAIGate route, "observe only": the verdicts could not act; who would have stopped it otherwise.
+  observeOnly?: boolean;
+  wouldHaveStopped?: string | null;
 }
 
 function summarizePipeline(p: GuardrailPipelineResult): ExportGuardrails {
   return {
     mode: p.mode,
     stoppedBy: p.stoppedBy,
+    ...(p.observeOnly ? { observeOnly: true, wouldHaveStopped: p.wouldHaveStopped ?? null } : {}),
     results: p.results.map((r) => ({
       provider: r.provider,
       outcome: r.outcome,
