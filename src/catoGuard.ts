@@ -54,6 +54,7 @@
 //   Live, 2026-10-08: no key → 401 {"detail":"Authorization header is required"}; a fake key →
 //   401 {"detail":"Invalid API token"}; a made-up path → 404.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const CATO_GUARD_PATH = "/fw/v1/analyze";
@@ -112,7 +113,8 @@ function errorMessage(body: unknown, status: number): string {
     let text: unknown;
     if (typeof d === "string" && (status === 401 || status === 403)) text = d;
     else if (Array.isArray(d) && isObject(d[0])) text = d[0].msg;
-    if (typeof text === "string" && text.trim()) return text.trim().slice(0, ERROR_CAP);
+    const safe = vendorErrorText(text); // src/publicError.ts — the one rule for every vendor's error text
+    if (safe) return safe;
   }
   return `Cato AI Security returned HTTP ${status}`;
 }

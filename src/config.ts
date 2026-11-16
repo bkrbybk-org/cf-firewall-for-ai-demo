@@ -123,10 +123,16 @@ export function normalizeDynamicRoute(raw: string): string | null {
 // drops the rest without an error, so both sides cap explicitly.
 export const MAX_METADATA_ENTRIES = 5;
 
-// AI Gateway per-request REST headers (cf-aig-*) — caps mirror the documented
-// limits: https://developers.cloudflare.com/ai-gateway/usage/rest-api/
+// AI Gateway per-request REST headers (cf-aig-*) — caps at or below the documented
+// limits: https://developers.cloudflare.com/ai-gateway/usage/rest-api/ (attempts max 5; retry delay
+// documented max 60000 ms as read 2026-11-16, this app keeps its own stricter 5000).
 export const MAX_GATEWAY_ATTEMPTS = 5;
 export const MAX_GATEWAY_RETRY_DELAY_MS = 5000;
+// 2026-11-16 review (S5): these two were passed on unbounded. Cache TTL: "the maximum TTL is one month"
+// (ai-gateway/features/caching, read 2026-11-16) — 30 days here. Request timeout: no documented maximum, so the
+// bound is this app's own: 5 minutes, longer than any reply here takes and well short of an absurd header value.
+export const MAX_GATEWAY_CACHE_TTL_S = 30 * 24 * 3600;
+export const MAX_GATEWAY_REQUEST_TIMEOUT_MS = 300_000;
 export const GATEWAY_BACKOFF_VALUES = ["constant", "linear", "exponential"] as const;
 export type GatewayBackoff = (typeof GATEWAY_BACKOFF_VALUES)[number];
 

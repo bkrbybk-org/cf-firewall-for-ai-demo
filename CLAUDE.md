@@ -250,7 +250,9 @@ alters what a customer sees in a demo. State it and let them choose.
   (`guardrail_prompt_verdicts`).
   **Consequence for you:** prod guardrail writes — saving a key, *Test connection*, toggling guardrail-only — can
   no longer be done with the service token. They need the user in their browser (or the user adding an admin).
-  Plan prod guardrail verification around that.
+  Plan prod guardrail verification around that. Since 2026-11-16 the same goes for **saving or deleting a Red Team
+  run and clearing the prompt log** (a 403 for the service token), and every JSON write must carry
+  `Content-Type: application/json` or it is a 415 — put it in any curl you send.
 
 ## House style
 

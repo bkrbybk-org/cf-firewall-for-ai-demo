@@ -35,6 +35,7 @@
 // "allow with alerts" — outcome allow, `detectOnly: true` — never a clean pass and
 // never a block.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const LAKERA_GUARD_PATH = "/v2/guard";
@@ -103,7 +104,12 @@ function errorMessage(body: unknown, status: number): string {
   const docCode = typeof b.code === "string" || typeof b.code === "number" ? String(b.code) : undefined;
   const text = message ?? str(b.error);
   const code = message ? (str(b.error) ?? docCode) : docCode;
-  const detail = text ? `${text}${code ? ` (${code})` : ""}` : undefined;
+  // The text passes vendorErrorText (src/publicError.ts) or the status line is used. The code is checked apart: a
+  // numeric one is Lakera's documented status echo (`401`) and a word one its error code (`ErrMissingToken`) —
+  // neither can carry the request; anything else is dropped.
+  const safeText = vendorErrorText(text);
+  const safeCode = code && /^(?:\d{1,3}|[A-Za-z][A-Za-z0-9_]{0,40})$/.test(code) ? code : undefined;
+  const detail = safeText ? `${safeText}${safeCode ? ` (${safeCode})` : ""}` : undefined;
   if (status === 429) return `Lakera Guard rate limited (HTTP 429)${detail ? `: ${detail}` : ""}`;
   return detail ?? `Lakera Guard returned HTTP ${status}`;
 }

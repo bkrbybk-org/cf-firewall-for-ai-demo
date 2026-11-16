@@ -35,6 +35,7 @@
 //   - Sensitive data found on an ALLOW is never a clean pass either (`detectOnly`); a redaction Datadog
 //     offered is "redaction not applied" (`transformed`), as for AIDR — this app never applies one.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const DATADOG_AI_GUARD_PATH = "/api/v2/ai-guard/evaluate";
@@ -92,7 +93,7 @@ export function buildDatadogRequest(input: DatadogScanInput): { url: string; ini
   };
 }
 
-const ERROR_CAP = 200;
+// (The error-text cap now lives in vendorErrorText, src/publicError.ts — one rule for every vendor.)
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
@@ -113,13 +114,14 @@ function errorMessage(body: unknown, status: number): string {
         ? " — check the application key, its ai_guard_evaluate scope, and that AI Guard is enabled for the organisation"
         : "";
   if ((status === 401 || status === 403) && isObject(body) && Array.isArray(body.errors)) {
-    const text = body.errors
-      .map((e) => (typeof e === "string" ? e : isObject(e) ? (e.detail ?? e.title) : undefined))
-      .filter((t): t is string => typeof t === "string" && t.trim() !== "")
-      .join(", ")
-      .replace(/[\u0000-\u001f\u007f]/g, " ")
-      .trim();
-    if (text) return `Datadog AI Guard: ${text.slice(0, ERROR_CAP)} (HTTP ${status})${hint}`;
+    // src/publicError.ts — the one rule for every vendor's error text (cap, one line, no digit runs or `@`).
+    const text = vendorErrorText(
+      body.errors
+        .map((e) => (typeof e === "string" ? e : isObject(e) ? (e.detail ?? e.title) : undefined))
+        .filter((t): t is string => typeof t === "string" && t.trim() !== "")
+        .join(", "),
+    );
+    if (text) return `Datadog AI Guard: ${text} (HTTP ${status})${hint}`;
   }
   return `Datadog AI Guard returned HTTP ${status}${hint}`;
 }

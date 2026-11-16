@@ -47,6 +47,7 @@
 //
 // Decided with the user (2026-10-05): `severity` never overrides `is_safe`.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const CISCO_AID_INSPECT_PATH = "/api/v1/inspect/chat";
@@ -115,10 +116,11 @@ function uniqueStrings(values: unknown[]): string[] {
 function errorMessage(body: unknown, status: number): string {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
+    // Passes vendorErrorText (src/publicError.ts) as a whole, or the status line is used.
     const fromBody = str(b.message);
     const detail = Array.isArray(b.details) ? str(b.details[0]) : undefined;
-    if (fromBody) return detail ? `${fromBody}: ${detail}` : fromBody;
-    if (detail) return detail;
+    const text = vendorErrorText(fromBody ? (detail ? `${fromBody}: ${detail}` : fromBody) : detail);
+    if (text) return text;
   }
   return `Cisco AI Defense returned HTTP ${status}`;
 }

@@ -541,9 +541,10 @@ describe("parseCatoResponse — HTTP errors", () => {
     expect(parseCatoResponse(422, { detail: ["just a string"] }, 5).error).toBe("Cato AI Security returned HTTP 422");
   });
 
+  // 200 characters in all since vendorErrorText (2026-11-16): 199 and an ellipsis, so a cut text says it was cut.
   it("caps an error text at 200 characters", () => {
-    expect(parseCatoResponse(401, { detail: "x".repeat(900) }, 5).error).toBe("x".repeat(200));
-    expect(parseCatoResponse(422, { detail: [{ msg: "y".repeat(900) }] }, 5).error).toBe("y".repeat(200));
+    expect(parseCatoResponse(401, { detail: "x".repeat(900) }, 5).error).toBe("x".repeat(199) + "…");
+    expect(parseCatoResponse(422, { detail: [{ msg: "y".repeat(900) }] }, 5).error).toBe("y".repeat(199) + "…");
   });
 
   // Only the key errors have been seen. A string detail on any other status could be a

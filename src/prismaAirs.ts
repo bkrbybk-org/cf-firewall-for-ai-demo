@@ -14,6 +14,7 @@
 //     `{"error":{"message":"Not Authenticated"}}` (401). Both shapes are parsed.
 //   - Sync requests are capped at 2 MB by PANW.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const PRISMA_AIRS_SCAN_PATH = "/v1/scan/sync/request";
@@ -80,13 +81,13 @@ export function buildPrismaAirsRequest(input: PrismaAirsScanInput): { url: strin
 }
 
 // Pull a human-readable message out of either error shape (see file header).
+// The vendor's text passes vendorErrorText (src/publicError.ts) or is replaced by the status line.
 function errorMessage(body: unknown, status: number): string {
   if (body && typeof body === "object") {
     const b = body as { error?: unknown; message?: unknown };
-    if (b.error && typeof b.error === "object" && typeof (b.error as { message?: unknown }).message === "string") {
-      return (b.error as { message: string }).message;
-    }
-    if (typeof b.message === "string") return b.message;
+    const nested = b.error && typeof b.error === "object" ? (b.error as { message?: unknown }).message : undefined;
+    const text = vendorErrorText(typeof nested === "string" ? nested : b.message);
+    if (text) return text;
   }
   return `Prisma AIRS returned HTTP ${status}`;
 }

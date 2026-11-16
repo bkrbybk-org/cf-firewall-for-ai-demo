@@ -17,6 +17,8 @@ export interface GatewayOption {
 export interface GatewayLimits {
   maxAttempts: number;
   retryDelayMs: number;
+  cacheTtlS: number; // since 2026-11-16
+  requestTimeoutMs: number; // since 2026-11-16
 }
 
 export interface ModelsResponse {

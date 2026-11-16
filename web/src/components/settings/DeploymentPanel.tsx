@@ -5,8 +5,9 @@
 // (/api/external-guardrails and /api/models); nothing is assumed. A value the
 // Worker does not report is said to be unknown, never guessed — e.g. whether
 // CF_AIG_TOKEN is set is not exposed, so it is not listed.
-import { useState, type ReactNode } from "react";
-import type { ExternalGuardrailsState, GatewayOption, ModelsResponse } from "../../lib/types";
+import { useEffect, useState, type ReactNode } from "react";
+import { getFortiAiGate } from "../../lib/api";
+import type { ExternalGuardrailsState, FortiAiGateConfig, GatewayOption, ModelsResponse } from "../../lib/types";
 import { PROVIDER_LABELS } from "../../lib/guardrailView";
 import { CLOUDFLARE_LINKS, type ProductLink } from "../../lib/productLinks";
 import { ProductLinks } from "../ProductLinks";
@@ -107,6 +108,23 @@ export function DeploymentPanel({
 }) {
   const unknown = <Value tone="unknown">{modelsErr ? "could not read" : "loading…"}</Value>;
   const log = models?.promptLog;
+  // FORTIAIGATE_ALLOWED_HOST_SUFFIX, as the Worker reports it on GET /api/fortiaigate (2026-11-16 audit: the one var
+  // this panel did not show). Read here rather than threaded through SettingsPage: the FortiAIGate row loads its own copy.
+  const [forti, setForti] = useState<FortiAiGateConfig | null>(null);
+  const [fortiErr, setFortiErr] = useState(false);
+  useEffect(() => {
+    let live = true;
+    getFortiAiGate()
+      .then((s) => {
+        if (!live) return;
+        if (s.config) setForti(s.config);
+        else setFortiErr(true);
+      })
+      .catch(() => live && setFortiErr(true));
+    return () => {
+      live = false;
+    };
+  }, []);
   return (
     <div className={PANEL}>
       <div className="hidden grid-cols-[minmax(0,14rem)_minmax(0,1fr)_minmax(0,16rem)] gap-4 px-4 pt-3 text-[10.5px] font-semibold tracking-wide text-subtle uppercase sm:grid">
@@ -241,7 +259,7 @@ export function DeploymentPanel({
             <Value tone="neutral">Anyone Cloudflare Access lets in</Value>
           )
         }
-        detail="Your own preferences above are never restricted — they only change this browser."
+        detail="The same list may clear the prompt log and save or delete Red Team runs. Your own preferences above are never restricted — they only change this browser."
         setBy={
           <>
             Secret {code("GUARDRAIL_ADMIN_EMAILS")}, checked against the Access login ({code("ACCESS_TEAM_DOMAIN")},{" "}
@@ -249,6 +267,25 @@ export function DeploymentPanel({
           </>
         }
         product={{ name: "Access", links: CLOUDFLARE_LINKS.access }}
+      />
+
+      <Row
+        label="FortiAIGate allowed host"
+        value={
+          !forti ? (
+            <Value tone="unknown">{fortiErr ? "could not read" : "loading…"}</Value>
+          ) : forti.allowedHostSuffix ? (
+            <Value tone="neutral">{forti.allowedHostSuffix}</Value>
+          ) : (
+            <Value tone="off">Not set</Value>
+          )
+        }
+        detail={
+          forti && !forti.allowedHostSuffix
+            ? "No FortiAIGate URL can be saved until it is set."
+            : "A FortiAIGate base URL must be this host or a subdomain of it, over https — re-checked on every chat turn."
+        }
+        setBy={<>Var {code("FORTIAIGATE_ALLOWED_HOST_SUFFIX")}</>}
       />
 
       <Row

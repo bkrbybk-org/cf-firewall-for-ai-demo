@@ -24,6 +24,7 @@
 //     token in the Falcon console, so unlike Prisma AIRS there is no profile to
 //     name in the request.
 
+import { vendorErrorText } from "./publicError";
 import type { ExternalGuardrailResult } from "./types";
 
 export const AIDR_GUARD_PATH = "/aidr/aiguard/v1/guard_chat_completions";
@@ -89,11 +90,14 @@ function errorMessage(body: unknown, status: number): string {
   if (body && typeof body === "object") {
     const b = body as Record<string, unknown>;
     const gw = Array.isArray(b.errors) ? (b.errors[0] as Record<string, unknown> | undefined) : undefined;
-    const fromGateway = str(gw?.message);
+    // Each candidate passes vendorErrorText (src/publicError.ts) or is skipped.
+    const fromGateway = vendorErrorText(gw?.message);
     if (fromGateway) return fromGateway;
     const result = b.result as Record<string, unknown> | undefined;
     const pe = Array.isArray(result?.errors) ? (result!.errors as Record<string, unknown>[])[0] : undefined;
-    const fromPangea = str(b.summary) ?? (pe ? [str(pe.code), str(pe.detail)].filter(Boolean).join(": ") : undefined);
+    const fromPangea = vendorErrorText(
+      str(b.summary) ?? (pe ? [str(pe.code), str(pe.detail)].filter(Boolean).join(": ") : undefined),
+    );
     if (fromPangea) return fromPangea;
   }
   return `CrowdStrike AIDR returned HTTP ${status}`;

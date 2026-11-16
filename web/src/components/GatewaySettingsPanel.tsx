@@ -162,7 +162,8 @@ export function GatewaySettingsPanel({
           onChange={(v) => set("cacheTtl", v)}
           placeholder="gateway default"
           min={1}
-          title="cf-aig-cache-ttl — cache time-to-live for this response, in seconds"
+          max={limits?.cacheTtlS}
+          title={`cf-aig-cache-ttl — cache time-to-live for this response, in seconds${limits ? `, max ${limits.cacheTtlS}` : ""}`}
         />
         <label className="flex flex-col gap-1" title="cf-aig-cache-key — custom cache key for this request">
           <span className="text-[11.5px] text-muted">Cache key</span>
@@ -200,7 +201,8 @@ export function GatewaySettingsPanel({
           onChange={(v) => set("requestTimeoutMs", v)}
           placeholder="none"
           min={1}
-          title="cf-aig-request-timeout — abort the request after this many milliseconds"
+          max={limits?.requestTimeoutMs}
+          title={`cf-aig-request-timeout — abort the request after this many milliseconds${limits ? `, max ${limits.requestTimeoutMs}` : ""}`}
         />
 
         <NumberField

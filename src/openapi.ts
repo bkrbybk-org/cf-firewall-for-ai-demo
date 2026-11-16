@@ -141,6 +141,7 @@ export const openapi = {
           content: { "application/json": { schema: ref("ChatRequest") } },
         },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": {
             description: "The reply — JSON, or an SSE stream when `stream: true`.",
             headers: {
@@ -341,6 +342,7 @@ export const openapi = {
         summary: "Delete every row in the prompt log",
         description: "**Destructive and unscoped** — there is no filter; it empties the table.",
         responses: {
+          "403": json("Not a guardrail admin (`GUARDRAIL_ADMIN_EMAILS` set) — the body says why. Since 2026-11-16.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "200": json("Cleared, or the disabled / not-configured marker.", {
             oneOf: [obj({ configured: { const: true }, cleared: { const: true } }, ["configured", "cleared"]), notConfigured({ disabled: bool() })],
           }),
@@ -387,6 +389,7 @@ export const openapi = {
         ].join("\n"),
         requestBody: { required: true, content: { "application/json": { schema: ref("ExternalGuardrailUpdate") } } },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": json("The new state.", ref("ExternalGuardrailsState")),
           "400": json("Rejected — invalid field, unsupported provider, enabling without a key/profile, or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
           "403": json("Not a guardrail admin (`access.mode` is `admin`) — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
@@ -411,6 +414,7 @@ export const openapi = {
         ].join("\n"),
         requestBody: { required: true, content: { "application/json": { schema: ref("GuardrailPipelineUpdate") } } },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": json("The new state.", ref("ExternalGuardrailsState")),
           "400": json("Rejected — invalid field or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
           "403": json("Not a guardrail admin — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
@@ -462,6 +466,7 @@ export const openapi = {
           },
         },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": json("The new state.", ref("FortiAiGateState")),
           "400": json("Rejected — invalid field or not set up.", obj({ configured: bool(), error: str(), setupHint: str() }, ["error"])),
           "403": json("Not a guardrail admin — the body says why.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
@@ -489,6 +494,7 @@ export const openapi = {
           },
         },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": json(
             "The observation. `ok` is true for `replied` and `block_message_seen`.",
             obj({
@@ -568,6 +574,7 @@ export const openapi = {
           },
         },
         responses: {
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "200": json(
             "The provider's answer.",
             obj(
@@ -618,6 +625,8 @@ export const openapi = {
         ].join("\n"),
         requestBody: { required: true, content: { "application/json": { schema: ref("RedTeamRunSaveRequest") } } },
         responses: {
+          "403": json("Not a guardrail admin (`GUARDRAIL_ADMIN_EMAILS` set) — the body says why. Since 2026-11-16.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
+          "415": error("The body is not sent as JSON (`Content-Type: application/json`). Since 2026-11-16."),
           "201": json("Saved.", obj({ configured: { const: true }, id: int("The new run's id."), pruned: int("Older runs deleted to stay within 50.") }, ["configured", "id", "pruned"])),
           "200": json("`configured: false` — D1 is not bound or the migration has not run.", notConfigured()),
           "400": error("Not valid JSON, or the run failed validation."),
@@ -630,6 +639,7 @@ export const openapi = {
         summary: "Delete one saved run and its results",
         parameters: [{ name: "id", in: "query", required: true, schema: { type: "integer", minimum: 1 } }],
         responses: {
+          "403": json("Not a guardrail admin (`GUARDRAIL_ADMIN_EMAILS` set) — the body says why. Since 2026-11-16.", obj({ configured: bool(), error: str(), access: ref("GuardrailAccess") }, ["error"])),
           "200": json("Deleted, or `configured: false`.", {
             oneOf: [obj({ configured: { const: true }, deleted: bool("False when no such run existed.") }, ["configured", "deleted"]), notConfigured()],
           }),
@@ -696,10 +706,10 @@ export const openapi = {
             description: "Gateway route only. Tags for AI Gateway logs and a route's Conditional nodes. At most 5 entries are kept; values are coerced to strings (sent as `cf-aig-metadata`). The key `user` is reserved: the Worker drops a caller's own and, when the request carries a verified Cloudflare Access login, sends `user` first (the email, or `service-token:<client id>`), leaving 4 entries for the caller.",
           },
           skipCache: bool("Gateway route only — `cf-aig-skip-cache`."),
-          cacheTtl: { type: "integer", exclusiveMinimum: 0, description: "Gateway route only. Seconds — `cf-aig-cache-ttl`." },
+          cacheTtl: { type: "integer", exclusiveMinimum: 0, maximum: 2592000, description: "Gateway route only. Seconds — `cf-aig-cache-ttl`. Clamped to 30 days (AI Gateway documents one month)." },
           cacheKey: { type: "string", maxLength: 128, description: "Gateway route only — `cf-aig-cache-key`." },
           collectLog: bool("Gateway route only — `cf-aig-collect-log`. Unrelated to the D1 prompt log."),
-          requestTimeoutMs: { type: "integer", exclusiveMinimum: 0, description: "Gateway route only — `cf-aig-request-timeout`." },
+          requestTimeoutMs: { type: "integer", exclusiveMinimum: 0, maximum: 300000, description: "Gateway route only — `cf-aig-request-timeout`. Clamped to 300000 (this app's own bound; none is documented)." },
           maxAttempts: { type: "integer", minimum: 1, maximum: 5, description: "Gateway route only. Clamped to 1–5 — `cf-aig-max-attempts`." },
           retryDelayMs: { type: "integer", minimum: 0, maximum: 5000, description: "Gateway route only. Clamped to 0–5000 — `cf-aig-retry-delay`." },
           backoff: { type: "string", enum: ["constant", "linear", "exponential"], description: "Gateway route only — `cf-aig-backoff`. Any other value is ignored." },
@@ -1114,7 +1124,7 @@ export const openapi = {
           maxSystemPromptLen: int(),
           gateways: arr(ref("GatewayOption")),
           defaultGateway: str("Absent when no gateway is configured."),
-          limits: obj({ maxAttempts: int(), retryDelayMs: int() }, ["maxAttempts", "retryDelayMs"], "Caps the Worker clamps the numeric gateway settings to."),
+          limits: obj({ maxAttempts: int(), retryDelayMs: int(), cacheTtlS: int(), requestTimeoutMs: int() }, ["maxAttempts", "retryDelayMs", "cacheTtlS", "requestTimeoutMs"], "Caps the Worker clamps the numeric gateway settings to."),
           fortiaigate: obj(
             { enabled: bool("The chat page offers the FortiAIGate route."), models: arr(str("A FortiAIGate public model name.")) },
             ["enabled", "models"],

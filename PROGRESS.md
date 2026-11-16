@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-16 — booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-16 — review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
 (#31) still need the user before those two go back on._
@@ -365,8 +365,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   fail mode, health incl. "Key rejected", console / docs links, *Test connection*), *Test all vendors*, a
   **FortiAIGate** row under the vendors (Enabled = the chat route; "External guardrails observe only on this route";
   URL, models, block message, virtual key, Access service token, *Test connection*), and the read-only Deployment
-  panel (vars, secrets, bindings, cron automation status — it has no FortiAIGate row, so
-  `FORTIAIGATE_ALLOWED_HOST_SUFFIX` shows only in the FortiAIGate row's own hint when unset).
+  panel (vars, secrets, bindings, cron automation status, and since 2026-11-16 `FORTIAIGATE_ALLOWED_HOST_SUFFIX`).
   Your preferences gained **Booth mode** on 2026-11-16.
 - **`/compliance`** is vendor-agnostic too since 2026-10-12: All vendors, Cloudflare (graded) and each external
   guardrail (observed).
@@ -456,9 +455,9 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 117 commits by 2026-11-16, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 118 commits by 2026-11-16, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `d1ffbf74-799f-48ea-8090-545d727a4d2e` (2026-11-16, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `aacd3251-e77e-48bc-aa2d-1cdee6013cd7` (2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -495,7 +494,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **1000 across 69 files** (measured 2026-11-16; README's Tests table has the
+**Tests** — `npm test`, **1021 across 71 files** (measured 2026-11-16 after the review fixes; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -660,6 +659,53 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-16 (later) — Review fixes: admin gate on the evidence, vendor error text, JSON writes, caps, deps
+
+**Asked:** a review for technical debt, bugs and security issues; the user then chose fixes 1–5. All done by me
+(security semantics and the hot file `src/handlers.ts`), no subagents.
+
+1. **Admin gate on the shared evidence (S1/S2).** `DELETE /api/prompt-log`, `DELETE /api/redteam-runs` and `POST
+   /api/redteam-runs` were open to anything past Access — the red-team scanner's service token too. A save prunes to
+   the newest 50, so 50 junk saves evicted every real run. All three now go through `refuseUnlessEditor` (#26's gate,
+   now with the action named: "Only guardrail admins can delete saved runs: …"). Gate unset → unchanged. The Analytics
+   "Clear" now shows a refused clear in a dialog (it used to reload as if nothing happened); Saved runs already showed
+   the error.
+2. **Vendor error text (S3).** Prisma AIRS, CrowdStrike AIDR, Cisco and Lakera copied a vendor's `message`/`detail`
+   verbatim and uncapped into the JSON body, the `x-external-guardrails` header and the page; Cato and Datadog were
+   already restricted. One rule now, `vendorErrorText` (`src/publicError.ts`): one line, at most 200 characters,
+   refused when it holds three digits in a row or an `@` (what an echoed number or address looks like) → the client's
+   own "returned HTTP n". Lakera's documented numeric `code` (`401`) and word codes stay. Cost: a vendor error that
+   names a number (a trace id with digits) now reads as the status line only.
+3. **JSON writes (S4) and caps (S5).** Every JSON write (`/api/chat`, run save, both `PUT`s, both tests) now needs
+   `application/json` or a `+json` type, else **415**: a `text/plain` form post needs no CORS preflight. Checked first
+   that every caller sends it (`web/src/lib/api.ts` 7 of 7, `scripts/prod-smoke.sh`). `cacheTtl` clamped to 30 days
+   ("the maximum TTL is one month", ai-gateway/features/caching, read today) and `requestTimeoutMs` to 300,000 ms (no
+   documented maximum: this app's own bound); both served in `/api/models` `limits`, shown as "max …" by the gateway
+   panel. Noted, not changed: Cloudflare now documents retry delay up to 60,000 ms; this app keeps its own 5,000.
+4. **Dependencies, patch/minor only:** wrangler 4.110 → 4.163, vite 6.4.3 → 6.4.6, react-router-dom 6.30.4 → 6.30.6,
+   tailwind 4.3.5, workers-types, swagger-ui-dist 5.35, then `npm audit fix` (no `--force`). `npm audit`: 12 → 5. The
+   5 left need majors: vitest 5 (2 critical, dev-only test runner) and react-router 7 (moderate open redirect via a
+   backslash in `<Link>`/`navigate`; every path here is a fixed string, so not reachable). `npm` now holds `workerd`'s
+   postinstall for approval (`npm approve-scripts`); `wrangler dev` ran fine without it.
+5. **Small:** Settings → Deployment gained a **FortiAIGate allowed host** row (`FORTIAIGATE_ALLOWED_HOST_SUFFIX`, read
+   live from `GET /api/fortiaigate`), and the access row says the list also guards runs and the prompt log. A stale
+   comment claiming D1 does not enforce the results → run foreign key was corrected.
+
+**Verified:**
+- `npm run check`, web `tsc -b`, `npm test` **1021 / 71 files** (21 new: `src/vendorErrors.test.ts` 13,
+  `src/writeGate.test.ts` 8), `npm run build`.
+- **Mutation checks:** refuse rule off → 9 red; the delete gate removed → 1 red; `requireJson` returning null → 3 red.
+- **Local `wrangler dev` (new wrangler):** `/api/models` served the four limits; a `text/plain` chat → 415; a UI
+  prompt on Workers AI replied ("There are 7 days in a standard week."); the gateway panel showed "max 2592000" for
+  an over-limit TTL; Deployment's new row read `nttlab.org`; no console errors from the change. Dark and light checked.
+- **Prod**, deploy `aacd3251-e77e-48bc-aa2d-1cdee6013cd7` (no migration): `npm run smoke:prod` all 5 pass. Service
+  token through Access: `text/plain` chat → **415**; `DELETE /api/redteam-runs?id=999999` → **403** "Only guardrail
+  admins can delete saved runs: service tokens can read …"; run `POST` → **403**; `/api/models` `limits` has
+  `cacheTtlS: 2592000`, `requestTimeoutMs: 300000`. Bundle `index-GSe5Ei1z.js` holds "FortiAIGate allowed host",
+  `cacheTtlS` and "Clearing the prompt log failed".
+- **Not verified:** that the external Prisma AIRS red-team scanner (target `cw-ai-red-team`) sends `application/json`
+  to `/api/chat`. If its next scan sees 415s, that is why — set its target's content type to JSON.
 
 ### 2026-11-16 — Booth mode: one big verdict per turn
 
@@ -4534,8 +4580,13 @@ below are kept as written. Items they still list as open but that are done are t
   - **FortiAIGate user attribution (offered, not approved):** FortiAIGate attributes users only through the owner of
     a user virtual key. Option B maps the verified Access email to a per-user virtual key; FortiAIGate SAML SSO through
     Access for SaaS is the user's optional setup.
-- **Self, code, small (found in the 2026-11-16 audit, not done):** Settings → Deployment has no FortiAIGate row, so
-  `FORTIAIGATE_ALLOWED_HOST_SUFFIX` is the one var it does not show.
+- ~~**Self, code, small:** Settings → Deployment has no FortiAIGate row.~~ **Done 2026-11-16** (review fixes entry).
+- **Open from the 2026-11-16 review, not done:** split `handleChat` (~500 lines, three routes inline) and give the six
+  vendor clients one shared fetch / timeout / error helper; majors (vitest 5 clears the 2 remaining critical dev-only
+  advisories; react-router 7, React 19, Vite 8); pin CI actions by SHA; the OpenAPI spec is still hand-written, and
+  tests do not catch a changed response shape.
+- **Needs the user:** confirm the Prisma AIRS red-team scanner's target sends `Content-Type: application/json` to
+  `/api/chat` (a 415 otherwise since 2026-11-16).
 - **Self, but it spends money on prod or touches it:**
   - **The Red Team corpus on prod, twice, compared:** `/api/redteam-runs` still lists 0 saved runs on prod.
   - **`npm run corpus:thai` on prod.**

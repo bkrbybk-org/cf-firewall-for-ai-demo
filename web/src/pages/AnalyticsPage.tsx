@@ -543,7 +543,14 @@ export function AnalyticsPage() {
               view={plogView}
               onView={setPlogView}
               onClear={() =>
-                clearPromptLog().then(() => loadPlog(plogRoute, plogOutcomes, plogWindow, plogView))
+                // A refused clear (403 since 2026-11-16 when the admin gate is on) must say so: reloading alone would
+                // look like the click did nothing. Same dialog family as the confirm that precedes it.
+                clearPromptLog()
+                  .then((r) => {
+                    if (r.error) window.alert(r.error);
+                  })
+                  .catch(() => window.alert("Clearing the prompt log failed — the Worker could not be reached."))
+                  .then(() => loadPlog(plogRoute, plogOutcomes, plogWindow, plogView))
               }
             />
           ) : tab === "gateway" ? (

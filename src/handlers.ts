@@ -11,6 +11,8 @@ import {
   isBeyondRetention,
   MAX_GATEWAY_ATTEMPTS,
   MAX_GATEWAY_RETRY_DELAY_MS,
+  MAX_GATEWAY_CACHE_TTL_S,
+  MAX_GATEWAY_REQUEST_TIMEOUT_MS,
   MAX_METADATA_ENTRIES,
   normalizeDynamicRoute,
   OPENAI_CHAT_PATH,
@@ -189,6 +191,8 @@ export async function handleModels(env: Env): Promise<Response> {
     limits: {
       maxAttempts: MAX_GATEWAY_ATTEMPTS,
       retryDelayMs: MAX_GATEWAY_RETRY_DELAY_MS,
+      cacheTtlS: MAX_GATEWAY_CACHE_TTL_S,
+      requestTimeoutMs: MAX_GATEWAY_REQUEST_TIMEOUT_MS,
     },
     // Prompt-log feature flag, served so the client can hide the Analytics tab
     // and the per-turn toggle rather than offering a control that silently does
@@ -601,6 +605,8 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
   if (request.method !== "POST") {
     return Response.json({ error: "Use POST" }, { status: 405 });
   }
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
 
   let prompt: string;
   let model = DEFAULT_MODEL;
@@ -672,11 +678,14 @@ export async function handleChat(request: Request, env: Env, ctx?: ExecutionCont
           .map(([k, v]) => [k, String(v).slice(0, 128)]),
       );
     }
-    if (typeof body.cacheTtl === "number" && body.cacheTtl > 0) cacheTtl = Math.floor(body.cacheTtl);
+    // Clamped like maxAttempts below (S5): the header carries at most the documented / app maximum.
+    if (typeof body.cacheTtl === "number" && body.cacheTtl > 0) {
+      cacheTtl = Math.min(MAX_GATEWAY_CACHE_TTL_S, Math.floor(body.cacheTtl));
+    }
     if (typeof body.cacheKey === "string" && body.cacheKey.trim() !== "") cacheKey = body.cacheKey.trim().slice(0, 128);
     if (typeof body.collectLog === "boolean") collectLog = body.collectLog;
     if (typeof body.requestTimeoutMs === "number" && body.requestTimeoutMs > 0) {
-      requestTimeoutMs = Math.floor(body.requestTimeoutMs);
+      requestTimeoutMs = Math.min(MAX_GATEWAY_REQUEST_TIMEOUT_MS, Math.floor(body.requestTimeoutMs));
     }
     if (typeof body.maxAttempts === "number") {
       maxAttempts = Math.max(1, Math.min(MAX_GATEWAY_ATTEMPTS, Math.floor(body.maxAttempts)));
@@ -1238,6 +1247,8 @@ export async function handlePromptLog(request: Request, url: URL, env: Env): Pro
   if (!env.DB) return Response.json({ configured: false });
 
   if (request.method === "DELETE") {
+    const refused = await refuseUnlessEditor(request, env, "clear the prompt log");
+    if (refused) return refused;
     try {
       await env.DB.prepare("DELETE FROM prompt_log").run();
       return Response.json({ configured: true, cleared: true });
@@ -1514,11 +1525,13 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
   if (!env.DB) return Response.json({ configured: false });
 
   if (request.method === "DELETE") {
+    const refused = await refuseUnlessEditor(request, env, "delete saved runs");
+    if (refused) return refused;
     const id = parseRunId(url.searchParams.get("id"));
     if (id == null) return Response.json({ configured: true, error: "id must be a positive integer" }, { status: 400 });
     try {
-      // Results first: they carry no FK enforcement (D1/SQLite won't cascade
-      // on their own here), so deleting the run first would orphan them.
+      // Results first: D1 enforces the foreign key (results → run) and does not cascade,
+      // so deleting the run first fails with SQLITE_CONSTRAINT_FOREIGNKEY.
       await env.DB.prepare("DELETE FROM redteam_results WHERE run_id = ?").bind(id).run();
       const del = await env.DB.prepare("DELETE FROM redteam_runs WHERE id = ?").bind(id).run();
       return Response.json({ configured: true, deleted: (del.meta.changes ?? 0) > 0 });
@@ -1530,6 +1543,10 @@ export async function handleRedTeamRuns(request: Request, url: URL, env: Env): P
   }
 
   if (request.method === "POST") {
+    const refused = await refuseUnlessEditor(request, env, "save runs");
+    if (refused) return refused;
+    const unsupported = requireJson(request);
+    if (unsupported) return unsupported;
     let body: unknown;
     try {
       body = await request.json();
@@ -1748,11 +1765,30 @@ async function guardrailState(env: Env, request: Request): Promise<Response> {
 // shared rather than half the page working.
 // A write refused by the admin gate (#26): 403 with the reason in words. Checked
 // before the body is read, so a refused caller learns nothing about validation.
-async function refuseUnlessEditor(request: Request, env: Env): Promise<Response | null> {
+// A JSON write must SAY it is JSON (2026-11-16 review, S4). request.json() parses any body, so a cross-site
+// `<form method=post enctype=text/plain>` — a "simple" request that needs no CORS preflight — could reach POST
+// /api/chat and spend model money, or a test endpoint, whenever the browser sends the Access cookie along. Requiring
+// application/json (or a +json type) forces a preflight, which this Worker never answers. Every client here already
+// sends it: web/src/lib/api.ts, scripts/prod-smoke.sh.
+function requireJson(request: Request): Response | null {
+  const type = (request.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (type === "application/json" || /^application\/[a-z0-9.+-]+\+json$/.test(type)) return null;
+  return Response.json({ error: "Send the body as JSON: Content-Type: application/json" }, { status: 415 });
+}
+
+// Also guards the shared-evidence writes (2026-11-16 review, S1/S2): clearing the prompt log, deleting a saved
+// red-team run and saving one (each save prunes to the newest REDTEAM_RUNS_MAX_STORED, so 50 junk saves would evict
+// every real run). Access lets the red-team scanner's service token in too, and #26's reason applies unchanged: what
+// passes Access may read, only a named person may change or delete. With GUARDRAIL_ADMIN_EMAILS unset nothing changes.
+async function refuseUnlessEditor(
+  request: Request,
+  env: Env,
+  what = "change these settings",
+): Promise<Response | null> {
   const access = await guardrailWriteAccess(request, env);
   if (access.canEdit) return null;
   return Response.json(
-    { configured: true, error: `Only guardrail admins can change these settings: ${access.reason}.`, access },
+    { configured: true, error: `Only guardrail admins can ${what}: ${access.reason}.`, access },
     { status: 403 },
   );
 }
@@ -1761,6 +1797,8 @@ export async function handleGuardrailPipeline(request: Request, env: Env): Promi
   if (request.method !== "PUT") return Response.json({ error: "Use PUT" }, { status: 405 });
   const refused = await refuseUnlessEditor(request, env);
   if (refused) return refused;
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
   let body: unknown;
@@ -1786,6 +1824,8 @@ export async function handleExternalGuardrails(request: Request, env: Env): Prom
   if (request.method !== "PUT") return Response.json({ error: "Use GET or PUT" }, { status: 405 });
   const refused = await refuseUnlessEditor(request, env);
   if (refused) return refused;
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
 
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
@@ -1897,6 +1937,8 @@ export async function handleExternalGuardrailsTest(request: Request, env: Env): 
   // A test sends the STORED key to the vendor, so it is a write-level action too.
   const refused = await refuseUnlessEditor(request, env);
   if (refused) return refused;
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ error: hint }, { status: 400 });
   let provider: unknown;
@@ -2006,6 +2048,8 @@ export async function handleFortiAiGate(request: Request, env: Env): Promise<Res
   if (request.method !== "PUT") return Response.json({ error: "Use GET or PUT" }, { status: 405 });
   const refused = await refuseUnlessEditor(request, env);
   if (refused) return refused;
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ configured: false, setupHint: hint, error: hint }, { status: 400 });
   let body: unknown;
@@ -2032,6 +2076,8 @@ export async function handleFortiAiGateTest(request: Request, env: Env): Promise
   // A test sends the STORED credentials to FortiAIGate, so it is a write-level action, like the vendor test.
   const refused = await refuseUnlessEditor(request, env);
   if (refused) return refused;
+  const unsupported = requireJson(request);
+  if (unsupported) return unsupported;
   const hint = guardrailSetupHint(env);
   if (hint) return Response.json({ error: hint }, { status: 400 });
   let b: { model?: unknown; sample?: unknown } | null;

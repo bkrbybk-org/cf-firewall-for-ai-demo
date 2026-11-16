@@ -36,3 +36,23 @@ export function aiErrorText(err: unknown): string {
     .trim();
   return clean.length > AI_ERROR_MAX ? clean.slice(0, AI_ERROR_MAX - 1) + "…" : clean || "unknown error";
 }
+
+// A vendor's own error text, if it may be shown (2026-11-16 review, S3). Four of the six vendor clients used to copy
+// `message` / `detail` out verbatim and uncapped, while Cato and Datadog were already restricted — and the house rule is
+// that a vendor's message field is never passed on, because some vendors echo the request in it (Lakera's 400 quotes
+// the bad value; Cato's detection message quotes the SSN). The text travels in the JSON body, the
+// `x-external-guardrails` header and the UI, so one rule now applies to every vendor:
+//   - one line, control characters gone, at most VENDOR_ERROR_MAX characters;
+//   - refused outright (undefined → the caller's own "returned HTTP n") when it holds three digits in a row or an
+//     `@`: the shapes of card, ID, phone and account numbers and of email addresses — what an echo could leak. The
+//     same digit rule the vendors' tags already follow. Losing an actionable error to it costs a status line; letting
+//     an echoed SSN through costs much more.
+const VENDOR_ERROR_MAX = 200;
+const VENDOR_ERROR_REFUSE = /\d{3}|@/;
+
+export function vendorErrorText(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const one = v.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!one || VENDOR_ERROR_REFUSE.test(one)) return undefined;
+  return one.length > VENDOR_ERROR_MAX ? one.slice(0, VENDOR_ERROR_MAX - 1) + "…" : one;
+}
