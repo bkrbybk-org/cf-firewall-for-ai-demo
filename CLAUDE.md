@@ -184,9 +184,12 @@ alters what a customer sees in a demo. State it and let them choose.
   deployment: AWS us-east-1 → Bedrock ap-southeast-1, behind a Cloudflare Tunnel at `faig.nttlab.org` with an Access
   Service Auth policy (it also accepts the `.env` service token). `FAIG_KEY` in `.env` is its virtual key: use it only
   in curl headers when the user asks; never save it into any D1 (local tests use fake values). Local workerd cannot
-  reach `faig.nttlab.org` ("could not be reached") — test the route on prod, where switching it on needs the user (admin  gate). Its docs document neither the block nor the model names: public names come from `GET /ai/openai/v1/models`
+  reach `faig.nttlab.org` ("could not be reached") — test the route on prod, where switching it on needs the user (admin
+  gate). Its docs document neither the block nor the model names: public names come from `GET /ai/openai/v1/models`
   (`bedrock-apse1-…-v1-0`, not the Bedrock id), and a block is HTTP 200 with `finish_reason: content_filter`, `id:
-  chatcmpl-blocked` and the block message as the content (seen 2026-11-14).
+  chatcmpl-blocked` and the block message as the content (seen 2026-11-14). Its response `id` is not FortiAIGate's own
+  Request ID — match its logs by time and content. It attributes a request to a user only through the owner of a
+  user virtual key: a probe sending the OpenAI `user` field showed no user in its logs.
 - In zsh, never name a variable `path`: it is tied to `$PATH`, and a `for path in …` loop leaves every
   later command "not found".
 - Migrations: always `npx wrangler d1 migrations apply cf-ai-waf-demo-log [--local|--remote]`,
@@ -213,6 +216,8 @@ alters what a customer sees in a demo. State it and let them choose.
   name here). Grep for `runcated`, or build the key as `j["trunc"+"ated"]`.
   A third blocks a command line containing the SQL output keyword (`F`+`ORMAT JSON`): put Analytics Engine SQL in a
   file and `curl --data-binary @file.sql`.
+  A fourth blocks some command lines containing English "at" phrases ("at the", "at most"), even inside a grep/perl
+  string or a `git commit -m` message: edit such text with Edit/Write, and commit with `git commit -F <file>`.
 - **Workers Logs is sampled on ingest for this account** (platform sampling, whatever the Worker's own
   `head_sampling_rate`): never count from it. Guardrail verdicts are counted in **Analytics Engine**
   (`GUARDRAIL_VERDICTS`, read with `CF_ANALYTICS_TOKEN`), and AE samples *per index*: an index that repeats (the vendor)

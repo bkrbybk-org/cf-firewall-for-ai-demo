@@ -17,18 +17,17 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 
 > **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
 > **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
-> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-05 scheduled re-run switch back to the first
+> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-16 booth mode back to the first
 > external guardrail, Prisma AIRS, on 2026-10-01), then
 > 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
 > migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
 > true that day; the Architecture, Pages and Open bugs sections describe what is true now.
 > The prod AI Gateway outage found on 2026-09-30 was **resolved the same day** (Open bug #1).
 > Compliance MEASURE 2.7 (Open bug #22) was **fixed 2026-10-07**: it counts AI Security rules only.
-> **🔴 Live on prod: Cato AI Security has answered HTTP 401 since 2026-10-13 (Open bug #31)** — every Cato check
-> fails open until the user saves a new key.
-> **🔴 Since 2026-11-04: Lakera blocks every harmless prompt (Open bug #33)**, so with Lakera enabled no chat
-> prompt reaches the model. By 2026-11-05 ~08:55 UTC every vendor was disabled on prod: smoke [2]/[3] pass again and [4]
-> fails, because nothing blocks PII before the model while the zone rules stay on Log.
+> **🔴 Cato AI Security has answered HTTP 401 since 2026-10-13 (Open bug #31)** and **Lakera has blocked every
+> harmless prompt since 2026-11-04 (Open bug #33)**. Both need the user, and neither is enabled on prod as measured
+> 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco are (quorum 3 of 3, fail open, replies checked), and all five
+> smoke checks pass. (2026-11-05 to before 2026-11-15, superseded: every vendor was disabled and smoke [4] failed.)
 
 ---
 
@@ -40,7 +39,8 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
     `/api/gateway-analytics` (account, per gateway), `/api/prompt-log` (GET list / DELETE clear —
     D1), `/api/prompt-analytics` (D1 rollups), `/api/zone-rules` (Rulesets API), `/api/redteam-runs`
     (saved runs, D1), `/api/external-guardrails` + `/test` · `/pipeline` · `/report` (third-party
-    guardrails), `/api/openapi.json` + `/api/openapi-3.0.json`. `src/index.ts` is the authoritative list
+    guardrails), `/api/fortiaigate` + `/test` (the FortiAIGate inline proxy's settings, 2026-11-14),
+    `/api/openapi.json` + `/api/openapi-3.0.json` — 19 paths. `src/index.ts` is the authoritative list
     (and `openapi.test.ts` fails if the spec drifts from it). Everything else → static assets (SPA fallback).
 - **The prompt log is behind a feature flag, off by default (2026-09-03).** `PROMPT_LOG_ENABLED`
   in `wrangler.jsonc`; `promptLogEnabled()` in `src/config.ts` is the single check. Requested
@@ -326,6 +326,10 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   all fit one viewport (sidebar + library are `shrink-0` with far more content than the screen), so
   the whole column scrolls instead of the chat pane collapsing to zero height — a real layout bug
   fixed this session (see Open bugs history / Implemented). `/gateway` redirects here.
+  **Since 2026-11-14** the route toggle has a third route, **FortiAIGate** (shown while it is enabled in Settings,
+  with its own model list, always JSON). **Since 2026-11-16, booth mode** (header button or Settings → Your
+  preferences, per browser) hides the side panels and the detail, and shows each turn as one verdict banner, a layer
+  strip and the vendor chips (`lib/boothView.ts`).
 - **`/analytics`** (vendor-agnostic since 2026-10-12 — see that entry and README's Analytics section for the current
   shape): **All vendors** (side-by-side table, per-prompt grid, per-run trend), **Cloudflare · AI Security (edge)**,
   **Cloudflare · AI Gateway**, one page per **external guardrail** (Analytics Engine verdicts), and the **prompt log**
@@ -348,7 +352,8 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   (target `cw-ai-red-team`, 2026-07-30; Thai-language) through the real `/api/chat` and scores what
   the edge did. Route selector (Workers AI ↔ a specific AI Gateway, locked mid-run so a batch never
   mixes routes), scorecard, sortable attack table, and a static "close the gaps" panel mapping each
-  scan finding to the Cloudflare control that addresses it.
+  scan finding to the Cloudflare control that addresses it. Since 2026-11-14 the route can also be **FortiAIGate**;
+  its blocks are their own state (`fortiaigate`), kept out of the edge headline.
 - **`/compliance`**: coverage matrix (capability × framework) + framework tabs with per-control
   detail cards. **Six frameworks**: NIST AI RMF · ISO 42001 · OWASP LLM Top 10 · MITRE ATLAS ·
   Bank of Thailand AI risk policy (2025) · NCSA AI Security Guidelines (2025). The OWASP LLM01 and
@@ -357,8 +362,12 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   preferences** (per viewer, browser storage: theme, card layout, turn details, raw responses) kept apart from
   **System settings** (shared, D1, admin-gated on prod): the traffic-flow diagram (sequential / parallel / quorum,
   order, guardrail-only, check replies), the six providers as a collapsible list (key with its age, region, profile,
-  fail mode, health incl. "Key rejected", console / docs links, *Test connection*), *Test all vendors*, and the
-  read-only Deployment panel (vars, secrets, bindings, cron automation status).
+  fail mode, health incl. "Key rejected", console / docs links, *Test connection*), *Test all vendors*, a
+  **FortiAIGate** row under the vendors (Enabled = the chat route; "External guardrails observe only on this route";
+  URL, models, block message, virtual key, Access service token, *Test connection*), and the read-only Deployment
+  panel (vars, secrets, bindings, cron automation status — it has no FortiAIGate row, so
+  `FORTIAIGATE_ALLOWED_HOST_SUFFIX` shows only in the FortiAIGate row's own hint when unset).
+  Your preferences gained **Booth mode** on 2026-11-16.
 - **`/compliance`** is vendor-agnostic too since 2026-10-12: All vendors, Cloudflare (graded) and each external
   guardrail (observed).
 - **Page width**: `/analytics`, `/redteam`, `/compliance` and `/settings` run to `max-w-[1600px]`; the chat page
@@ -433,6 +442,10 @@ up-to-date one (re-checked against the tree 2026-10-20); the tree above predates
 switch is in `components/settings/PreferencesSection.tsx`). Later in 2026-10: the other four vendor clients, migrations
 `0007`–`0012`, the cron modules (`scheduledCorpus`, `scheduledRerun`, `vendorAlerts`, `alertDelivery`, `verdictWatch`,
 `smokeCanary`), and the vendor-agnostic analytics / compliance parts — all listed in README.
+New in 2026-11: migration `0013` (scheduled opt-out); FortiAIGate — `src/fortiAiGate.ts`,
+`components/settings/FortiAiGatePanel.tsx`, migrations `0014`–`0017`; booth mode — `hooks/useBoothMode.ts`,
+`components/BoothToggle.tsx` + `BoothTurn.tsx`, `lib/boothView.ts`. README's layout lists them (re-checked against
+the tree 2026-11-16).
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
 (vitest, `vitest.config.ts` — separate from `vite.config.ts`, which sets `root: "web"`) · `npm run
@@ -443,7 +456,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 117 commits by 2026-11-16, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
 entry under Implemented names its own deploy id; the newest is `d1ffbf74-799f-48ea-8090-545d727a4d2e` (2026-11-16, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
@@ -4502,7 +4515,8 @@ below are kept as written. Items they still list as open but that are done are t
   live chat runs without Cato. **Needs the user:** a new key in Settings.
 - **Needs the user** (the admin gate, credentials, or a policy call):
   - **Set `ALERT_WEBHOOK_URL`.** The outage check marked Cato `down` 17 minutes after it broke, and no one saw it.
-  - **Quorum and redaction on prod:** the pipeline is still parallel, and no vendor has `applyRedaction` on.
+  - ~~**Quorum on prod.**~~ **Done by 2026-11-15** (measured): quorum 3 of 3 over AIRS, AIDR and Cisco. Still open: no
+    vendor has `applyRedaction` on, and a lower quorum (2) is the user's call.
   - **Run *Test all vendors*** and paste the report.
   - **Prisma AIRS's and CrowdStrike AIDR's topic and language policies:** both block every harmless Thai prompt in the
     scheduled re-runs.
@@ -4513,6 +4527,15 @@ below are kept as written. Items they still list as open but that are done are t
   - **The Self-criticism custom topic** (it changes a live zone rule).
   - **GRC review of the Compliance wording**, and a legal look at ThaiSafetyBench's "academic purposes only" note.
   - **A working `.env` `CF_AIG_TOKEN`** for local gateway testing.
+  - **FortiAIGate, observe only on prod:** the switch is shipped (2026-11-15) and OFF on prod. Proven locally only;
+    once the user turns it on, re-run a vendor-blocked prompt on the FortiAIGate route and check "would have blocked".
+  - **Booth banners on prod:** only "Reached the model" was seen (local dev has no edge WAF). An edge, vendor and
+    FortiAIGate block banner each need one prompt from the user's browser on prod.
+  - **FortiAIGate user attribution (offered, not approved):** FortiAIGate attributes users only through the owner of
+    a user virtual key. Option B maps the verified Access email to a per-user virtual key; FortiAIGate SAML SSO through
+    Access for SaaS is the user's optional setup.
+- **Self, code, small (found in the 2026-11-16 audit, not done):** Settings → Deployment has no FortiAIGate row, so
+  `FORTIAIGATE_ALLOWED_HOST_SUFFIX` is the one var it does not show.
 - **Self, but it spends money on prod or touches it:**
   - **The Red Team corpus on prod, twice, compared:** `/api/redteam-runs` still lists 0 saved runs on prod.
   - **`npm run corpus:thai` on prod.**
