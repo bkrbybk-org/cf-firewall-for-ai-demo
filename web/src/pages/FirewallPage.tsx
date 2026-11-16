@@ -7,6 +7,8 @@ import { GatewaySettingsPanel, type GatewaySettingsValue } from "../components/G
 import { AttackLibrary } from "../components/AttackLibrary";
 import { Chat } from "../components/Chat";
 import { DemoMode } from "../components/DemoMode";
+import { BoothToggle } from "../components/BoothToggle";
+import { useBoothMode } from "../hooks/useBoothMode";
 import { useChat, type Route } from "../hooks/useChat";
 import { useNeurons } from "../hooks/useNeurons";
 import { getModels } from "../lib/api";
@@ -68,6 +70,8 @@ export function FirewallPage() {
   // Absent from an older Worker's response means off, matching the server.
   const [promptLogEnabled, setPromptLogEnabled] = useState(false);
   const [input, setInput] = useState("");
+  // Booth mode (per browser): one big verdict per turn, the setup panels and technical detail hidden.
+  const [booth] = useBoothMode();
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
     models,
@@ -117,17 +121,29 @@ export function FirewallPage() {
       <Header
         title="Cloudflare AI Security for Apps"
         subtitle={
-          <>
-            Chat inspected at the edge · WAF fields <code className="font-mono">cf.llm.*</code> · route via Workers AI or
-            AI Gateway
-          </>
+          booth ? (
+            <>Every prompt is inspected before it reaches the AI model. Pick an attack to see which layer stops it.</>
+          ) : (
+            <>
+              Chat inspected at the edge · WAF fields <code className="font-mono">cf.llm.*</code> · route via Workers AI or
+              AI Gateway
+            </>
+          )
         }
         actions={
-          <>
-            <DemoMode sendPrompt={chat.sendPrompt} chatBusy={chat.busy} onStart={chat.clear} />
-            <ThemeToggle />
-            <NeuronChip state={neurons} />
-          </>
+          booth ? (
+            <>
+              <BoothToggle />
+              <ThemeToggle />
+            </>
+          ) : (
+            <>
+              <DemoMode sendPrompt={chat.sendPrompt} chatBusy={chat.busy} onStart={chat.clear} />
+              <BoothToggle />
+              <ThemeToggle />
+              <NeuronChip state={neurons} />
+            </>
+          )
         }
       />
 
@@ -138,21 +154,24 @@ export function FirewallPage() {
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         {/* Left column: session-level setup. The wrapper owns the width,
             border and scrolling so the panels inside are plain sections. */}
-        <div className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-[300px] lg:border-b-0 lg:border-r">
-          <SystemPromptPanel
-            value={systemPrompt}
-            onChange={setSystemPrompt}
-            defaultPrompt={defaultPrompt}
-            maxLen={maxLen}
-          />
-          <GatewaySettingsPanel
-            active={route === "gateway"}
-            value={gatewaySettings}
-            onChange={setGatewaySettings}
-            limits={limits}
-          />
-        </div>
+        {!booth && (
+          <div className="flex w-full shrink-0 flex-col overflow-y-auto border-b border-line bg-surface lg:w-[300px] lg:border-b-0 lg:border-r">
+            <SystemPromptPanel
+              value={systemPrompt}
+              onChange={setSystemPrompt}
+              defaultPrompt={defaultPrompt}
+              maxLen={maxLen}
+            />
+            <GatewaySettingsPanel
+              active={route === "gateway"}
+              value={gatewaySettings}
+              onChange={setGatewaySettings}
+              limits={limits}
+            />
+          </div>
+        )}
         <Chat
+          booth={booth}
           models={models}
           selectedModel={selectedModel}
           onModelChange={setSelectedModel}
@@ -186,10 +205,12 @@ export function FirewallPage() {
         <AttackLibrary onPick={setInput} />
       </main>
 
-      <footer className="shrink-0 border-t border-line bg-surface px-5 py-2 text-[11.5px] text-muted">
-        Served on <code className="font-mono">cf-ai-waf-demo.nttlab.org</code> · detections fire only on the{" "}
-        <code className="font-mono">cf-llm</code>-labeled endpoint · view hits in Security → Analytics/Events.
-      </footer>
+      {!booth && (
+        <footer className="shrink-0 border-t border-line bg-surface px-5 py-2 text-[11.5px] text-muted">
+          Served on <code className="font-mono">cf-ai-waf-demo.nttlab.org</code> · detections fire only on the{" "}
+          <code className="font-mono">cf-llm</code>-labeled endpoint · view hits in Security → Analytics/Events.
+        </footer>
+      )}
     </div>
   );
 }

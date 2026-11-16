@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-15 — "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-16 — booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
 (#31) still need the user before those two go back on._
@@ -445,7 +445,7 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
 ran none of the recent work, both long untrue): 105+ commits by 2026-11-05, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `f5017cfa-c6d7-46b9-83d9-978d4493633f` (2026-11-15, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `d1ffbf74-799f-48ea-8090-545d727a4d2e` (2026-11-16, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -482,7 +482,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **993 across 68 files** (measured 2026-11-15; README's Tests table has the
+**Tests** — `npm test`, **1000 across 69 files** (measured 2026-11-16; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -647,6 +647,39 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-16 — Booth mode: one big verdict per turn
+
+**Asked:** a demo/booth mode that hides details and highlights what matters. Shown two mockups. The user chose the **big
+verdict banner** and kept the Attack Library, the route toggle and the vendor chips; Run demo and everything else are
+hidden.
+
+- **What it is:** a per-browser preference (`boothMode`, `hooks/useBoothMode.ts`, on only for the stored word "on"). It
+  is set from a header button "Booth mode" on the chat page, or from Settings → Your preferences. It changes nothing on
+  the server or for anyone else.
+  - Hidden: the System prompt and AI Gateway panels, Run demo, the neuron chip, the footer, the model and gateway
+    pickers, the stream / multi-turn / log switches, the turn count, Export, and every turn's meta row (ray, tokens,
+    cost, latency, log id), control strip, flow trace, reports and raw responses.
+  - Kept: the Attack Library, the route toggle and Clear conversation.
+  - Larger text throughout.
+- **Each turn** (`components/BoothTurn.tsx`, words in `lib/boothView.ts`): a large banner says which control acted,
+  then a layer strip (Edge → Vendors → Gateway or FortiAIGate → Model, one state per layer, folded from
+  `controlMatrix()`), then the vendor chips.
+- **Honesty, by construction:**
+  - An edge 403 says "Blocked at the edge · Cloudflare AI Security for Apps" only when the response named the
+    detection. A bare 403 reads "Refused at the edge (HTTP 403)" and is not attributed, as in the detailed card.
+  - An external block's headline is `pipelineView()`'s own (e.g. quorum "3 of 3 guardrails voted to stop it").
+  - FortiAIGate's banner never says whether it stopped the prompt or the reply.
+  - A reply under observe-only says the vendors would have blocked it. It is never "no control stopped this prompt".
+- **Tests:** 1000 across 69 files (7 new, `web/src/lib/boothView.test.ts`). **Mutation-checked:** crediting every 403 to
+  AI Security turns a test red.
+- **Verified locally:** with booth mode on, a harmless prompt showed the reply, a "Reached the model · Workers AI" banner
+  and the strip Edge passed, Vendors off, Gateway off, Model reached. The side panels, Run demo and the stream switch
+  were absent (checked in the DOM). Light and dark, no console errors. Local dev has no edge WAF, so an edge block
+  cannot be seen there. The pane was put back to booth off and dark afterwards.
+- **Prod:** deploy `d1ffbf74-799f-48ea-8090-545d727a4d2e`, no migration. The bundle `index-m-Ct-2Ia.js` carries
+  `boothMode`, "one big verdict per turn", "Reached the model" and "What each layer did". All 5 smoke checks pass.
+  Booth banners on real edge, vendor and FortiAIGate blocks were not driven on prod here: that needs a browser login.
 
 ### 2026-11-15 — "Observe only": external guardrails alongside FortiAIGate without hiding it
 

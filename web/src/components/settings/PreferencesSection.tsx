@@ -7,6 +7,7 @@ import { useState } from "react";
 import { UserRound } from "lucide-react";
 import { useGuardrailCardLayout } from "../../hooks/useGuardrailCardLayout";
 import { useShowRawResponses } from "../../hooks/useShowRawResponses";
+import { useBoothMode } from "../../hooks/useBoothMode";
 import { useShowTurnDetails } from "../../hooks/useShowTurnDetails";
 import { useTheme, type Theme } from "../../hooks/useTheme";
 import type { CardLayout } from "../../lib/cardLayout";
@@ -120,6 +121,14 @@ export function PreferencesSection() {
 
       <Group id="pref-chat" title="Chat display" hint="Applies to the AI Guardrails Demo chat, including turns already on screen.">
         <div className={PANEL}>
+          <FlagRow
+            label="Booth mode"
+            labelId="pref-booth"
+            labels={["Off", "On"]}
+            flag={useBoothMode}
+            description="The chat as a booth visitor should see it: one big verdict per turn — which layer stopped the prompt, or that it reached the model — with larger text."
+            note="Hides the setup panels, ray ids, tokens, cost, latency, the flow trace and raw responses; keeps the Attack Library, the route toggle and the vendor chips. Every banner comes from the same verdicts as the detailed view. Also switchable from the chat page header."
+          />
           <CardLayoutRow />
           <FlagRow
             label="Turn details"

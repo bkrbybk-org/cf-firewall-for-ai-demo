@@ -7,6 +7,7 @@ import { controlMatrix, type ControlMatrixInput } from "../lib/controlMatrix";
 import { useEdgeKnowledge } from "../lib/verdictStore";
 import { ControlMatrix } from "./ControlMatrix";
 import { ExportButton } from "./ExportButton";
+import { BoothTurn } from "./BoothTurn";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard, RedactionAppliedNote } from "./ExternalGuardrailCard";
 import { GuardrailRawResponses } from "./GuardrailRawResponses";
 import { GuardrailReports } from "./GuardrailReportPanel";
@@ -252,6 +253,7 @@ export function Chat({
   excludeFromLog,
   promptLogEnabled,
   onExcludeFromLogChange,
+  booth = false,
   route,
   onRouteChange,
   fortiEnabled,
@@ -283,6 +285,8 @@ export function Chat({
   /** Prompt log turned on for this deployment (PROMPT_LOG_ENABLED + D1). */
   promptLogEnabled: boolean;
   onExcludeFromLogChange: (v: boolean) => void;
+  /** Booth mode (hooks/useBoothMode.ts): one big verdict per turn; only the route toggle and Clear stay. */
+  booth?: boolean;
   route: Route;
   onRouteChange: (r: Route) => void;
   /** The FortiAIGate route is enabled (/api/models → fortiaigate), and its models. */
@@ -390,6 +394,22 @@ export function Chat({
         )}
 
         {messages.map((m, idx) => {
+          // Booth mode: every non-user turn is one big verdict (BoothTurn) — same facts, details hidden.
+          if (booth && m.kind !== "user")
+            return <BoothTurn key={m.id} m={m} route={cfgBefore(idx)?.route ?? "direct"} />;
+          if (m.kind === "user" && booth)
+            return (
+              <div
+                key={m.id}
+                ref={(el) => {
+                  if (el) userMsgRefs.current.set(m.id, el);
+                  else userMsgRefs.current.delete(m.id);
+                }}
+                className="animate-rise max-w-[min(85%,760px)] self-end rounded-2xl rounded-br-md bg-gradient-to-br from-accent to-accent-hover px-5 py-3 text-[17px] font-medium whitespace-pre-wrap text-[#1a1206] shadow-sm"
+              >
+                {m.text}
+              </div>
+            );
           if (m.kind === "user")
             return (
               <div key={m.id} className="contents">
@@ -667,7 +687,7 @@ export function Chat({
             </button>
           ))}
         </div>
-        {route === "fortiaigate" ? (
+        {booth ? null : route === "fortiaigate" ? (
           // FortiAIGate's own models (its public names), not the Workers AI registry.
           <label htmlFor="model" className="flex items-center gap-1.5">
             Model
@@ -703,18 +723,20 @@ export function Chat({
             </label>
           )
         )}
-        <Switch checked={stream} onChange={onStreamChange} label="stream replies" />
-        <Switch
-          checked={multiTurn}
-          onChange={onMultiTurnChange}
-          label="multi-turn"
-          title="When off, each prompt is sent standalone — no history[], so the model can't recall earlier turns (multi-turn attacks like Crescendo won't build across messages)"
-        />
+        {!booth && <Switch checked={stream} onChange={onStreamChange} label="stream replies" />}
+        {!booth && (
+          <Switch
+            checked={multiTurn}
+            onChange={onMultiTurnChange}
+            label="multi-turn"
+            title="When off, each prompt is sent standalone — no history[], so the model can't recall earlier turns (multi-turn attacks like Crescendo won't build across messages)"
+          />
+        )}
         {/* Hidden outright when the feature is off, rather than shown
             disabled: a greyed-out "log prompt" implies the log exists and
             could be switched on from here, when in fact nothing in the UI
             can turn it on — it is a deploy-time var. */}
-        {promptLogEnabled && (
+        {promptLogEnabled && !booth && (
           <Switch
             checked={!excludeFromLog}
             onChange={(v) => onExcludeFromLogChange(!v)}
@@ -722,7 +744,7 @@ export function Chat({
             title="Off by default. When on, this turn is written to the D1 prompt_log table (redacted prompt/reply history) — separate from AI Gateway's own request log"
           />
         )}
-        {gateway && (
+        {gateway && !booth && (
           <>
             {gateways.length > 0 && (
               <label htmlFor="gatewayId" className="flex items-center gap-1.5">
@@ -756,14 +778,14 @@ export function Chat({
             </label>
           </>
         )}
-        {turnCount > 0 && (
+        {turnCount > 0 && !booth && (
           <span className="text-subtle">
             {turnCount} turn{turnCount === 1 ? "" : "s"} {multiTurn ? "of context" : "in transcript (multi-turn off — not sent)"}
           </span>
         )}
         {messages.length > 0 && (
           <span className="ml-auto flex items-center gap-2">
-            <ExportButton messages={messages} systemPrompt={systemPrompt} />
+            {!booth && <ExportButton messages={messages} systemPrompt={systemPrompt} />}
             <button
               type="button"
               onClick={onClear}
@@ -783,7 +805,7 @@ export function Chat({
           onChange={(e) => setInput(e.target.value)}
           autoComplete="off"
           placeholder="Type a prompt, or load one from the Attack Library →"
-          className="flex-1 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-text shadow-sm outline-none transition placeholder:text-subtle focus:border-accent focus:ring-2 focus:ring-accent/25"
+          className={`flex-1 rounded-xl border border-line bg-surface px-4 py-3 ${booth ? "text-[17px]" : "text-sm"} text-text shadow-sm outline-none transition placeholder:text-subtle focus:border-accent focus:ring-2 focus:ring-accent/25`}
         />
         <button
           type="submit"
