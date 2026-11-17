@@ -99,6 +99,7 @@ export function boothBanner(m: TurnMsg, route: Route): BoothBanner | null {
 const RANK: CellState[] = ["stopped", "flagged", "unavailable", "reached", "passed", "pending", "notReached", "off"];
 
 export interface BoothLayer {
+  layer: MatrixCell["layer"];
   label: string;
   state: CellState;
   title: string; // every cell's own sentence, for the tooltip
@@ -116,7 +117,7 @@ export function boothLayers(cells: MatrixCell[]): BoothLayer[] {
     const of = cells.filter((c) => c.layer === g.key);
     if (of.length === 0) return [];
     const state = RANK.find((s) => of.some((c) => c.state === s)) ?? "off";
-    return [{ label: g.label(of), state, title: of.map((c) => `${c.label}: ${c.detail}`).join("\n") }];
+    return [{ layer: g.key, label: g.label(of), state, title: of.map((c) => `${c.label}: ${c.detail}`).join("\n") }];
   });
 }
 

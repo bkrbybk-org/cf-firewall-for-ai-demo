@@ -191,3 +191,78 @@ body {
     animation: rise 0.22s cubic-bezier(0.4, 0, 0.2, 1) both;
   }
 }
+
+/* Booth mode's architecture strip (components/BoothFlow.tsx). While a turn is in flight the browser does not know
+   which layer is working, so every node pulses together and the packet sweeps the whole path — no layer lights up on
+   its own until the verdict says so. Without motion: a still packet at the start and a tinted rail. */
+.booth-packet {
+  left: var(--from);
+}
+.booth-sweep {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes booth-travel {
+    from {
+      left: var(--from);
+    }
+    to {
+      left: var(--to);
+    }
+  }
+  @keyframes booth-sweep {
+    from {
+      background-position: -40% 0;
+    }
+    to {
+      background-position: 140% 0;
+    }
+  }
+  @keyframes booth-scan {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 22%, transparent);
+    }
+  }
+  @keyframes booth-grow {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+  @keyframes booth-reveal {
+    from {
+      opacity: 0.35;
+      transform: scale(0.88);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  .booth-packet {
+    animation: booth-travel 1.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  }
+  .booth-sweep {
+    background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+    background-size: 35% 100%;
+    animation: booth-sweep 1.5s linear infinite;
+  }
+  .booth-scan {
+    animation: booth-scan 1.5s ease-in-out infinite;
+  }
+  .booth-grow {
+    animation: booth-grow 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .booth-land {
+    animation: booth-travel 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  .booth-reveal {
+    animation: booth-reveal 0.35s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+}

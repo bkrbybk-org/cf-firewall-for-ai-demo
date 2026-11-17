@@ -7,6 +7,7 @@ import { controlMatrix, type ControlMatrixInput } from "../lib/controlMatrix";
 import { useEdgeKnowledge } from "../lib/verdictStore";
 import { ControlMatrix } from "./ControlMatrix";
 import { ExportButton } from "./ExportButton";
+import { BoothFlow } from "./BoothFlow";
 import { BoothTurn } from "./BoothTurn";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard, RedactionAppliedNote } from "./ExternalGuardrailCard";
 import { GuardrailRawResponses } from "./GuardrailRawResponses";
@@ -374,6 +375,8 @@ export function Chat({
           takes a content-based min-height and the page chases the
           scroll-to-bottom), and below lg via an explicit viewport height,
           since there flex-1 would resolve to zero against shrink-0 siblings. */}
+      {/* Booth mode: the path every prompt takes, swept while a turn is in flight, then lit with where it ended. */}
+      {booth && <BoothFlow messages={messages} busy={busy} route={route} />}
       <div className="relative flex h-[55vh] flex-col overflow-hidden lg:h-auto lg:min-h-0 lg:flex-1">
       {/* `relative` is load-bearing: Tailwind's sr-only is position:absolute, so without a
           positioned ancestor inside the list the strip's screen-reader text takes the
@@ -383,7 +386,14 @@ export function Chat({
         ref={listRef}
         className="relative mx-auto flex min-h-0 w-full max-w-3xl min-w-0 flex-1 flex-col gap-2 overflow-y-auto p-1.5"
       >
-        {messages.length === 0 && (
+        {messages.length === 0 && booth && (
+          // Booth mode: the diagram above already shows the path; a visitor needs one instruction, in large type.
+          <div className="animate-rise max-w-[min(85%,720px)] self-start rounded-2xl rounded-bl-md border border-line bg-surface px-5 py-3.5 text-[17px] leading-relaxed shadow-sm">
+            Pick an attack from the library — or type your own — and watch which layer stops it. Try the green baseline
+            first to see a normal answer.
+          </div>
+        )}
+        {messages.length === 0 && !booth && (
           <div className="animate-rise max-w-[min(80%,720px)] self-start rounded-2xl rounded-bl-md border border-line bg-surface px-4 py-3 text-sm shadow-sm">
             Hi! I'm an LLM behind Cloudflare. Pick an attack from the library on the right — Cloudflare inspects each
             prompt at the edge and blocks it <i>before it ever reaches me</i>. Start with the green baseline to see a
