@@ -10,7 +10,7 @@
 //   - the verdict → each node's state is boothStrip()'s, which is controlMatrix()'s, so the diagram can never say
 //     more than the detailed view's control strip.
 import type { Msg, Route } from "../hooks/useChat";
-import type { CellState, MatrixLayer } from "./controlMatrix";
+import type { CellState, EdgeKnowledge, MatrixLayer } from "./controlMatrix";
 import { boothBanner, boothStrip, type TurnMsg } from "./boothView";
 
 export type FlowPhase = "idle" | "inFlight" | "answering" | "done";
@@ -74,7 +74,9 @@ function template(route: Route, state: (layer: MatrixLayer) => FlowNodeState, ti
 // Reached and acted on, or reached and let through: the states the prompt was actually seen in.
 const SEEN: FlowNodeState[] = ["stopped", "flagged", "unavailable", "reached", "passed"];
 
-export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route): FlowView {
+// `edge`: the latest turn's background edge lookup (lib/boothTally.ts), when it has landed — a log-only match then
+// shows on the edge node as "flagged", exactly as the turn's own strip shows it.
+export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, edge?: EdgeKnowledge): FlowView {
   // The turn in question: the last user message and whatever answered it.
   let u = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].kind === "user") { u = i; break; }
@@ -115,8 +117,8 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route): 
     };
   }
 
-  const strip = boothStrip(answer, route);
-  const banner = boothBanner(answer, route);
+  const strip = boothStrip(answer, route, edge);
+  const banner = boothBanner(answer, route, edge);
   if (strip.length === 0) {
     // An error: no layer can be credited with anything.
     return {
@@ -141,4 +143,12 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route): 
   // "stopped" cell (an error is never a verdict), so this comes from the banner, not from the cell states.
   const stopped = banner ? banner.icon === "blocked" || banner.icon === "refused" : stopIdx >= 0;
   return { phase: "done", nodes, to, stopped, caption: banner?.title ?? "", turnId: answer.id };
+}
+
+// The answer to the latest prompt, when it has one — what the component looks the edge up for.
+export function latestAnswer(messages: Msg[]): TurnMsg | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].kind === "user") return messages.slice(i + 1).find((m) => m.kind !== "user") as TurnMsg | undefined;
+  }
+  return undefined;
 }

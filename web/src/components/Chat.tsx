@@ -8,6 +8,8 @@ import { useEdgeKnowledge } from "../lib/verdictStore";
 import { ControlMatrix } from "./ControlMatrix";
 import { ExportButton } from "./ExportButton";
 import { BoothFlow } from "./BoothFlow";
+import { BoothScoreboard } from "./BoothScoreboard";
+import { recordTurn, startTally } from "../lib/boothTally";
 import { BoothTurn } from "./BoothTurn";
 import { ExternalGuardrailBadges, ExternalGuardrailBlockedCard, GuardrailOnlyCard, RedactionAppliedNote } from "./ExternalGuardrailCard";
 import { GuardrailRawResponses } from "./GuardrailRawResponses";
@@ -330,6 +332,14 @@ export function Chat({
     list.scrollTo({ top: offset - (list.clientHeight - el.offsetHeight) / 2, behavior: "smooth" });
   }
 
+  // Booth mode's scoreboard counts every finished turn once (recordTurn is idempotent by message id) and starts its
+  // background edge lookups. Only while booth mode shows: the detailed view looks the edge up itself, per card.
+  useEffect(() => {
+    if (!booth) return;
+    startTally();
+    for (const m of messages) if (m.kind !== "user") recordTurn(m);
+  }, [booth, messages]);
+
   // Keep the view pinned to the bottom, including while tokens stream in.
   const streamingChars = messages.reduce((n, m) => n + (m.kind === "assistant" && m.streaming ? m.text.length : 0), 0);
   useEffect(() => {
@@ -377,6 +387,7 @@ export function Chat({
           since there flex-1 would resolve to zero against shrink-0 siblings. */}
       {/* Booth mode: the path every prompt takes, swept while a turn is in flight, then lit with where it ended. */}
       {booth && <BoothFlow messages={messages} busy={busy} route={route} />}
+      {booth && <BoothScoreboard />}
       <div className="relative flex h-[55vh] flex-col overflow-hidden lg:h-auto lg:min-h-0 lg:flex-1">
       {/* `relative` is load-bearing: Tailwind's sr-only is position:absolute, so without a
           positioned ancestor inside the list the strip's screen-reader text takes the

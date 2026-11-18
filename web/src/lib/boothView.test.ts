@@ -79,3 +79,23 @@ describe("boothStrip — one state per layer, from the control strip", () => {
     expect(layer(m, "direct", "Vendors")).toBe("off");
   });
 });
+
+describe("the background edge lookup (2026-11-18): a log-only match shows, nothing else changes", () => {
+  const reply: TurnMsg = { ...t, kind: "assistant", text: "Hello", meta: {} };
+  it("a reply whose edge lookup found a log-only rule reads 'Detected — logged, not blocked', never credited to AI Security by name", () => {
+    const b = boothBanner(reply, "direct", "log");
+    expect(b).toMatchObject({ tone: "detected", icon: "detected", title: "Detected at the edge — logged, not blocked" });
+    expect(b?.by).not.toMatch(/AI Security/);
+    expect(layer(reply, "direct", "Edge")).toBe("passed");
+    expect(boothStrip(reply, "direct", "log").find((l) => l.label === "Edge")?.state).toBe("flagged");
+  });
+  it("until the lookup lands (pending) or when it cannot (unavailable), the reply is a plain pass", () => {
+    expect(boothBanner(reply, "direct", "pending")?.title).toBe("Reached the model");
+    expect(boothBanner(reply, "direct", "unavailable")?.title).toBe("Reached the model");
+    expect(boothStrip(reply, "direct", "pending").find((l) => l.label === "Edge")?.state).toBe("passed");
+  });
+  it("a vendor block stays the vendors' banner even if the edge also logged it", () => {
+    const p = P({ stoppedBy: "prisma-airs", results: [{ provider: "prisma-airs", outcome: "block", latencyMs: 1 }] });
+    expect(boothBanner({ ...t, kind: "external", pipeline: p }, "direct", "log")?.tone).toBe("vendor");
+  });
+});

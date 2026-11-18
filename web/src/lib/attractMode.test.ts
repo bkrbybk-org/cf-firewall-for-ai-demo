@@ -2,7 +2,7 @@
 // prompt alone.
 import { describe, expect, it } from "vitest";
 import type { TurnResult } from "../hooks/useChat";
-import { ATTRACT_DWELL_MS, ATTRACT_GAP_MS, ATTRACT_MAX_ERRORS, ATTRACT_MAX_MS, runAttract, type AttractDeps } from "./attractMode";
+import { ATTRACT_DWELL_MS, ATTRACT_GAP_MS, ATTRACT_IDLE_MS, ATTRACT_MAX_ERRORS, ATTRACT_MAX_MS, attractResumeDue, runAttract, type AttractDeps } from "./attractMode";
 
 // A fake clock: sleep advances time instantly, so an hour of looping runs in milliseconds.
 function harness(opts: { results?: (n: number) => TurnResult; stopAfterSends?: number } = {}) {
@@ -63,5 +63,20 @@ describe("runAttract", () => {
     h.deps.prompts = [];
     expect(await runAttract(h.deps)).toBe("stopped");
     expect(h.log).toEqual([]);
+  });
+
+  it("the hour budget runs from ARMING: a resumed loop does not get a fresh hour", async () => {
+    const h = harness();
+    h.deps.startedAt = -(ATTRACT_MAX_MS - 1); // armed almost an hour ago
+    expect(await runAttract(h.deps)).toBe("timeLimit");
+    expect(h.sends()).toBe(1);
+  });
+
+  it("resumes only after ATTRACT_IDLE_MS without a touch, never mid-request, and never past the budget", () => {
+    const base = { armedAt: 0, lastInput: 10_000, busy: false };
+    expect(attractResumeDue({ ...base, now: 10_000 + ATTRACT_IDLE_MS - 1 })).toBe("wait");
+    expect(attractResumeDue({ ...base, now: 10_000 + ATTRACT_IDLE_MS })).toBe("resume");
+    expect(attractResumeDue({ ...base, busy: true, now: 10_000 + ATTRACT_IDLE_MS })).toBe("wait");
+    expect(attractResumeDue({ ...base, now: ATTRACT_MAX_MS })).toBe("timeLimit");
   });
 });

@@ -5,11 +5,11 @@
 //   - an edge 403 is credited to Cloudflare AI Security only when the response said so (`detection`), as the
 //     detailed card does — a bare 403 can be Cloudflare Access, and is said that way.
 import type { Msg, Route } from "../hooks/useChat";
-import { controlMatrix, type CellState, type ControlMatrixInput, type MatrixCell } from "./controlMatrix";
+import { controlMatrix, type CellState, type ControlMatrixInput, type EdgeKnowledge, type MatrixCell } from "./controlMatrix";
 import { pipelineView } from "./guardrailView";
 
-export type BoothTone = "edge" | "vendor" | "inline" | "reached" | "neutral" | "error";
-export type BoothIcon = "blocked" | "refused" | "passed" | "reached" | "error";
+export type BoothTone = "edge" | "detected" | "vendor" | "inline" | "reached" | "neutral" | "error";
+export type BoothIcon = "blocked" | "detected" | "refused" | "passed" | "reached" | "error";
 export type TurnMsg = Exclude<Msg, { kind: "user" }>;
 
 export interface BoothBanner {
@@ -27,31 +27,48 @@ const EDGE_DETECTION: Record<string, string> = {
   waf: "Blocked by a WAF rule",
 };
 
-// The control-strip input for a turn. The edge is known only from the response here: a turn that reached the Worker
-// passed the edge ("unavailable" detail is fine — the strip shows "passed"); a 403 is an edge block only when the
-// response named the detection.
-export function boothInput(m: TurnMsg, route: Route): ControlMatrixInput | null {
+// The ray a turn can be looked up by in the edge log, when the response carried one.
+export function rayOf(m: TurnMsg): string | undefined {
+  if (m.kind === "assistant") return m.meta.ray ?? m.ray ?? undefined;
+  return "ray" in m ? m.ray : undefined;
+}
+
+// A turn that reached the Worker passed the edge; whether a log-only rule matched is known only from the edge log,
+// looked up in the background (lib/boothTally.ts publishes it to lib/verdictStore.ts). Booth never shows "checking":
+// until the lookup lands the edge is plainly "passed".
+function passedEdge(edge: EdgeKnowledge | undefined): EdgeKnowledge {
+  return !edge || edge === "pending" ? "unavailable" : edge;
+}
+
+// The control-strip input for a turn. A 403 is an edge block only when the response named the detection; for every
+// other turn the edge is passed, with the background lookup's finding when it has one.
+export function boothInput(m: TurnMsg, route: Route, edge?: EdgeKnowledge): ControlMatrixInput | null {
+  const e = passedEdge(edge);
   switch (m.kind) {
     case "assistant":
-      return { kind: "assistant", route, edge: "unavailable", pipeline: m.meta.externalGuardrails, replyPipeline: m.meta.replyGuardrails, guarded: m.meta.gateway?.guarded };
+      return { kind: "assistant", route, edge: e, pipeline: m.meta.externalGuardrails, replyPipeline: m.meta.replyGuardrails, guarded: m.meta.gateway?.guarded };
     case "blocked":
       return { kind: "blocked", route, edge: m.detection ? "block" : "unavailable" };
     case "external":
-      return { kind: "external", route, edge: "unavailable", pipeline: m.pipeline };
+      return { kind: "external", route, edge: e, pipeline: m.pipeline };
     case "guardrails":
-      return { kind: "guardrails", route: "gateway", edge: "unavailable", guarded: m.guarded, guardrailsDirection: m.direction, pipeline: m.pipeline };
+      return { kind: "guardrails", route: "gateway", edge: e, guarded: m.guarded, guardrailsDirection: m.direction, pipeline: m.pipeline };
     case "fortiaigate":
-      return { kind: "fortiaigate", route: "fortiaigate", edge: "unavailable", fortiaigateBy: m.by, pipeline: m.pipeline };
+      return { kind: "fortiaigate", route: "fortiaigate", edge: e, fortiaigateBy: m.by, pipeline: m.pipeline };
     case "guardrailOnly":
-      return { kind: "guardrailOnly", route, edge: "unavailable", pipeline: m.pipeline };
+      return { kind: "guardrailOnly", route, edge: e, pipeline: m.pipeline };
     case "replyWithheld":
-      return { kind: "replyWithheld", route, edge: "unavailable", pipeline: m.pipeline, replyPipeline: m.replyPipeline, guarded: m.gateway?.guarded };
+      return { kind: "replyWithheld", route, edge: e, pipeline: m.pipeline, replyPipeline: m.replyPipeline, guarded: m.gateway?.guarded };
     default:
       return null;
   }
 }
 
-export function boothBanner(m: TurnMsg, route: Route): BoothBanner | null {
+// A log-only edge match, from the background lookup. Worded as the detailed strip words it ("A WAF rule matched in log
+// mode — detected, not blocked"): not credited to AI Security by name, since a log-mode match can be any WAF rule.
+const LOGGED = { tone: "detected", icon: "detected", title: "Detected at the edge — logged, not blocked", by: "Cloudflare WAF, log-only rule" } as const;
+
+export function boothBanner(m: TurnMsg, route: Route, edge?: EdgeKnowledge): BoothBanner | null {
   switch (m.kind) {
     case "blocked":
       return m.detection
@@ -74,16 +91,26 @@ export function boothBanner(m: TurnMsg, route: Route): BoothBanner | null {
     case "replyWithheld":
       return { tone: "vendor", icon: "blocked", title: pipelineView(m.replyPipeline, "blocked").headline, by: "External AI guardrails", why: "The model answered; the reply was not shown" };
     case "guardrailOnly":
+      if (edge === "log") return { ...LOGGED, why: "Guardrail-only mode: the model was not called, on purpose" };
       return { tone: "neutral", icon: "passed", title: "Passed every check", by: "Guardrail-only mode", why: "The model was not called, on purpose" };
     case "assistant": {
       const p = m.meta.externalGuardrails;
+      const observed = p?.observeOnly && p.wouldHaveStopped;
+      if (edge === "log") {
+        return {
+          ...LOGGED,
+          why: observed
+            ? "The model answered. External guardrails would have blocked it too, but only observe on this route"
+            : "The rule only logs, so the policy let it reach the model",
+        };
+      }
       return {
         tone: "reached",
         icon: "reached",
         title: "Reached the model",
         by: route === "fortiaigate" ? "through FortiAIGate" : route === "gateway" ? "through AI Gateway" : "Workers AI",
         why:
-          p?.observeOnly && p.wouldHaveStopped
+          observed
             ? "External guardrails would have blocked it, but only observe on this route"
             : "No control stopped this prompt",
       };
@@ -121,7 +148,7 @@ export function boothLayers(cells: MatrixCell[]): BoothLayer[] {
   });
 }
 
-export function boothStrip(m: TurnMsg, route: Route): BoothLayer[] {
-  const input = boothInput(m, route);
+export function boothStrip(m: TurnMsg, route: Route, edge?: EdgeKnowledge): BoothLayer[] {
+  const input = boothInput(m, route, edge);
   return input ? boothLayers(controlMatrix(input)) : [];
 }

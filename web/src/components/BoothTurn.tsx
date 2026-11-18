@@ -2,15 +2,18 @@
 // the detailed cards, ray ids, tokens, cost and flow trace. Rendering only — the words and the strip states come from
 // lib/boothView.ts, which takes them from the same sources the detailed view uses.
 import type { ReactNode } from "react";
-import { CheckCircle2, CircleSlash, ShieldBan, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CircleSlash, Eye, ShieldBan, ShieldCheck, TriangleAlert } from "lucide-react";
 import type { Route } from "../hooks/useChat";
 import type { CellState } from "../lib/controlMatrix";
-import { boothBanner, boothStrip, type BoothIcon, type BoothTone, type TurnMsg } from "../lib/boothView";
+import { boothBanner, boothStrip, rayOf, type BoothIcon, type BoothTone, type TurnMsg } from "../lib/boothView";
+import { useEdgeKnowledge } from "../lib/verdictStore";
 import { ExternalGuardrailBadges } from "./ExternalGuardrailCard";
 
 const TONE: Record<BoothTone, string> = {
   // Green: a Cloudflare control stopped it at the edge — the headline of this demo.
   edge: "border-cf-green/60 bg-cf-green/10 text-cf-green-ink",
+  // Amber, dashed like the strip's "flagged": the edge saw it and only logged it.
+  detected: "border-dashed border-cf-amber bg-cf-amber/10 text-cf-amber-ink",
   vendor: "border-cf-amber/60 bg-cf-amber/10 text-cf-amber-ink",
   inline: "border-cf-purple/60 bg-cf-purple/10 text-cf-purple",
   reached: "border-line bg-surface text-text",
@@ -20,6 +23,7 @@ const TONE: Record<BoothTone, string> = {
 
 const ICON: Record<BoothIcon, ReactNode> = {
   blocked: <ShieldBan size={26} />,
+  detected: <Eye size={26} />,
   refused: <CircleSlash size={26} />,
   passed: <ShieldCheck size={26} />,
   reached: <CheckCircle2 size={26} />,
@@ -39,8 +43,10 @@ const STRIP: Record<CellState, string> = {
 
 export function BoothTurn({ m, route }: { m: TurnMsg; route: Route }) {
   const streaming = m.kind === "assistant" && !!m.streaming;
-  const banner = streaming ? null : boothBanner(m, route);
-  const strip = streaming ? [] : boothStrip(m, route);
+  // The background edge lookup (lib/boothTally.ts) — "pending" until it lands, which reads as a plain pass here.
+  const edge = useEdgeKnowledge(streaming ? undefined : rayOf(m));
+  const banner = streaming ? null : boothBanner(m, route, edge);
+  const strip = streaming ? [] : boothStrip(m, route, edge);
   const pipeline = m.kind === "assistant" ? m.meta.externalGuardrails : "pipeline" in m ? m.pipeline : undefined;
   const replyPipeline = m.kind === "assistant" ? m.meta.replyGuardrails : m.kind === "replyWithheld" ? m.replyPipeline : undefined;
   return (

@@ -8,6 +8,7 @@ import { AttackLibrary } from "../components/AttackLibrary";
 import { Chat } from "../components/Chat";
 import { DemoMode } from "../components/DemoMode";
 import { AttractMode } from "../components/AttractMode";
+import { BoothFullscreen } from "../components/BoothFullscreen";
 import { BoothToggle } from "../components/BoothToggle";
 import { useBoothMode } from "../hooks/useBoothMode";
 import { useChat, type Route } from "../hooks/useChat";
@@ -121,6 +122,7 @@ export function FirewallPage() {
     <div className="flex h-full flex-col">
       <Header
         title="Cloudflare AI Security for Apps"
+        hideNav={booth}
         subtitle={
           booth ? (
             <>Every prompt is inspected before it reaches the AI model. Pick an attack to see which layer stops it.</>
@@ -135,6 +137,7 @@ export function FirewallPage() {
           booth ? (
             <>
               <AttractMode sendPrompt={chat.sendPrompt} clear={chat.clear} chatBusy={chat.busy} />
+              <BoothFullscreen />
               <BoothToggle />
               <ThemeToggle />
             </>

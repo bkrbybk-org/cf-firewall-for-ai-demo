@@ -4,7 +4,9 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Bot, Cloud, MessageSquareText, Network, ScanSearch, ShieldCheck, X } from "lucide-react";
 import type { Msg, Route } from "../hooks/useChat";
-import { boothFlow, type FlowNode, type FlowNodeState } from "../lib/boothFlow";
+import { boothFlow, latestAnswer, type FlowNode, type FlowNodeState } from "../lib/boothFlow";
+import { lookupRay } from "../lib/boothTally";
+import { useEdgeKnowledge } from "../lib/verdictStore";
 
 const ICON: Record<FlowNode["key"], ReactNode> = {
   source: <MessageSquareText size={18} />,
@@ -43,7 +45,9 @@ const WORD: Partial<Record<FlowNodeState, string>> = {
 };
 
 export function BoothFlow({ messages, busy, route }: { messages: Msg[]; busy: boolean; route: Route }) {
-  const v = boothFlow(messages, busy, route);
+  const answer = latestAnswer(messages);
+  const edge = useEdgeKnowledge(answer ? lookupRay(answer) : undefined);
+  const v = boothFlow(messages, busy, route, edge);
   const n = v.nodes.length;
   // Node centres sit at (i + ½) / n of the width; the rail runs from the first centre to the last.
   const at = (i: number) => `${((i + 0.5) / n) * 100}%`;

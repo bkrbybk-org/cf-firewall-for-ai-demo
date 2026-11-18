@@ -8,10 +8,13 @@ export function Header({
   title,
   subtitle,
   actions,
+  hideNav = false,
 }: {
   title: string;
   subtitle: ReactNode;
   actions?: ReactNode;
+  /** Booth mode on the chat page: no way off the page for a visitor (the presenter exits booth mode first). */
+  hideNav?: boolean;
 }) {
   return (
     <header className="sticky top-0 z-10 border-b border-line bg-surface/80 backdrop-blur-md">
@@ -25,7 +28,7 @@ export function Header({
         </div>
         {actions && <div className="ml-auto flex flex-wrap items-center gap-2.5">{actions}</div>}
       </div>
-      <NavTabs />
+      {!hideNav && <NavTabs />}
     </header>
   );
 }

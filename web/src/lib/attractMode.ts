@@ -13,6 +13,8 @@ export const ATTRACT_DWELL_MS = 9_000; // the verdict stays on screen this long 
 export const ATTRACT_GAP_MS = 1_500; // the empty diagram shows this long before the next prompt is sent
 export const ATTRACT_MAX_MS = 60 * 60 * 1000; // a forgotten booth screen stops spending vendor calls within the hour
 export const ATTRACT_MAX_ERRORS = 3;
+// A visitor pauses the loop; it resumes on its own once nobody has touched the screen for this long.
+export const ATTRACT_IDLE_MS = 90_000;
 
 export type AttractEnd = "stopped" | "timeLimit" | "errors";
 
@@ -25,11 +27,14 @@ export interface AttractDeps {
   now: () => number;
   stopped: () => boolean;
   onStep?: (index: number) => void;
+  // When the presenter armed attract mode. The hour budget runs from here across every pause and resume, so a
+  // visitor touching the screen never buys the loop another hour.
+  startedAt?: number;
 }
 
 export async function runAttract(d: AttractDeps): Promise<AttractEnd> {
   if (d.prompts.length === 0) return "stopped";
-  const started = d.now();
+  const started = d.startedAt ?? d.now();
   let errors = 0;
   for (let i = 0; ; i = (i + 1) % d.prompts.length) {
     if (d.stopped()) return "stopped";
@@ -44,6 +49,14 @@ export async function runAttract(d: AttractDeps): Promise<AttractEnd> {
     if (errors >= ATTRACT_MAX_ERRORS) return "errors";
     await d.sleep(ATTRACT_DWELL_MS);
   }
+}
+
+// Paused by a visitor: resume once nobody has touched the screen for ATTRACT_IDLE_MS — but never mid-request (the
+// visitor's own turn is still coming back) and never past the hour budget.
+export function attractResumeDue(o: { lastInput: number; now: number; busy: boolean; armedAt: number }): "resume" | "wait" | "timeLimit" {
+  if (o.now - o.armedAt >= ATTRACT_MAX_MS) return "timeLimit";
+  if (o.busy || o.now - o.lastInput < ATTRACT_IDLE_MS) return "wait";
+  return "resume";
 }
 
 export const ATTRACT_END_TEXT: Record<AttractEnd, string> = {

@@ -101,4 +101,12 @@ describe("boothFlow", () => {
     ];
     expect(boothFlow(msgs, true, "direct").phase).toBe("inFlight");
   });
+
+  it("with the edge lookup: a log-only match flags the edge node; the turn still went to the model, not stopped", () => {
+    const v = boothFlow([user(), { id: 2, kind: "assistant", text: "Hello", ...t, meta: {} }], false, "direct", "log");
+    expect(states(v).edge).toBe("flagged");
+    expect(v.to).toBe(4);
+    expect(v.stopped).toBe(false);
+    expect(v.caption).toMatch(/logged, not blocked/);
+  });
 });

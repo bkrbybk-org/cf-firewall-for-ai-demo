@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-17 — booth attract mode (the demo script on a loop until a visitor touches the screen; paced, hour limit). Earlier the same day: booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-18 — booth lock (nav hidden, hold to exit), attract auto-resume, background edge-log lookup and a scoreboard. 2026-11-17: booth attract mode (the demo script on a loop until a visitor touches the screen; paced, hour limit). Earlier the same day: booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
 (#31) still need the user before those two go back on._
@@ -17,7 +17,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 
 > **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
 > **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
-> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-17 booth attract mode back to the first
+> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-18 booth lock and scoreboard back to the first
 > external guardrail, Prisma AIRS, on 2026-10-01), then
 > 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
 > migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
@@ -329,7 +329,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   **Since 2026-11-14** the route toggle has a third route, **FortiAIGate** (shown while it is enabled in Settings,
   with its own model list, always JSON). **Since 2026-11-16, booth mode** (header button or Settings → Your
   preferences, per browser) hides the side panels and the detail, and shows each turn as one verdict banner, a layer
-  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`), and an Attract mode button loops the demo script (`lib/attractMode.ts`).
+  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`), and an Attract mode button loops the demo script (`lib/attractMode.ts`); since 2026-11-18 the nav is hidden, exit needs a hold or Ctrl+Shift+B, a touch pauses attract (90 s idle resumes it), and a scoreboard plus background edge lookups (`lib/boothTally.ts`) show log-only detections.
 - **`/analytics`** (vendor-agnostic since 2026-10-12 — see that entry and README's Analytics section for the current
   shape): **All vendors** (side-by-side table, per-prompt grid, per-run trend), **Cloudflare · AI Security (edge)**,
   **Cloudflare · AI Gateway**, one page per **external guardrail** (Analytics Engine verdicts), and the **prompt log**
@@ -443,7 +443,7 @@ switch is in `components/settings/PreferencesSection.tsx`). Later in 2026-10: th
 `smokeCanary`), and the vendor-agnostic analytics / compliance parts — all listed in README.
 New in 2026-11: migration `0013` (scheduled opt-out); FortiAIGate — `src/fortiAiGate.ts`,
 `components/settings/FortiAiGatePanel.tsx`, migrations `0014`–`0017`; booth mode — `hooks/useBoothMode.ts`,
-`components/BoothToggle.tsx` + `BoothTurn.tsx` + `BoothFlow.tsx` + `AttractMode.tsx`, `lib/boothView.ts` + `lib/boothFlow.ts` + `lib/attractMode.ts`. README's layout lists them (re-checked against
+`components/BoothToggle.tsx` + `BoothTurn.tsx` + `BoothFlow.tsx` + `AttractMode.tsx` + `BoothScoreboard.tsx` + `BoothFullscreen.tsx`, `lib/boothView.ts` + `lib/boothFlow.ts` + `lib/attractMode.ts` + `lib/boothTally.ts`. README's layout lists them (re-checked against
 the tree 2026-11-16).
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
@@ -455,9 +455,9 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 120 commits by 2026-11-17, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 121 commits by 2026-11-18, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `5ede1831-5112-4955-aeef-b54b9e96a50a` (2026-11-17, booth attract mode; before it `a3bd6855-a7ca-43ac-809a-50d4d3faad14`, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `820bdcc0-115a-4d8b-a791-495c3f7363f6` (2026-11-18, booth lock, auto-resume, edge lookup, scoreboard; before it `5ede1831-5112-4955-aeef-b54b9e96a50a`, 2026-11-17, booth attract mode; before it `a3bd6855-a7ca-43ac-809a-50d4d3faad14`, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -494,7 +494,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **1037 across 73 files** (measured 2026-11-17 after booth attract mode; README's Tests table has the
+**Tests** — `npm test`, **1053 across 74 files** (measured 2026-11-18 after the booth lock, auto-resume, edge lookup and scoreboard; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -659,6 +659,49 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-18 — Booth lock, attract auto-resume, background edge lookup, scoreboard
+
+**Asked:** after a booth-mode review, items 1 (lock the booth), 3 (auto-resume), 2 (log-only detections) and 5
+(scoreboard). All done by me, no subagents.
+
+- **Lock (1):** in booth mode the chat page's header hides the nav tabs and the API docs link (`Header hideNav`).
+  Exiting needs a 1.5 s press-and-hold on "Booth mode · on" or Ctrl/⌘+Shift+B (`components/BoothToggle.tsx`); a tap
+  only reads "Hold to exit". A **Fullscreen** button (`BoothFullscreen.tsx`, browser Fullscreen API, hidden where
+  unsupported). Settings → Your preferences still toggles booth mode (the nav shows there; a visitor cannot reach it).
+- **Auto-resume (3):** a visitor's touch now pauses attract mode instead of ending it; after `ATTRACT_IDLE_MS` (90 s)
+  with no touch, no request in flight and a visible tab, it clears the chat and resumes. The hour budget runs from
+  arming across pauses (`startedAt`), so an armed booth still turns itself off within the hour. Each play has a token,
+  so a resume never revives the loop that was waiting on its last request when the visitor touched.
+- **Edge lookup (2) — the design decision.** The edge log ingests in a minute or more (the poller waits 60 s), so a
+  log-only match can never show inside a 9 s attract dwell. Instant would need a Request Header Transform Rule copying
+  `cf.llm.*` into a header the Worker reads: a prod zone change, and whether those fields are readable in that phase is
+  unverified — **not done, needs the user's say-so.** What shipped: booth looks every turn past the edge up in the
+  background (`lib/boothTally.ts`, the same `pollVerdict`), publishes the finding to `lib/verdictStore.ts`, and the
+  turn's banner, strip and the diagram pick it up if still on screen. A log-only match reads "Detected at the edge —
+  logged, not blocked · Cloudflare WAF, log-only rule": not credited to AI Security by name, because a log-mode match
+  can be any WAF rule (the detailed strip words it the same way). Lookups are capped: 2 running, 4 waiting, the
+  oldest waiting dropped and counted, because attract mode makes ~2.5 model-reaching turns a minute and each lookup
+  polls zone GraphQL.
+- **Scoreboard (5):** `BoothScoreboard.tsx` under the diagram: "Since HH:MM on this screen: N prompts · …" by where
+  each turn ended (the banner's credit: a bare 403 is "refused by the edge, not attributed"), zero categories left
+  out, plus "Edge log: X of Y looked up matched a log-only rule (P pending, U unavailable, S not looked up)". In memory
+  per page load; a turn from before booth mode came on is not counted.
+- **Tests:** 1053 across 74 files (16 new: `boothTally.test.ts` 10, boothView +3, boothFlow +1, attractMode +2).
+  **Mutation-checked**, 9 mutations, each failing a test: no queue cap, no window check, no once-only check, every 403
+  credited, edge blocks looked up, budget restarting on resume, resume while busy, the logged banner credited to AI
+  Security, the edge finding ignored.
+- **Verified locally** (`wrangler dev`, booth on, pane hidden so checks by DOM): nav absent and header buttons
+  Attract / Fullscreen / "Booth mode · on". A mocked reply carrying a ray plus a mocked log-mode verdict: the
+  scoreboard showed "1 pending", and about 60 s later the banner read "Detected at the edge — logged, not blocked",
+  the edge node "flagged" and the scoreboard "1 of 1 looked up matched a log-only rule". A tap kept booth on ("Hold to
+  exit"); a 1.8 s hold exited (nav back); Ctrl+Shift+B and ⌘⇧B turned it back on. Attract: playing → a pointer-down
+  paused it (no pill, "resumes after 90 s" shown) → no prompt for 90 s → resumed by itself, scoreboard counting. One
+  console error came from the mock itself: the detailed view's flow trace read a mocked rule lacking `ruleId`
+  (`FlowTrace.tsx:235`), which real verdicts always carry.
+- **Deployed** `820bdcc0-115a-4d8b-a791-495c3f7363f6`; all 5 smoke checks pass; the bundle contains "Hold to exit",
+  "logged, not blocked", "on this screen", "resumes after", "Exit fullscreen", "not looked up"; prod `/api/verdict`
+  answers `configured: true` for the service token. Not seen on prod: a real log-only lookup landing in booth.
 
 ### 2026-11-17 (later) — Booth attract mode: the demo script on a loop until a visitor touches the screen
 
