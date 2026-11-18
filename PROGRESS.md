@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-17 — booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-17 — booth attract mode (the demo script on a loop until a visitor touches the screen; paced, hour limit). Earlier the same day: booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
 (#31) still need the user before those two go back on._
@@ -17,7 +17,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
 
 > **Reading this doc**: it is organised by topic, not chronologically. Under **Implemented**, the
 > **2026-09** block (latency, saved runs, gap recommender, compliance evidence, prompt-log flag, CI)
-> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-17 booth architecture strip back to the first
+> comes first, then the **2026-10 and 2026-11** entries newest-first (from the 2026-11-17 booth attract mode back to the first
 > external guardrail, Prisma AIRS, on 2026-10-01), then
 > 2026-08-01 (Red Team page, analytics honesty pass, chart rework), then 2026-07-31 (AI Gateway REST
 > migration, verdict window, prompt-log rewrite). Dated entries are a journal — they describe what was
@@ -329,7 +329,7 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   **Since 2026-11-14** the route toggle has a third route, **FortiAIGate** (shown while it is enabled in Settings,
   with its own model list, always JSON). **Since 2026-11-16, booth mode** (header button or Settings → Your
   preferences, per browser) hides the side panels and the detail, and shows each turn as one verdict banner, a layer
-  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`).
+  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`), and an Attract mode button loops the demo script (`lib/attractMode.ts`).
 - **`/analytics`** (vendor-agnostic since 2026-10-12 — see that entry and README's Analytics section for the current
   shape): **All vendors** (side-by-side table, per-prompt grid, per-run trend), **Cloudflare · AI Security (edge)**,
   **Cloudflare · AI Gateway**, one page per **external guardrail** (Analytics Engine verdicts), and the **prompt log**
@@ -443,7 +443,7 @@ switch is in `components/settings/PreferencesSection.tsx`). Later in 2026-10: th
 `smokeCanary`), and the vendor-agnostic analytics / compliance parts — all listed in README.
 New in 2026-11: migration `0013` (scheduled opt-out); FortiAIGate — `src/fortiAiGate.ts`,
 `components/settings/FortiAiGatePanel.tsx`, migrations `0014`–`0017`; booth mode — `hooks/useBoothMode.ts`,
-`components/BoothToggle.tsx` + `BoothTurn.tsx` + `BoothFlow.tsx`, `lib/boothView.ts` + `lib/boothFlow.ts`. README's layout lists them (re-checked against
+`components/BoothToggle.tsx` + `BoothTurn.tsx` + `BoothFlow.tsx` + `AttractMode.tsx`, `lib/boothView.ts` + `lib/boothFlow.ts` + `lib/attractMode.ts`. README's layout lists them (re-checked against
 the tree 2026-11-16).
 
 Scripts: `npm run build` · `npm run deploy` · `npm run check` (worker typecheck) · `npm test`
@@ -455,9 +455,9 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 119 commits by 2026-11-17, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 120 commits by 2026-11-17, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `a3bd6855-a7ca-43ac-809a-50d4d3faad14` (2026-11-17, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `5ede1831-5112-4955-aeef-b54b9e96a50a` (2026-11-17, booth attract mode; before it `a3bd6855-a7ca-43ac-809a-50d4d3faad14`, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -494,7 +494,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **1032 across 72 files** (measured 2026-11-17 after the booth architecture strip; README's Tests table has the
+**Tests** — `npm test`, **1037 across 73 files** (measured 2026-11-17 after booth attract mode; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -659,6 +659,35 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-17 (later) — Booth attract mode: the demo script on a loop until a visitor touches the screen
+
+**Asked:** the looping attract mode offered after the architecture strip. All done by me, no subagents.
+
+- **What it is:** an "Attract mode" button in the booth header (`components/AttractMode.tsx`; loop in
+  `lib/attractMode.ts`). It plays `DEMO_SCRIPT` (6 prompts) round and round: clear the chat, 1.5 s on the empty
+  diagram, send, 9 s on the verdict. A pill over the prompt input says "Self-running demo — touch anywhere to try it
+  yourself · n/6". Any pointer-down or key outside the button stops it (capture phase, no preventDefault, so the
+  visitor's first click still works). Not persisted; leaving booth mode or the page stops it.
+- **Why the limits — every attract turn is real traffic.** It passes the edge, every enabled vendor (3 in quorum on
+  prod) and the model, and is counted in Security Analytics, AI Gateway, vendor consoles and Analytics Engine like a
+  visitor's turn. At ~12 s a turn that is ~300 prompts and ~900 vendor calls an hour. So: pause while the tab is
+  hidden (the sleep counts visible time only), stop after an hour (`ATTRACT_MAX_MS`), stop after 3 failed requests in
+  a row. Not done: tagging attract traffic so analytics can exclude it — that needs a request field and server work.
+- **Each prompt judged alone:** the chat is cleared before every step, so with multi-turn on an earlier attack is
+  never sent as history to change the next verdict.
+- **Tests:** 1037 across 73 files (5 new, `web/src/lib/attractMode.test.ts`, fake clock). **Mutation-checked:**
+  dropping the clear, never resetting the error streak, a 1000x hour limit, and dropping the stop check after a
+  request each fail a test (the last one only after a test was tightened to assert no dwell).
+- **Verified locally** (`wrangler dev`, booth on): a click on the button (pointer-down then click) started it rather
+  than stopping it; ~9 s later the first prompt's reply and "Reached the model" were shown with the pill on step 1;
+  the chat was empty again before step 2. A pointer-down on the page stopped it and no further `/api/chat` went out
+  in the next 12 s. The network log showed one chat about every 12 s. The pill was first placed mid-screen and
+  wrapped over the chat; moved over the input row on one line (measured 494 × 46 px at the bottom). The Browser pane
+  was hidden, so screenshots there were stale (frozen entry animations) — layout was checked by measurement.
+  Hidden-tab pause not exercised.
+- **Deployed** `5ede1831-5112-4955-aeef-b54b9e96a50a`; all 5 smoke checks pass; the bundle contains "Self-running
+  demo", "Stopped after an hour" and `data-attract-control`.
 
 ### 2026-11-17 — Booth mode: architecture strip, animated while a turn is in flight
 

@@ -7,6 +7,7 @@ import { GatewaySettingsPanel, type GatewaySettingsValue } from "../components/G
 import { AttackLibrary } from "../components/AttackLibrary";
 import { Chat } from "../components/Chat";
 import { DemoMode } from "../components/DemoMode";
+import { AttractMode } from "../components/AttractMode";
 import { BoothToggle } from "../components/BoothToggle";
 import { useBoothMode } from "../hooks/useBoothMode";
 import { useChat, type Route } from "../hooks/useChat";
@@ -133,6 +134,7 @@ export function FirewallPage() {
         actions={
           booth ? (
             <>
+              <AttractMode sendPrompt={chat.sendPrompt} clear={chat.clear} chatBusy={chat.busy} />
               <BoothToggle />
               <ThemeToggle />
             </>
