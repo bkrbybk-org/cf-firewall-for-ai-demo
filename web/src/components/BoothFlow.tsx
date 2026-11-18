@@ -1,7 +1,9 @@
 // Booth mode's architecture strip, pinned above the chat: the path every prompt takes, swept while a turn is in
 // flight, then replayed up to the layer where the latest turn ended. The states, the caption and what may be claimed
 // while waiting all come from lib/boothFlow.ts; this file only draws them.
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { getExternalGuardrails } from "../lib/api";
+import type { GatewayOption } from "../lib/types";
 import { Bot, Cloud, MessageSquareText, Network, ScanSearch, ShieldCheck, X } from "lucide-react";
 import type { Msg, Route } from "../hooks/useChat";
 import { boothFlow, latestAnswer, type FlowNode, type FlowNodeState } from "../lib/boothFlow";
@@ -44,10 +46,35 @@ const WORD: Partial<Record<FlowNodeState, string>> = {
   off: "off",
 };
 
-export function BoothFlow({ messages, busy, route }: { messages: Msg[]; busy: boolean; route: Route }) {
+export function BoothFlow({
+  messages,
+  busy,
+  route,
+  gateway,
+}: {
+  messages: Msg[];
+  busy: boolean;
+  route: Route;
+  gateway?: GatewayOption;
+}) {
   const answer = latestAnswer(messages);
   const edge = useEdgeKnowledge(answer ? lookupRay(answer) : undefined);
-  const v = boothFlow(messages, busy, route, edge);
+  // Whether any vendor is enabled, read once when booth opens so the empty diagram is right before the first prompt.
+  // After that every finished turn says what it ran (lib/boothFlow.ts), so this is never polled. A failed read leaves
+  // it unknown, and the vendor node is drawn as before.
+  const [vendors, setVendors] = useState<boolean | undefined>(undefined);
+  useEffect(() => {
+    let live = true;
+    getExternalGuardrails()
+      .then((s) => {
+        if (live && Array.isArray(s?.providers)) setVendors(s.providers.some((p) => p.supported && p.enabled));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const v = boothFlow(messages, busy, route, edge, vendors, gateway);
   const n = v.nodes.length;
   // Node centres sit at (i + ½) / n of the width; the rail runs from the first centre to the last.
   const at = (i: number) => `${((i + 0.5) / n) * 100}%`;

@@ -12,6 +12,7 @@
 import type { Msg, Route } from "../hooks/useChat";
 import type { CellState, EdgeKnowledge, MatrixLayer } from "./controlMatrix";
 import { boothBanner, boothStrip, type TurnMsg } from "./boothView";
+import type { GatewayOption } from "./types";
 
 export type FlowPhase = "idle" | "inFlight" | "answering" | "done";
 // "through": a streamed reply proves the prompt got past this node, but not what the node said (observe-only on the
@@ -40,7 +41,10 @@ export interface FlowView {
 
 const SOURCE: FlowNode = { key: "source", label: "You", sub: "browser", state: "idle", title: "The prompt, as typed" };
 
-function nodeFor(layer: MatrixLayer, route: Route): Omit<FlowNode, "state" | "title"> {
+// `gateway`: the AI Gateway the chat sends through (booth's own choice, lib/boothGateway.ts), when known. Its
+// Guardrails flag is the same one the detailed view's purple badge uses — the REST API does not report it, so it comes
+// from CF_AI_GATEWAY_GUARDED_ID — and the sub-label says it instead of always claiming "Guardrails".
+function nodeFor(layer: MatrixLayer, route: Route, gateway?: GatewayOption): Omit<FlowNode, "state" | "title"> {
   switch (layer) {
     case "edge":
       return { key: "edge", label: "Cloudflare edge", sub: "AI Security for Apps" };
@@ -49,7 +53,11 @@ function nodeFor(layer: MatrixLayer, route: Route): Omit<FlowNode, "state" | "ti
     case "gatewayGuardrails":
       return route === "fortiaigate"
         ? { key: "gatewayGuardrails", label: "FortiAIGate", sub: "Fortinet" }
-        : { key: "gatewayGuardrails", label: "AI Gateway", sub: route === "direct" ? "not on this route" : "Guardrails" };
+        : {
+            key: "gatewayGuardrails",
+            label: "AI Gateway",
+            sub: route === "direct" ? "not on this route" : !gateway ? "Guardrails" : gateway.guarded ? "Guardrails on" : "Guardrails off",
+          };
     case "model":
       return { key: "model", label: "AI model", sub: route === "fortiaigate" ? "Amazon Bedrock" : "Workers AI" };
     case "replyCheck":
@@ -59,11 +67,19 @@ function nodeFor(layer: MatrixLayer, route: Route): Omit<FlowNode, "state" | "ti
 
 const TEMPLATE: MatrixLayer[] = ["edge", "external", "gatewayGuardrails", "model"];
 
-function template(route: Route, state: (layer: MatrixLayer) => FlowNodeState, title: string): FlowNode[] {
+// `vendors`: whether any external guardrail is enabled. false drops the "AI guardrails" node, so a booth with every
+// vendor off never draws a layer that cannot act; undefined (not known yet) keeps it.
+function template(
+  route: Route,
+  state: (layer: MatrixLayer) => FlowNodeState,
+  title: string,
+  vendors?: boolean,
+  gateway?: GatewayOption,
+): FlowNode[] {
   return [
     SOURCE,
-    ...TEMPLATE.map((l) => ({
-      ...nodeFor(l, route),
+    ...TEMPLATE.filter((l) => l !== "external" || vendors !== false).map((l) => ({
+      ...nodeFor(l, route, gateway),
       // A direct route has no gateway whatever happens: say so from the start rather than animate through it.
       state: l === "gatewayGuardrails" && route === "direct" ? ("off" as const) : state(l),
       title: l === "gatewayGuardrails" && route === "direct" ? "Direct Workers AI route — there is no gateway on this turn." : title,
@@ -71,12 +87,35 @@ function template(route: Route, state: (layer: MatrixLayer) => FlowNodeState, ti
   ];
 }
 
+// Whether vendors are enabled, from the newest finished turn that says: a turn that reached the Worker carries the
+// pipeline it ran (empty = none enabled). An edge refusal or an error never reached it and says nothing, nor does a
+// reply still streaming (its meta arrives last). Newer than a settings fetch made before it, so it wins.
+function vendorsFromTurns(messages: Msg[]): boolean | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.kind === "user" || m.kind === "blocked" || m.kind === "error") continue;
+    if (m.kind === "assistant" && m.streaming) continue;
+    const p = m.kind === "assistant" ? m.meta.externalGuardrails : "pipeline" in m ? m.pipeline : undefined;
+    return !!p && p.results.length + p.notRun.length > 0;
+  }
+  return undefined;
+}
+
 // Reached and acted on, or reached and let through: the states the prompt was actually seen in.
 const SEEN: FlowNodeState[] = ["stopped", "flagged", "unavailable", "reached", "passed"];
 
 // `edge`: the latest turn's background edge lookup (lib/boothTally.ts), when it has landed — a log-only match then
 // shows on the edge node as "flagged", exactly as the turn's own strip shows it.
-export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, edge?: EdgeKnowledge): FlowView {
+// `vendorsEnabled`: from the guardrail settings (GET /api/external-guardrails), once fetched; a finished turn overrides it.
+export function boothFlow(
+  messages: Msg[],
+  busy: boolean,
+  currentRoute: Route,
+  edge?: EdgeKnowledge,
+  vendorsEnabled?: boolean,
+  gateway?: GatewayOption,
+): FlowView {
+  const vendors = vendorsFromTurns(messages) ?? vendorsEnabled;
   // The turn in question: the last user message and whatever answered it.
   let u = -1;
   for (let i = messages.length - 1; i >= 0; i--) if (messages[i].kind === "user") { u = i; break; }
@@ -87,7 +126,7 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, e
   if (!user) {
     return {
       phase: "idle",
-      nodes: template(currentRoute, () => "idle", ""),
+      nodes: template(currentRoute, () => "idle", "", vendors, gateway),
       to: null,
       stopped: false,
       caption: "Every prompt passes these layers before the model can answer it",
@@ -96,10 +135,11 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, e
   }
 
   if (answer?.kind === "assistant" && answer.streaming) {
+    const nodes = template(route, (l) => (l === "model" ? "pending" : "through"), "The reply is streaming, so the prompt got past this layer.", vendors, gateway);
     return {
       phase: "answering",
-      nodes: template(route, (l) => (l === "model" ? "pending" : "through"), "The reply is streaming, so the prompt got past this layer."),
-      to: 4,
+      nodes,
+      to: nodes.findIndex((n) => n.key === "model"),
       stopped: false,
       caption: "Reached the model — it is answering",
       turnId: answer.id,
@@ -109,7 +149,7 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, e
   if (!answer || busy) {
     return {
       phase: "inFlight",
-      nodes: template(route, () => "pending", "Waiting for the answer — the verdict comes back in one response."),
+      nodes: template(route, () => "pending", "Waiting for the answer — the verdict comes back in one response.", vendors, gateway),
       to: null,
       stopped: false,
       caption: "Inspecting the prompt…",
@@ -123,14 +163,19 @@ export function boothFlow(messages: Msg[], busy: boolean, currentRoute: Route, e
     // An error: no layer can be credited with anything.
     return {
       phase: "done",
-      nodes: template(route, () => "idle", "The request failed, so no layer's verdict is known."),
+      nodes: template(route, () => "idle", "The request failed, so no layer's verdict is known.", vendors, gateway),
       to: null,
       stopped: false,
       caption: banner?.title ?? "Something went wrong",
       turnId: answer.id,
     };
   }
-  const nodes: FlowNode[] = [SOURCE, ...strip.map((s) => ({ ...nodeFor(s.layer, route), state: s.state as FlowNodeState, title: s.title }))];
+  // The vendor layer is dropped when this turn ran none ("off"), or when the edge refused it ("not reached") while
+  // none is enabled: drawing a layer that could not have acted would suggest one more check than there was.
+  const shown = strip.filter(
+    (s) => s.layer !== "external" || !(s.state === "off" || (s.state === "notReached" && vendors === false)),
+  );
+  const nodes: FlowNode[] = [SOURCE, ...shown.map((s) => ({ ...nodeFor(s.layer, route, gateway), state: s.state as FlowNodeState, title: s.title }))];
   // Where the prompt got to: the first layer that stopped it; otherwise the last layer that saw it. FortiAIGate's
   // block leaves the model "unknown" (unavailable) after a stop, which is why a stop wins over "last seen".
   const stopIdx = nodes.findIndex((n) => n.state === "stopped");

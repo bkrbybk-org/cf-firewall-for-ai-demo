@@ -386,7 +386,7 @@ export function Chat({
           scroll-to-bottom), and below lg via an explicit viewport height,
           since there flex-1 would resolve to zero against shrink-0 siblings. */}
       {/* Booth mode: the path every prompt takes, swept while a turn is in flight, then lit with where it ended. */}
-      {booth && <BoothFlow messages={messages} busy={busy} route={route} />}
+      {booth && <BoothFlow messages={messages} busy={busy} route={route} gateway={gateways.find((g) => g.id === gatewayId)} />}
       {booth && <BoothScoreboard />}
       <div className="relative flex h-[55vh] flex-col overflow-hidden lg:h-auto lg:min-h-0 lg:flex-1">
       {/* `relative` is load-bearing: Tailwind's sr-only is position:absolute, so without a

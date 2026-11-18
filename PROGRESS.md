@@ -1,6 +1,6 @@
 # Progress — Cloudflare AI Security demo
 
-_Last updated: 2026-11-18 — booth lock (nav hidden, hold to exit), attract auto-resume, background edge-log lookup and a scoreboard. 2026-11-17: booth attract mode (the demo script on a loop until a visitor touches the screen; paced, hour limit). Earlier the same day: booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
+_Last updated: 2026-11-18 (later) — booth: the "AI guardrails" diagram node only when a vendor is on; booth's own gateway and model (Settings → Your preferences). **Prod state measured 2026-11-18: no external vendor enabled and every AI Security Block rule off (log rules only) — intended by the user, so smoke check [4] fails on purpose.** Earlier 2026-11-18 — booth lock (nav hidden, hold to exit), attract auto-resume, background edge-log lookup and a scoreboard. 2026-11-17: booth attract mode (the demo script on a loop until a visitor touches the screen; paced, hour limit). Earlier the same day: booth mode gains an architecture strip, animated while a turn is in flight (indeterminate: no layer is credited before the verdict). 2026-11-16: review fixes: saving/deleting Red Team runs and clearing the prompt log are guardrail-admin writes; vendor error text filtered; JSON writes need `application/json` (415); gateway caps; wrangler 4.163 and other patch updates. Earlier the same day: booth mode (one big verdict per turn, per browser). 2026-11-15: "observe only" switch: external guardrails can watch FortiAIGate turns without stopping them (migration 0017). **Prod state measured 2026-11-15: Prisma AIRS, CrowdStrike AIDR and Cisco enabled (quorum 3 of 3, fail open, replies checked), FortiAIGate route enabled, observe only off; all 5 smoke checks pass.** 2026-11-14: Red Team through FortiAIGate (migration 0016); the FortiAIGate chat route proven on prod (enabled by the user), after the route (migration 0015) after its settings card (migration 0014). 2026-11-06: default system prompt reworded so AI Gateway's prompt-injection check (P1) no longer flags it
 (#34). 2026-11-05: who is prompting now reaches the AI Gateway log (`user` metadata); per-vendor switch for the
 scheduled re-runs (migration 0013). (2026-11-05 state, superseded: all six vendors were disabled and smoke [4] failed.) Lakera's block (#33) and Cato's 401
 (#31) still need the user before those two go back on._
@@ -329,7 +329,9 @@ Prod is behind **Cloudflare Access**. Functional testing is done on `wrangler de
   **Since 2026-11-14** the route toggle has a third route, **FortiAIGate** (shown while it is enabled in Settings,
   with its own model list, always JSON). **Since 2026-11-16, booth mode** (header button or Settings → Your
   preferences, per browser) hides the side panels and the detail, and shows each turn as one verdict banner, a layer
-  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`), and an Attract mode button loops the demo script (`lib/attractMode.ts`); since 2026-11-18 the nav is hidden, exit needs a hold or Ctrl+Shift+B, a touch pauses attract (90 s idle resumes it), and a scoreboard plus background edge lookups (`lib/boothTally.ts`) show log-only detections.
+  strip and the vendor chips (`lib/boothView.ts`); since 2026-11-17 an architecture strip above the chat animates the wait and replays where the latest turn ended (`lib/boothFlow.ts`), and an Attract mode button loops the demo script (`lib/attractMode.ts`); since 2026-11-18 the nav is hidden, exit needs a hold or Ctrl+Shift+B, a touch pauses attract (90 s idle resumes it), and a scoreboard plus background edge lookups (`lib/boothTally.ts`) show log-only detections. Later the same day the diagram drops "AI guardrails" when no vendor is enabled, and booth
+  sends with its own per-browser gateway and model (Settings → Your preferences, `lib/boothGateway.ts`) instead of the
+  hidden dropdowns' values.
 - **`/analytics`** (vendor-agnostic since 2026-10-12 — see that entry and README's Analytics section for the current
   shape): **All vendors** (side-by-side table, per-prompt grid, per-run trend), **Cloudflare · AI Security (edge)**,
   **Cloudflare · AI Gateway**, one page per **external guardrail** (Analytics Engine verdicts), and the **prompt log**
@@ -455,9 +457,9 @@ locally), `wrangler-dev-scheduled` (8790, `--test-scheduled`, fire a cron with `
 (5173) configs.
 
 **Version control** (rewritten 2026-09-30 — the previous text said `main` sat at `a4f78d2` and prod
-ran none of the recent work, both long untrue): 121 commits by 2026-11-18, and **everything is merged to `main`,
+ran none of the recent work, both long untrue): 122 commits by 2026-11-18, and **everything is merged to `main`,
 which is in sync with `origin`** (`github.com/bkrbybk-org/cf-firewall-for-ai-demo`). Since 2026-10-05 each dated
-entry under Implemented names its own deploy id; the newest is `820bdcc0-115a-4d8b-a791-495c3f7363f6` (2026-11-18, booth lock, auto-resume, edge lookup, scoreboard; before it `5ede1831-5112-4955-aeef-b54b9e96a50a`, 2026-11-17, booth attract mode; before it `a3bd6855-a7ca-43ac-809a-50d4d3faad14`, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
+entry under Implemented names its own deploy id; the newest is `e338c913-75e6-487f-b133-cfcba7a62524` (2026-11-18 later, booth gateway and model preferences, vendor node only when a vendor is on — after `0c76e44d-2e9c-4c40-8142-7da4e0fc0c41` and `38020bd1-f5d4-4e06-b28c-54d52380d066`, the same change's earlier steps; before them `820bdcc0-115a-4d8b-a791-495c3f7363f6`, 2026-11-18, booth lock, auto-resume, edge lookup, scoreboard; before it `5ede1831-5112-4955-aeef-b54b9e96a50a`, 2026-11-17, booth attract mode; before it `a3bd6855-a7ca-43ac-809a-50d4d3faad14`, booth architecture strip; before it `aacd3251-e77e-48bc-aa2d-1cdee6013cd7`, 2026-11-16, review fixes: admin gate on runs and the prompt log, vendor error text, JSON writes, caps, dependency updates; before it `d1ffbf74-799f-48ea-8090-545d727a4d2e`, booth mode; before it `f5017cfa-c6d7-46b9-83d9-978d4493633f`, vendors observe only on the FortiAIGate route; before it `110515db-9282-48e4-9090-569edce9f001`, Red Team through FortiAIGate; before it `e67e7146-fc94-46eb-b6c2-e50804468cca`, FortiAIGate chat route; before it `f2d048ae-669a-4086-9e51-3993f46b54d2`, test reveals error.code and finish_reason; before it `eddecdc8-90b6-4582-9d34-f3a850c4d398`, row moved under the vendors; before it `976225d0-c96e-43c6-841e-2429c4ad52ff`, FortiAIGate settings; before it `fd061902-66ca-45b1-8260-03e266be9ef7`, 2026-11-06,
 the default system prompt reworded for AI Gateway Guardrails, #34). The history below stops at
 2026-10-05. Prod was deployed that day as version `f5de7ba2-7711-4bf8-97ec-2afa71cc13c0` (guardrail card option B); before
 that `b51a5897` (bug #23, capped-chart coverage); before that `8c607cc6` (bug #24, nearest-rank percentiles); before that `474d3600` (Prisma AIRS report panel); before that `674a8c93` (2026-10-03, CrowdStrike AIDR); before that
@@ -494,7 +496,7 @@ Note: `commit.gpgsign` is on and this key's passphrase is not cached, so committ
 non-interactive shell fails with `Inappropriate ioctl for device`. Run `export GPG_TTY=$(tty)` in
 an interactive terminal first (pinentry is `curses`; there's no `pinentry-mac` installed).
 
-**Tests** — `npm test`, **1053 across 74 files** (measured 2026-11-18 after the booth lock, auto-resume, edge lookup and scoreboard; README's Tests table has the
+**Tests** — `npm test`, **1064 across 75 files** (measured 2026-11-18 after booth's gateway and model preferences; README's Tests table has the
 current per-file counts — the per-file numbers in the list below are from when each was written and have
 grown since, e.g. promptlog 18, config 12, redteam 39).
 The suites below through `verdict-window` each exist because a real bug shipped and were mutation-verified
@@ -659,6 +661,49 @@ bookkeeping was repaired by hand; **remote was correct throughout.** Always use
 deploy → test on prod → update docs → commit and push. It was reordered once from "commit before
 deploy"; the cost of the current order is that prod runs the working tree, not a commit, between deploy
 and push — so the version id `wrangler` prints is the only handle on a rollback in that window.
+
+### 2026-11-18 (later) — Booth: vendor node only when a vendor is on; booth's own gateway and model
+
+**Asked:** "remove ai guardrails in animation diagram when all external vendors guardrails was disabled"; then "which ai
+gateway [is] using in demo mode? add configuration in settings for me to select", then "add default model selection
+also". All done by me, no subagents.
+
+- **Vendor node.** The architecture strip (`lib/boothFlow.ts`) drops "AI guardrails" when no vendor is enabled — on the
+  empty diagram, in flight and on the verdict. Whether one is enabled comes from the newest finished turn that reached
+  the Worker (its pipeline; empty = none), else from one `GET /api/external-guardrails` read when booth opens; never
+  polled. An edge refusal, an error and a still-streaming reply say nothing (their meta has no pipeline yet). Unknown
+  keeps the node, as before. A turn that ran a vendor always draws it, whatever the settings now say.
+- **Which gateway booth used — the answer.** Booth hides the chat page's gateway and model dropdowns, so it sent with
+  whatever that in-memory page state held: after a reload, the Worker's defaults — `CF_AI_GATEWAY_ID`
+  (`cf-ai-sec-demo-gw-no-guardrail`, Guardrails off) and `DEFAULT_MODEL`. Nothing on screen said so, and the diagram's
+  gateway node always read "Guardrails".
+- **Booth gateway / Booth model / Booth FortiAIGate model** (Settings → Your preferences, under Booth mode;
+  `components/settings/PreferencesSection.tsx`). Per browser (localStorage `boothGateway`, `boothModel`,
+  `boothFortiModel`, `hooks/useBoothGateway.ts`), like booth mode itself, so a booth screen can be pinned while the
+  presenter's laptop keeps its defaults. "Same as the chat page" is the default and keeps the old behaviour. The lists
+  are `/api/models`' (the account's gateways, the Workers AI registry, FortiAIGate's public names; the FortiAIGate row
+  shows only while that route is enabled — off on prod today). `lib/boothGateway.ts` `resolveBoothChoice` sends a
+  stored id only while it is in the list; one that left it falls back to the chat page's value and the row says it is
+  missing (an empty, not-yet-loaded list is not called missing). Outside booth nothing changes. A dynamic route typed
+  on the chat page still picks its own model in booth — said in the row's description, not changed.
+- **Gateway node words.** With the selected gateway known, the diagram's AI Gateway node reads "Guardrails on" or
+  "Guardrails off" (the same `guarded` flag as the detailed view's purple badge, from `CF_AI_GATEWAY_GUARDED_ID`).
+- **Tests:** 1064 across 75 files (11 new: boothFlow +6, `boothGateway.test.ts` 5). **Mutation-checked**, 6 mutations
+  on the vendor rule, each failing a test: no streaming skip, settings outranking the turn, empty pipeline read as
+  "ran", node never dropped, "off" kept, edge-refusal drop ignoring settings.
+- **Verified locally** (`wrangler dev`, no vendor enabled in local D1): booth's diagram had 4 nodes empty, in flight
+  and on the verdict ("Reached the model"). Settings listed 16 gateways and 4 models; picking `cf-ai-sec-demo-gw` made
+  booth's `/api/chat` body carry `gatewayId: "cf-ai-sec-demo-gw"` and the node read "Guardrails on" (the reply then
+  failed locally: `.env`'s `CF_AIG_TOKEN` is rejected, 401 code 10000 — local only, prod's gateway check passes).
+  Picking Gemma 4 26B made booth send `model: "@cf/google/gemma-4-26b-a4b-it"`, and it replied.
+- **Prod state, measured and intended (user, 2026-11-18):** every external vendor disabled, and every zone "Block LLM
+  …" rule disabled with only the "Monitor LLM …" log rules on. So smoke check [4] (credit card number blocked before the
+  model) **fails on purpose** — the prompt reaches the model. The user will update the policy later; until then [4] is
+  expected red, and checks [1]–[3], [5] are the gate.
+- **Deployed** `0c76e44d-2e9c-4c40-8142-7da4e0fc0c41` (vendor node), `38020bd1-f5d4-4e06-b28c-54d52380d066` (booth
+  gateway), `e338c913-75e6-487f-b133-cfcba7a62524` (booth models). Smoke 4/5 each time, [4] as above. The bundle
+  contains "Booth gateway", "Booth model", "Booth FortiAIGate model". A prod `/api/chat` through `cf-ai-sec-demo-gw`
+  answered with `gateway.guarded: true` and "The capital of France is Paris."
 
 ### 2026-11-18 — Booth lock, attract auto-resume, background edge lookup, scoreboard
 
@@ -4147,6 +4192,11 @@ uncommitted.
 ---
 
 ## Open bugs / caveats
+
+> **Current caveat (2026-11-18): smoke check [4] fails on purpose.** On prod every external vendor is disabled and
+> every zone "Block LLM …" rule is off (only the "Monitor LLM …" log rules run), by the user's choice; they will update
+> the policy later. A credit card number therefore reaches the model, and [4] is red. Until the policy changes, checks
+> [1]–[3] and [5] are the deploy gate; re-measure before treating [4] as a fault again.
 
 **Blocking / high severity**
 

@@ -11,6 +11,8 @@ import { AttractMode } from "../components/AttractMode";
 import { BoothFullscreen } from "../components/BoothFullscreen";
 import { BoothToggle } from "../components/BoothToggle";
 import { useBoothMode } from "../hooks/useBoothMode";
+import { useBoothFortiModel, useBoothGateway, useBoothModel } from "../hooks/useBoothGateway";
+import { resolveBoothChoice, resolveBoothGateway } from "../lib/boothGateway";
 import { useChat, type Route } from "../hooks/useChat";
 import { useNeurons } from "../hooks/useNeurons";
 import { getModels } from "../lib/api";
@@ -74,15 +76,26 @@ export function FirewallPage() {
   const [input, setInput] = useState("");
   // Booth mode (per browser): one big verdict per turn, the setup panels and technical detail hidden.
   const [booth] = useBoothMode();
+  // Booth's gateway (Settings → Your preferences): booth hides the dropdown, so without its own choice it would send
+  // through whatever this page state happened to hold. Outside booth the dropdown decides, as always.
+  const [boothGatewayPref] = useBoothGateway();
+  const sendGatewayId = booth ? resolveBoothGateway(boothGatewayPref, gateways, gatewayId).id : gatewayId;
+  // The same for the model: booth hides both model dropdowns (Workers AI and FortiAIGate's own names).
+  const [boothModelPref] = useBoothModel();
+  const [boothFortiModelPref] = useBoothFortiModel();
+  const sendModel = booth
+    ? resolveBoothChoice(boothModelPref, models.map((m) => m.id), selectedModel).id
+    : selectedModel;
+  const sendFortiModel = booth ? resolveBoothChoice(boothFortiModelPref, forti.models, fortiModel).id : fortiModel;
   const { state: neurons, refresh } = useNeurons();
   const chat = useChat({
     models,
-    model: route === "fortiaigate" ? fortiModel : selectedModel,
+    model: route === "fortiaigate" ? sendFortiModel : sendModel,
     systemPrompt,
     stream,
     multiTurn,
     route,
-    gatewayId,
+    gatewayId: sendGatewayId,
     skipCache: gatewaySettings.skipCache,
     dynamicRoute,
     routeMetadata: gatewaySettings.metadata,
@@ -194,7 +207,7 @@ export function FirewallPage() {
           fortiModel={fortiModel}
           onFortiModelChange={setFortiModel}
           gateways={gateways}
-          gatewayId={gatewayId}
+          gatewayId={sendGatewayId}
           onGatewayIdChange={setGatewayId}
           dynamicRoute={dynamicRoute}
           onDynamicRouteChange={setDynamicRoute}
